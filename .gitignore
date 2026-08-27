@@ -1,0 +1,12 @@
+# Scratch: throwaway probes, build artefacts, captures. Never tracked.
+/tmp/
+
+# Top-level scratch probes from ad-hoc verification.
+/div.nelua
+/d1.nelua
+/rec.nelua
+/rec_bin
+
+# Build artefacts.
+/*.bin
+/*.c
