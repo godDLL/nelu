@@ -10,3 +10,19 @@
 # Build artefacts.
 /*.bin
 /*.c
+
+# Nim compile artefacts from `nim c -r --path:src src/<module>.nim` self-tests.
+nim_cache/
+*.o
+/src/analyzer
+/src/ast
+/src/astshapes
+/src/cemitter
+/src/cgen
+/src/cgen_types
+/src/lexer
+/src/parser
+/src/preprocessor
+/src/sema
+/src/typedesc
+/src/types

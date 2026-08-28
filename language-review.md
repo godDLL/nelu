@@ -293,26 +293,36 @@ the middle of statements. `#SomeType` returns the size of a type in bytes.
 
 ### 3.7 Composite types
 
-- **Array:** `[N]T` — fixed, compile-time size. Passed **by value** to functions
-  (copies). `[0]T` is an *unbounded array* (unknown size), useful only with
-  pointers for indexing. `[]T` sugar infers size from initializer. Multidimensional
-  arrays supported. Unbounded arrays are unsafe (no bounds checking).
-- **Enum:** `@enum{ Sunday=0, Monday, ... }`. First value must be initialized
-  explicitly. Defines a type usable as an annotation.
-- **Record:** `@record{ name: string, age: integer }` → C struct. Supports typed
-  initialization (`{name="Mark", age=20}`), casting initialization
+Grammar verified against `/usr/bin/nelua --print-ast` (0.2.0-dev). The `@` prefix
+is a *type-expression* marker, not a general type syntax: it is accepted on
+`record` and `union` (both `@record{...}` and the bare `record {...}` parse), but
+**rejected** on `enum`, `pointer`, and `function` (those take bare keywords only).
+In annotation position the bare form is the common one and always works.
+
+- **Array:** `array(T, N)` — fixed, compile-time size. The bracket form `[N]T` is
+  accepted only in *annotation* position (`local a: [10]integer`) and **not** as a
+  standalone expression. `[0]T` is an *unbounded array* (unknown size), useful only
+  with pointers for indexing. `[]T` sugar infers size from initializer.
+  Multidimensional arrays supported. Unbounded arrays are unsafe (no bounds
+  checking). Passed **by value** to functions (copies).
+- **Enum:** `enum { Sunday=0, Monday, ... }` — **`@enum` is rejected.** First value
+  must be initialized explicitly. Defines a type usable as an annotation.
+- **Record:** `record { name: string, age: integer }` (also `@record{...}`) → C struct.
+  Supports typed initialization (`{name="Mark", age=20}`), cast initialization
   `(@Person){...}`, ordered-field initialization, and late (zero-init) assignment.
-- **Union:** `@union{ i: int64, f: float64 }` → C union. The user tracks the
-  active variant.
-- **Pointer:** `*integer`, `pointer` (generic, `*void`), `nilptr`. Raw C pointers.
-  **Pointer arithmetic is disallowed** — cast to/from integers explicitly.
-- **Function type:** `function(x: integer, y: integer): integer` — a pointer to
-  a function, convertible to/from generic pointers with explicit casts. Used to
-  store callbacks.
-- **Span:** `span(integer)` — "fat pointer"/slice: `*[0]T` + size. Runtime
-  bounds checking (disableable in release). Safer than raw pointers.
-- **Variant type:** `variant(...)` — a union of types (details in sources).
-- **Optional type:** `T?`.
+- **Union:** `union { i: int64, f: float64 }` (also `@union{...}`) → C union. The
+  user tracks the active variant.
+- **Pointer:** `*integer` or `pointer(integer)` (generic `pointer` = `*void`), plus
+  `nilptr`. **`@pointer(...)` is rejected.** Raw C pointers. **Pointer arithmetic
+  is disallowed** — cast to/from integers explicitly.
+- **Function type:** `function(x: integer, y: integer): integer` — a pointer to a
+  function, convertible to/from generic pointers with explicit casts. Used to store
+  callbacks. **`@function(...)` is rejected.**
+- **Span:** `span(integer)` — "fat pointer"/slice: `*[0]T` + size. Runtime bounds
+  checking (disableable in release). Safer than raw pointers.
+- **Variant type:** `A | B | C` — a union of types (separator is the `|` token).
+- **Optional type:** `facultative(T)` works as an annotation; `T?` is **rejected**.
+  `facultative` cannot appear in return position (§3.5).
 
 ### 3.8 Implicit / explicit conversion
 
@@ -791,6 +801,49 @@ into a single file. It produces declarations, then definitions, then a
 - Implement the GC runtime (or omit it when `nogc`).
 - Honor annotations: `<inline>`, `<cimport>` (declare/import C functions),
   `<cexport>`/`<codename>` (export), `<noinit>`, `<volatile>`, `<close>`.
+
+### 10.5 Clean-room reimplementation map and verification oracles
+
+The reference is written in Lua (§10.1). The clean-room reimplementation is **Nim**
+and its module map is one file per concern:
+
+| Clean-room Nim module | Role | Milestone |
+|-----------------------|------|-----------|
+| `src/astshapes.nim` | frozen AST node-shape contract (zero imports) | M1 |
+| `src/ast.nim` | AST node constructors and tree walkers | M1 |
+| `src/lexer.nim` / `src/parser.nim` | lexer and recursive-descent parser | M1 |
+| `src/span.nim` / `src/errors.nim` / `src/config.nim` / `src/cli.nim` | source spans, diagnostics, config, CLI | M1 infra |
+| `src/types.nim` | `Type`/`TypeKind`/`Attr`/`Conversion`/`Symbol`/`Scope`, builtin types, structural canonicalization | M2 |
+| `src/sema.nim` | pure type rules (`inferUnary`/`inferBinary`/`commonType`/`convert`/`checkCall`/`resolveTypeExpr`) | M2 |
+| `src/analyzer.nim` | `AnalyzerContext`, scope/symbol ops, P3 registration, P4 visitor, polymorphic specialization, `dumpAnalyzed` | M2 |
+| `src/preprocessor.nim` | gradual per-node macro/preprocess pass | M6 |
+| `src/cgen_types.nim` / `src/cemitter.nim` | C-type mapping and emitter helpers (analyzer-free) | M3 |
+| `src/cgen.nim` | AST → C visitor | M3 |
+| `src/compile.nim` | end-to-end driver seam | M4 |
+
+**Verification oracles (both flags on `/usr/bin/nelua`):**
+- `--print-ast` — the untyped AST. The M1 acceptance bar; `tmp/cmp.py` normalizes
+  both dumps to a `(kind, scalar)` token stream and diffs.
+- `--print-analyzed-ast` — the **typed** AST, the real M2→M4 contract. Every node
+  carries an `attr` payload (`type`, `codename`, `lvalue`, `staticstorage`,
+  `vardecl`, `used`, `comptime`, `value`, `base`, `parenttype`, `calleeSym`, …).
+  Conventions the reimplementation must match for the M2 conformance sweep to be
+  a diffable oracle: `BinaryOp` renders as `BinaryOp { left, "op", right }`
+  (operator is a *child string* between the operands, canonical names
+  `add`/`sub`/`lt`/`eq`/`and`/`or`/`unm`/`len`/…); `UnaryOp` as
+  `UnaryOp { "op", right }`; `If` as `If { { cond, block, cond, block, … }, elseblock }`
+  (branch group first); `Call` as `Call { args…, caller }` (caller last); absent
+  optional slots render as `false`.
+
+  Two further notes on the typed-AST oracle:
+  - `nilptr` is its own AST node kind (`Nilptr`), distinct from `nil`. Its literal
+    type is `nilptr` but it is the value assignable to any pointer type; `nil`
+    stays `niltype` and is *not* pointer-compatible.
+  - The live `/usr/bin/nelua --print-analyzed-ast` attaches `pseudoargattrs` and
+    `pseudoargtypes` (pointer-table fields) to **Call** nodes. The M2 conformance
+    corpus in `tmp/m2_corpus/` is an earlier snapshot that omits them, so the
+    14/14 match is against that snapshot; re-snapshotting against the live oracle
+    would require emitting those two fields on calls.
 
 ---
 

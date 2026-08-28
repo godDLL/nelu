@@ -136,16 +136,22 @@ reconfigurable via the preprocessor.
 
 ### 3.3 Composite types
 
+Grammar verified against `/usr/bin/nelua --print-ast` (0.2.0-dev). The `@` prefix
+is accepted on `record` and `union` but **rejected** on `enum`, `pointer`, and
+`function` — those take bare keywords. Bracket `[N]T` works in annotation
+position only, not as a standalone expression.
+
 | Declaration         | C shape              |
 |---------------------|----------------------|
-| `@record{ x: float64, y: float64 }` | `struct { double x; double y; }` |
-| `@union{ i: int64, f: float64 }`    | `union` |
-| `@enum{ A=0, B, C }`                | `enum` (first value must be initialized) |
-| `[N]T`                              | `T arr[N]`, fixed size, passed **by value** |
-| `*T`                                | pointer to T |
+| `record { x: float64, y: float64 }` (also `@record{...}`) | `struct { double x; double y; }` |
+| `union { i: int64, f: float64 }` (also `@union{...}`)    | `union` |
+| `enum { A=0, B, C }` (**`@enum` is rejected**)                | `enum` (first value must be initialized) |
+| `array(T, N)` / `[N]T` (annotation only) | `T arr[N]`, fixed size, passed **by value** |
+| `*T` / `pointer(T)` (**`@pointer` is rejected**) | pointer to T |
 | `span(T)`                           | fat pointer: `*[0]T` + size, runtime bounds-checked |
-| `function(a: int): int`             | function pointer (stores callbacks) |
-| `T?` / `facultative(T)`             | optional (see §3.5) |
+| `function(a: int): int` (**`@function` is rejected**) | function pointer (stores callbacks) |
+| `facultative(T)` (annotation only; `T?` is rejected) | optional (see §3.5) |
+| `A | B | C`                         | variant (union of types) |
 
 Record literals use `(@Person){ name = "Mark", age = 20 }` (typed initialization)
 or ordered-field `{ "Mark", 20 }`.
@@ -213,6 +219,11 @@ loop above a `pos = pos + 1`, the loop ran **5** times and `pos` ended at **5**
 
 - **`nil`** exists but is not the universal "no value" it is in Lua. There is a
   `niltype` (the type of `nil`) for unions/optionals.
+- **`nilptr`** is a separate literal — a pointer-sized nil, its own AST node
+  (`Nilptr`), not the same as `nil`. Its literal type is `nilptr`, but it is the
+  one value assignable to any pointer type: `local p: *integer = nilptr` compiles,
+  while `local p: *integer = nil` is a `niltype` → `pointer` error. Use `nilptr`
+  where Lua/M C would write `NULL`.
 - **`any` is not fully supported.** A function whose return type would deduce
   to a union of types is rejected: *"unsupported 'any' deduced type"*.
   Return a concrete type instead.
@@ -548,9 +559,12 @@ embedded/freestanding use.
 
 ## 10. Quick reference
 
-**Type grammar (infix).** `[N]T` array · `*T` pointer · `span(T)` slice ·
-`@record{...}` / `@union{...}` / `@enum{...}` · `function(a: T, ...): R` function
-pointer · `T?` or `facultative(T)` optional · `type` is the meta-type.
+**Type grammar (infix).** `array(T, N)` / `[N]T` (annotation only) array · `*T`
+/ `pointer(T)` pointer · `span(T)` slice · `record {…}` / `union {…}` (the `@` prefix
+also works on these two) · `enum {…}` (**`@enum` rejected**) ·
+`function(a: T, …): R` function pointer (**`@function` rejected**) ·
+`facultative(T)` optional (`T?` rejected) · `A | B | C` variant · `type` is the
+meta-type.
 
 **Attributes (postfix on declarations).** `<cimport>`, `<cimport 'name'>`,
 `<cinclude '...'>`, `<cexport>`, `<cexport, codename '...'>`, `<nodecl>`,
