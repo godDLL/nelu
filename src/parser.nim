@@ -642,8 +642,85 @@ proc parseReturn*(p: var Parser): Node =
       exprs.add p.parseExpr()
   return newReturn(exprs)
 
+# --- preprocessor directives -----------------------------------------------
+##
+## A `#`-line at statement position is a preprocessor directive, not the `len`
+## unary operator.  The M6 preprocessor pass consumes `nkDirective` nodes, so
+## the parser must emit them; previously `parseUnary` swallowed `#` as `len`
+## and the preprocessor received nothing to act on (backlog: parser directive
+## gap).  An unrecognized `#` (e.g. a bare `#t` length expression) still falls
+## through to `len` via parseUnary.
+
+proc isDirectiveName*(s: string): bool =
+  ## Whether `s` is a recognized preprocessor directive name.
+  case s
+  of "define", "undef", "if", "ifdef", "ifndef", "elif", "else", "endif",
+      "error", "include", "pragma", "line":
+    true
+  else:
+    false
+
+proc restOfLine*(p: Parser): string =
+  ## Capture the raw source text of the current statement line, from the
+  ## current token up to (not including) the terminating newline.  The M6
+  ## preprocessor stores directive bodies as raw strings and re-parses them
+  ## on demand, so we capture text rather than an AST subtree.  A trailing
+  ## line comment (`-- ...`) is trimmed.
+  let start = p.tok.loc.offset
+  let nl = p.source.find('\n', start)
+  let raw = if nl < 0: p.source[start .. ^1] else: p.source[start .. nl - 1]
+  let dc = raw.find("--")
+  if dc >= 0: result = raw[0 .. dc - 1]
+  else: result = raw
+
+proc parseDirective*(p: var Parser): Node =
+  ## Parse a `#`-line at statement position into an `nkDirective` node.
+  ## Dispatched from `parseStatement` only when `#` is followed by a known
+  ## directive name; see `isDirectiveName`.
+  let line = p.tok.loc.line
+  p.expect(tkHash, "expected '#' at start of preprocessor directive")
+  let name = p.advance().value
+  var children: seq[Node] = @[]
+  case name
+  of "define":
+    let macroName = p.advance()
+    children.add newId(macroName.value)
+    if p.check(tkLParen):
+      discard p.advance()
+      while not p.check(tkRParen) and not p.check(tkEof):
+        if p.check(tkComma):
+          discard p.advance()
+        else:
+          children.add newId(p.advance().value)
+      discard p.match(tkRParen)
+    children.add newString(p.restOfLine())
+  of "undef", "ifdef", "ifndef":
+    children.add newId(p.advance().value)
+  of "if", "elif", "error":
+    children.add newString(p.restOfLine())
+  of "include":
+    if p.check(tkString):
+      children.add newString(p.advance().value)
+    else:
+      children.add newString(p.restOfLine())
+  of "else", "endif", "pragma", "line":
+    discard
+  else:
+    discard
+  # Newlines are whitespace and not emitted as tokens, so we cannot stop on a
+  # semicolon: advance past every token that still lies on the directive's
+  # source line.  The directive body was captured as raw text above.
+  while p.pos < p.tokens.len and p.tokens[p.pos].kind != tkEof and
+        p.tokens[p.pos].loc.line == line:
+    inc p.pos
+  return newDirective(name, children)
+
 proc parseStatement*(p: var Parser): Node =
   let t = p.tok
+  if t.kind == tkHash:
+    let nxt = p.peek(1)
+    if (nxt.kind == tkIdent or nxt.kind == tkKeyword) and isDirectiveName(nxt.value):
+      return p.parseDirective()
   if t.kind == tkColonColon:
     p.advance()
     let name = p.advance().value

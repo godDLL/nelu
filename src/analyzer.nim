@@ -20,6 +20,7 @@ import types
 import sema
 import parser
 import span
+import preprocessor
 import strutils
 import tables
 import hashes
@@ -65,6 +66,7 @@ type
     ifHasElse*: Table[Node, bool]
     callRetTypes*: Table[Node, seq[Type]]
     multiRetCall*: Node
+    diags*: seq[string]                  ## preprocessor diagnostics
 
   AnalyzerResult* = object
     root*: Node
@@ -653,7 +655,13 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
   of nkInitList: return analyzeInitList(ctx, node)
   of nkPair: return analyzePair(ctx, node)
   of nkParen:
-    if node.children.len > 0: return analyzeExpr(ctx, node.children[0])
+    if node.children.len > 0:
+      let inner = analyzeExpr(ctx, node.children[0])
+      # The paren node is itself an expression: register its type so codegen
+      # can look it up (cgen reads attrOf for parenthesized initializers).
+      var a = ctx.getAttr(node)
+      a.typ = inner
+      return inner
     return nil
   of nkColonIndex, nkKeyIndex:
     if node.children.len > 0: discard analyzeExpr(ctx, node.children[0])
@@ -1320,23 +1328,56 @@ proc dumpAnaled(ctx: AnalyzerContext, node: Node): string =
 
 # ---- entry point --------------------------------------------------------------
 
+proc countAssignTargets(ctx: var AnalyzerContext, node: Node) =
+  if node == nil: return
+  if node.kind == nkAssign:
+    ctx.assignTargets[node] = 1
+  for c in node.children:
+    countAssignTargets(ctx, c)
+
+proc runM6Pipeline(ast: Node, source = "", path = "t.nelua"): tuple[ctx: AnalyzerContext, root: Node] =
+  ## Replicate `analyze`'s M6 integration path (bootstrap -> preprocess ->
+  ## analyzeBlock -> finalize) so the directive self-test can drive a tree the
+  ## M1 parser cannot emit (it treats `#` as the length operator only).  The
+  ## PreprocessError -> diag fallback mirrors what `analyze` applies.
+  var ast = ast
+  var ctx: AnalyzerContext
+  ctx.source = source
+  ctx.path = path
+  ctx.unitname = computeUnitname(path)
+  bootstrap(ctx)
+  var pctx = newPreprocessContext(source, path)
+  try:
+    ast = preprocess(ast, pctx)
+  except PreprocessError as e:
+    ctx.diags.add e.msg
+  ctx.diags &= pctx.diags
+  countAssignTargets(ctx, ast)
+  let ra = ctx.getAttr(ast)
+  ra.filename = path
+  analyzeBlock(ctx, ast)
+  finalize(ctx)
+  return (ctx, ast)
+
 proc analyze*(source: string, path: string): AnalyzerResult =
   var ctx: AnalyzerContext
   ctx.source = source
   ctx.path = path
   ctx.unitname = computeUnitname(path)
   bootstrap(ctx)
-  let ast = parse(source, path)
+  var ast = parse(source, path)
   if ast == nil:
     result.root = nil; result.ctx = ctx
     return
-  # P3: pre-scan to record nkAssign target counts (corpus uses single-target).
-  proc countAssignTargets(node: Node) =
-    if node == nil: return
-    if node.kind == nkAssign:
-      ctx.assignTargets[node] = 1
-    for c in node.children: countAssignTargets(c)
-  countAssignTargets(ast)
+  # P3: run the M6 preprocessor over the parse tree (identity on directive-free
+  # source) so every pipeline inherits preprocessing with no signature change.
+  var pctx = newPreprocessContext(source, path)
+  try:
+    ast = preprocess(ast, pctx)
+  except PreprocessError as e:
+    ctx.diags.add e.msg
+  ctx.diags &= pctx.diags
+  countAssignTargets(ctx, ast)
   let ra = ctx.getAttr(ast)
   ra.filename = path
   # P4: analyze
@@ -1384,3 +1425,116 @@ when isMainModule:
         echo "  length differs: out=", ol.len, " ref=", rl.len
   echo "----"
   echo matches, "/", total, " matched"
+
+  # ---- M6 preprocessor integration self-test -------------------------------
+  # The M1 parser emits no nkDirective nodes from source text (it treats `#` as
+  # the length operator only), so directive-bearing trees are assembled with the
+  # ast.nim constructors and driven through the same pipeline `analyze` uses.
+  echo "=== M6 preprocessor integration self-test ==="
+
+  proc treeHasId(node: Node, name: string): bool =
+    if node == nil: return false
+    if node.kind == nkId and node.str == name: return true
+    for c in node.children:
+      if treeHasId(c, name): return true
+    return false
+
+  proc treeHasIdDecl(node: Node, name: string): bool =
+    if node == nil: return false
+    if node.kind == nkIdDecl and node.str == name: return true
+    for c in node.children:
+      if treeHasIdDecl(c, name): return true
+    return false
+
+  proc treeHasNumber(node: Node, value: string): bool =
+    if node == nil: return false
+    if node.kind == nkNumber and node.str == value: return true
+    for c in node.children:
+      if treeHasNumber(c, value): return true
+    return false
+
+  # Case 1: function-like macro expansion is reflected in the analyzed AST.
+  block:
+    let defineNode = newDirective("define", @[
+      newId("ADD"), newId("a"), newId("b"),
+      newString("((a)+(b))", "macrobody")])
+    let call = newCall(@[newNumber("1"), newNumber("2")], newId("ADD"))
+    let root = newBlock(@[defineNode,
+      newVarDecl("local", @[newIdDecl("x")], @[call])])
+    let (ctx, ast) = runM6Pipeline(root)
+    let outp = dumpAnaled(ctx, ast)
+    echo "CASE1 dump:\n", outp
+    doAssert not treeHasId(ast, "ADD"), "macro name ADD must be consumed by expansion"
+    doAssert treeHasIdDecl(ast, "x"), "local x must survive preprocessing"
+    doAssert treeHasNumber(ast, "1") and treeHasNumber(ast, "2"),
+      "expansion must carry the argument literals"
+    doAssert outp.contains("BinaryOp"), "value expr must lower to a binary op, not an nkId"
+    echo "CASE1 PASS: ADD(1,2) expanded in the analyzed AST"
+
+  # Case 2: #ifdef / #else / #endif, FOO defined and undefined.
+  block:
+    let branchA = newVarDecl("local", @[newIdDecl("a")], @[newNumber("1")])
+    let branchB = newVarDecl("local", @[newIdDecl("b")], @[newNumber("2")])
+    # 2a: FOO defined via #define FOO -> first branch survives.
+    let rootDef = newBlock(@[
+      newDirective("define", @[newId("FOO"), newString("1")]),
+      newDirective("ifdef", @[newId("FOO")]), branchA,
+      newDirective("else"), branchB,
+      newDirective("endif")])
+    let (_, astDef) = runM6Pipeline(rootDef)
+    doAssert treeHasIdDecl(astDef, "a") and not treeHasIdDecl(astDef, "b"),
+      "FOO defined: first branch must survive"
+    doAssert treeHasNumber(astDef, "1") and not treeHasNumber(astDef, "2"),
+      "FOO defined: first branch value must survive"
+    echo "CASE2a PASS: #ifdef FOO with FOO defined keeps the first branch"
+
+    # 2b: FOO undefined -> second branch survives.
+    let rootUndef = newBlock(@[
+      newDirective("ifdef", @[newId("FOO")]), branchA,
+      newDirective("else"), branchB,
+      newDirective("endif")])
+    let (_, astUndef) = runM6Pipeline(rootUndef)
+    doAssert treeHasIdDecl(astUndef, "b") and not treeHasIdDecl(astUndef, "a"),
+      "FOO undefined: second branch must survive"
+    doAssert treeHasNumber(astUndef, "2") and not treeHasNumber(astUndef, "1"),
+      "FOO undefined: second branch value must survive"
+    echo "CASE2b PASS: #ifdef FOO with FOO undefined keeps the else branch"
+
+  # Case 3: #error surfaces as a diagnostic, not a crash.
+  block:
+    let root = newBlock(@[newDirective("error", @[newString("boom")])])
+    let (ctx, ast) = runM6Pipeline(root)
+    echo "CASE3 diags=", ctx.diags
+    doAssert ctx.diags.len > 0, "#error must surface as a diagnostic"
+    doAssert ctx.diags[0].contains("boom"), "#error message must be preserved"
+    echo "CASE3 PASS: #error boom surfaced as a diagnostic without crashing"
+
+  # Case 4: directive-free source is byte-identical after preprocessing.
+  block:
+    let src = "local x = 1 + 2\nprint(x)\n"
+    let ast1 = parse(src, "t.nelua")
+    let d1 = dump(ast1)
+    var pctx = newPreprocessContext(src, "t.nelua")
+    let ast2 = preprocess(ast1, pctx)
+    let d2 = dump(ast2)
+    doAssert d1 == d2, "directive-free source must be byte-identical after preprocess"
+    doAssert pctx.diags.len == 0, "directive-free source must produce no diags"
+    # Full analyze pipeline: with-preprocess vs a manually constructed
+    # no-preprocess baseline must also be byte-identical.
+    let resWith = analyze(src, "t.nelua")
+    let outWith = dumpAnaled(resWith.ctx, resWith.root)
+    var ctx2: AnalyzerContext
+    ctx2.source = src; ctx2.path = "t.nelua"
+    ctx2.unitname = computeUnitname("t.nelua")
+    bootstrap(ctx2)
+    let astB = parse(src, "t.nelua")
+    countAssignTargets(ctx2, astB)
+    let ra = ctx2.getAttr(astB); ra.filename = "t.nelua"
+    analyzeBlock(ctx2, astB)
+    finalize(ctx2)
+    let outWithout = dumpAnaled(ctx2, astB)
+    doAssert outWith == outWithout,
+      "preprocessing must not change the analyzed AST for directive-free source"
+    echo "CASE4 PASS: directive-free program byte-identical after preprocessing"
+
+  echo "M6 PREPROCESSOR INTEGRATION SELF-TEST PASS"

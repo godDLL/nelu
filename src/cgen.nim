@@ -852,6 +852,11 @@ proc genC*(source: string, path: string, release = false, nochecks = false): str
   let res = analyze(source, path)
   if res.root == nil:
     return "/* nelua: unable to analyze " & path & " (parse error, see stderr) */"
+  # Surface M6 preprocessor diagnostics through the existing nelua stub channel
+  # (compile.nim detects `cSource.startsWith("/* nelua")`), so the driver and
+  # `--print-analyzed-ast` inherit them with no signature change.
+  if res.ctx.diags.len > 0:
+    return "/* nelua: " & res.ctx.diags.join("; ") & " */"
 
   var s: Gen
   s.ctx = res.ctx
@@ -905,6 +910,7 @@ proc genC*(source: string, path: string, release = false, nochecks = false): str
   let defers = s.deferStack[^1]
   for i in countdown(defers.len - 1, 0):
     s.genBody(defers[i].children[0])
+  s.line "return 0;"
   s.pop
   s.line "}"
   s.line "int main(int argc, char** argv) { (void)argc; (void)argv; return nelua_main(); }"
@@ -964,5 +970,12 @@ when isMainModule:
         echo "CORPUS FAIL: " & f
         echo outp
     echo "corpus: ", corpusOk, "/", corpusTotal, " emitted nelua_main without crashing"
+
+  # Regression: the folded analyze-failure stub channel (which the M6 preprocessor
+  # diags also feed) still works end to end.
+  let badSrc = "local x =\n"
+  let badOut = genC(badSrc, "bad.nelua")
+  doAssert badOut.startsWith("/* nelua"), "parse failure must surface as a nelua stub"
+  echo "FAILPATH PASS: parse failure surfaces as a nelua stub"
 
   echo "cgen.nim SELF-TEST PASS"
