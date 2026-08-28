@@ -862,7 +862,26 @@ For a clean-room Nim reimplementation that aims to match **and go beyond**
 Nelua, the following are natural extensions. Each preserves the "compiles to C"
 model and the Lua-flavored syntax.
 
-### 11.1 Language-level
+### 11.0 Post-reimplementation direction ("Nelu")
+
+The reimplementation is a means, not the end product. Once the clean-room
+0.2.0-dev parity target is met, development continues as **our own branch of
+Nelua** — referred to internally as **Nelu** — rather than stopping. The Nelu
+track has three kinds of incoming work:
+
+1. **Syntactic sugar** — small ergonomic additions on top of the reimplementation
+   that keep the Lua-flavored syntax and the C-output model.
+2. **Missing features** — everything 0.2.0-dev lacks that §11.1–§11.3 enumerates
+   (tables, full `any`, exceptions, closures, generators, pattern matching, …).
+   These are *inbound* to Nelu, not speculative wishlist.
+3. **Bug fixes** — anything found while driving real programs through the
+   reimplementation, including regressions against the oracle `/usr/bin/nelua`.
+
+When scoping a milestone, treat the 0.2.0-dev parity ceiling as a floor for
+Nelu, not a boundary: a §11 item that is cheap and unambiguous while its
+underlying milestone is being built is fair game to fold in — but only with the
+user's say-so for anything beyond the current milestone, and never at the cost of
+racing another agent's file or the regression gate.
 
 1. **Tables / hash maps as a first-class runtime type.** Nelua's roadmap lists
    tables as not-yet-implemented. A `table(K, V)` (or `anytable`) with the usual
