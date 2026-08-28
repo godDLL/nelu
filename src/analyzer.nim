@@ -586,11 +586,6 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
     return pointerType(nil)
   of nkId:
     let nm = node.str
-    if nm == "nilptr":
-      var a = ctx.getAttr(node)
-      a.comptime = true
-      a.typ = BuiltinTypes["nilptr"]
-      return pointerType(nil)
     let sym = ctx.lookup(nm)
     if sym != nil:
       ctx.symOf[node] = sym
@@ -1068,8 +1063,6 @@ proc finalize*(ctx: var AnalyzerContext) =
 proc quoteStr(s: string): string = "\"" & s & "\""
 
 proc kindName(node: Node): string =
-  if node.kind == nkId and node.str == "nilptr":
-    return "Nilptr"
   let s = $node.kind
   if s.len > 2 and s[0] == 'n' and s[1] == 'k': s[2 ..< s.len]
   else: s
@@ -1212,8 +1205,7 @@ proc dumpAnaled*(ctx: var AnalyzerContext, node: Node, indent = 0): string =
     else:
       allFields.add((false, "false"))
   of nkId:
-    if node.str != "nilptr":
-      allFields.add((false, quoteStr(node.str)))
+    allFields.add((false, quoteStr(node.str)))
   of nkNumber:
     allFields.add((false, quoteStr(node.str)))
   of nkString:

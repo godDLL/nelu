@@ -324,6 +324,9 @@ proc parsePrimary*(p: var Parser): Node =
     of "nil":
       p.advance()
       return newNil()
+    of "nilptr":
+      p.advance()
+      return newNilptr()
     of "function":
       return p.parseFunctionLiteral()
     else:
@@ -925,4 +928,14 @@ when isMainModule:
       echo "FAIL: ", repr(src)
     else:
       echo "OK: ", repr(src)
+
+  # nilptr keyword must emit nkNilptr, not nkId "nilptr"
+  let npAst = parse("local p = nilptr")
+  doAssert npAst != nil, "parse(local p = nilptr) failed"
+  let npVar = npAst.children[0]
+  doAssert npVar.kind == nkVarDecl, "expected nkVarDecl, got " & $npVar.kind
+  let npInit = npVar.children[^1]
+  doAssert npInit.kind == nkNilptr, "nilptr must parse as nkNilptr, got " & $npInit.kind
+  doAssert npInit.kind != nkId, "nilptr must NOT be nkId"
+  echo "nilptr parses as nkNilptr OK"
   echo "parser.nim self-test done"

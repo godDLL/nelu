@@ -41,7 +41,7 @@ type
 const
   Keywords* = [
     "and", "break", "do", "else", "elseif", "end", "false", "for",
-    "function", "goto", "if", "in", "local", "nil", "not", "or",
+    "function", "goto", "if", "in", "local", "nil", "nilptr", "not", "or",
     "repeat", "return", "then", "true", "until", "while",
     "switch", "cond", "defer", "continue", "global", "require",
     "import", "macro", "record", "union", "enum", "varargs",
