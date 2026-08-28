@@ -83,10 +83,10 @@ int64_t nlmod(int64_t a, int64_t b);
 double nlpow(double a, double b);
 int64_t nllen(nlstring s);
 void nlclose(void* p);
-const nltype nltype_of_int64;
-const nltype nltype_of_double;
-const nltype nltype_of_bool;
-const nltype nltype_of_string;
+extern const nltype nltype_of_int64;
+extern const nltype nltype_of_double;
+extern const nltype nltype_of_bool;
+extern const nltype nltype_of_string;
 """
 
 # ---------------------------------------------------------------------------

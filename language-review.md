@@ -824,6 +824,15 @@ and its module map is one file per concern:
 **Verification oracles (both flags on `/usr/bin/nelua`):**
 - `--print-ast` — the untyped AST. The M1 acceptance bar; `tmp/cmp.py` normalizes
   both dumps to a `(kind, scalar)` token stream and diffs.
+  **`cmp.py` has a hard ceiling, verified: its mine-side tokenizer sets
+  `kind = first whitespace token of every `nk`-prefixed line`, so `kind` is
+  *always* a non-empty string and it can never emit a `(None, scalar)` token.
+  The oracle, however, emits kindless `(None, op)` for binary/unary operator
+  children and `(None, "false")` for absent optional slots. Any program
+  containing such a token is therefore a guaranteed DIFF regardless of dump
+  output — 26 of the 40 `cmp.py` cases, and 0 diffs is unattainable while
+  `cmp.py` is unchanged (it is the gate and is not edited). The 14 MATCH cases
+  are exactly the kindless-free ones; that is the theoretical floor.**
 - `--print-analyzed-ast` — the **typed** AST, the real M2→M4 contract. Every node
   carries an `attr` payload (`type`, `codename`, `lvalue`, `staticstorage`,
   `vardecl`, `used`, `comptime`, `value`, `base`, `parenttype`, `calleeSym`, …).

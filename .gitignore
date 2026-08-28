@@ -26,3 +26,4 @@ nim_cache/
 /src/sema
 /src/typedesc
 /src/types
+/src/main
