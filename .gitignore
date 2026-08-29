@@ -11,6 +11,13 @@
 /*.bin
 /*.c
 
+# Upstream Nelua launcher scripts (we ship our own under src/; these are the
+# reference compiler's entry points and must not be published as ours).
+/nelua
+/nelua.bat
+/nelua-lua
+/nelua.lua
+
 # Nim compile artefacts from `nim c -r --path:src src/<module>.nim` self-tests.
 nim_cache/
 *.o

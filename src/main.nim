@@ -110,6 +110,10 @@ proc main(): int =
         try:
           if fileExists(builtBin):
             copyFile(builtBin, c.output)
+            # `copyFile` writes the destination with default 0o644 permissions,
+            # which strips the executable bit gcc set on the real binary. Copy
+            # the source's permissions back so `-o name` yields a runnable file.
+            setFilePermissions(c.output, getFilePermissions(builtBin))
           else:
             stderr.writeLine("nelua: no binary was produced to copy to '" & c.output & "'")
             failed = true

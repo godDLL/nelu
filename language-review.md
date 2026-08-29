@@ -885,6 +885,12 @@ model and the Lua-flavored syntax.
 
 ### 11.0 Post-reimplementation direction ("Nelu")
 
+> **At the start of the day we want a source we can work with, and this is what
+> we're doing right now. BUT at the end of the day, we want a language we can work
+> with, that runs our existing code but also fixes the things Nelua left unfixed,
+> fills the gaps it did not support yet, and can be 2.0-ed — can be extended beyond
+> by design and by source-code editing in a well-adapted toolchain.**
+
 The reimplementation is a means, not the end product. Once the clean-room
 0.2.0-dev parity target is met, development continues as **our own branch of
 Nelua** — referred to internally as **Nelu** — rather than stopping. The Nelu
@@ -903,6 +909,38 @@ Nelu, not a boundary: a §11 item that is cheap and unambiguous while its
 underlying milestone is being built is fair game to fold in — but only with the
 user's say-so for anything beyond the current milestone, and never at the cost of
 racing another agent's file or the regression gate.
+
+### 11.0b Nelu design docs and design discipline
+
+The parked oracle-behavior specs in `tmp/` are **Nelu design inputs**, not just probe
+outputs. They are labelled as such in the filename (`-design` suffix) and referenced
+here so they are not lost when `tmp/` is eventually reviewed and pruned:
+
+- `tmp/auto_oracle-behavior-design.md` — what `auto` means (monomorphization to a
+  concrete type, *not* `any`).
+- `tmp/auto_widening-behavior-design.md` — where `auto` flows and where it is rejected
+  (e.g. `local x: auto; print(x)` is rejected; `print(id(5))` is accepted).
+- `tmp/table_oracle-behavior-design.md` — table semantics, and that the C backend
+  rejects tables outright (so C table support is beyond-oracle, not parity).
+
+**Design discipline.** Two principles govern how Nelu changes the compiler:
+
+1. **Simplicity is structural, not accidental.** Nelua's toolchain is small because
+   the language constrains it: one backend (C), no JIT, no multiple IRs, no heavy
+   macro machinery, a type system regular enough that analysis is a straightforward
+   walk. You cannot get the second without the first. When Nelu adds machinery, the
+   question is always whether it buys a concrete language idea.
+
+2. **Parity first, then invert.** While the reimplementation still has to *match* the
+   oracle (the `regress.py` gate), the internals are a copy. Once parity is met the
+   relationship inverts: the internals become a design we choose to fit the language,
+   and the language design can then change with sugar and new ideas. The order matters
+   — language idea → spec → internals change → language idea works. D1
+   (monomorphization for `auto`) is already this pattern.
+
+3. **Measure before tuning.** A compiler that compiles itself quickly and emits
+   readable C is the product; feature count is not. Change internals only where it
+   buys a concrete language idea, and keep the pipeline thin.
 
 1. **Tables / hash maps as a first-class runtime type.** Nelua's roadmap lists
    tables as not-yet-implemented. A `table(K, V)` (or `anytable`) with the usual
@@ -965,6 +1003,34 @@ racing another agent's file or the regression gate.
     checking** (a type-safe `string.format`).
 22. **Test harness and tooling** integrated (`nelua --test`), plus a formatter,
     linter, and debugger protocol (DAP) integration.
+
+### 11.4 Vendored third-party libraries → tracked upstream
+
+Several third-party libraries are currently **vendored** (copied) into `src/`.
+For Nelu the plan is to convert the pullable ones into **git submodules** so
+`git submodule update --remote` tracks upstream and we can diff our forks
+against it. Mapping (verified against each source's own header):
+
+| In `src/` | Origin | Upstream | Pullable |
+|---|---|---|---|
+| `lua/` (35 files) | **Lua 5.3**, Lua.org/PUC-Rio | `github.com/lua/lua` (official git mirror) | yes |
+| `lfs.c` | **LuaFileSystem**, Kepler Project 2003–2020 | `github.com/keplerproject/luafilesystem` | yes |
+| `rpmalloc/` | **rpmalloc**, Mattias Jansson, public domain | `github.com/mjansson/rpmalloc` | yes |
+| `lpeglabel/` | lpeg (Lua.org/PUC-Rio) with **Nelua's "label" fork** | base lpeg has no canonical github | partial — pull the base, keep our fork on top |
+| `sys.c` | no header; reads as Nelua's own sys Lua lib | — | no, ours |
+| `luainit.c/.h/.lua` | Nelua's init layer | — | no, ours |
+| `lualib/nelua/` | Nelua's lua stdlib | — | no, ours |
+
+Three clean pulls (lua, lfs, rpmalloc), one partial (lpeg), three owned by us.
+
+### 11.5 Publish setup (Nelu → GitHub)
+
+Remote configured for push via the deploy key: `git@github.com:godDLL/nelu.git`
+(`git remote set-url origin git@github.com:godDLL/nelu.git` — SSH, because the
+deploy key only authenticates over SSH).
+
+Deploy key for pushing: `~/.ssh/id_ed25519_nelu` (no passphrase, comment
+`nelua-nelu@cleanroom`). Uploaded to the repo on GitHub.
 
 ---
 
