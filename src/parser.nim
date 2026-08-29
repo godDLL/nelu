@@ -718,12 +718,37 @@ proc parseDirective*(p: var Parser): Node =
     inc p.pos
   return newDirective(name, children)
 
+proc parsePreprocess*(p: var Parser): Node =
+  ## Parse a `##`-line at statement position into an `nkPreprocess` node.
+  ##
+  ## The node's `str` is the raw source text of the line *after* `##` (e.g.
+  ## `## x = 2` -> `nkPreprocess " x = 2"`), exactly the shape the reference
+  ## interpreter's `--print-ast` emits.  The M6 preprocessor feeds this text to
+  ## the embedded Lua interpreter at compile time.  A trailing line comment
+  ## (`-- ...`) is trimmed, matching `restOfLine`.
+  let hashTok = p.advance()             ## consume `##`
+  let start = hashTok.loc.offset + 2    ## text right after the `##` chars
+  let nl = p.source.find('\n', start)
+  let raw = if nl < 0: p.source[start .. ^1] else: p.source[start .. nl - 1]
+  let dc = raw.find("--")
+  let body = if dc >= 0: raw[0 .. dc - 1] else: raw
+  let line = hashTok.loc.line
+  # Newlines are whitespace and not emitted as tokens, so we cannot stop on a
+  # semicolon: advance past every token that still lies on this line.  The
+  # body was captured as raw text above.
+  while p.pos < p.tokens.len and p.tokens[p.pos].kind != tkEof and
+        p.tokens[p.pos].loc.line == line:
+    inc p.pos
+  return Node(kind: nkPreprocess, str: body)
+
 proc parseStatement*(p: var Parser): Node =
   let t = p.tok
   if t.kind == tkHash:
     let nxt = p.peek(1)
     if (nxt.kind == tkIdent or nxt.kind == tkKeyword) and isDirectiveName(nxt.value):
       return p.parseDirective()
+  if t.kind == tkDoubleHash:
+    return p.parsePreprocess()
   if t.kind == tkColonColon:
     p.advance()
     let name = p.advance().value
@@ -763,6 +788,18 @@ proc parseStatement*(p: var Parser): Node =
       p.advance()
       let name = p.advance().value
       return newGoto(name)
+    of "require":
+      ## `require '<module>'` is a statement that loads another module.  The
+      ## reference lowers it to a call on the builtin `require` (`require("name")`),
+      ## so we emit an `nkCall` here -- the same shape `--print-ast` shows for the
+      ## oracle -- and let the driver (compile.nim) do the resolution/compilation.
+      p.advance()
+      let mt = p.tok
+      if mt.kind != tkString and mt.kind != tkLString:
+        raise p.error("expected string module name after 'require'")
+      discard p.advance()
+      let lit = if mt.kind == tkLString: "lstring" else: "string"
+      return newCall(@[newString(mt.value, lit)], newId("require"))
     else:
       discard
   let first = p.parseExpr()
