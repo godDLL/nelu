@@ -1,5 +1,6 @@
 # Scratch: throwaway probes, build artefacts, captures. Never tracked.
 /tmp/
+/AGENT.md
 
 # Top-level scratch probes from ad-hoc verification.
 /div.nelua
@@ -34,3 +35,5 @@ nim_cache/
 /src/typedesc
 /src/types
 /src/main
+# Consolidated design docs + survey probes (scratch, not tracked).
+/plan/
