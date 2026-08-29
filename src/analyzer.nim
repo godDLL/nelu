@@ -67,10 +67,15 @@ type
     callRetTypes*: Table[Node, seq[Type]]
     multiRetCall*: Node
     diags*: seq[string]                  ## preprocessor diagnostics
+    specials*: seq[Node]                 ## D1: monomorphized auto-param FuncDefs
+    specTable*: Table[string, Node]      ## D1: dedup key -> specialized FuncDef
+    specCounter*: Table[string, int]     ## D1: per-function specialization counter
+    specInFlight*: Table[string, bool]   ## D1: re-entrancy guard (recursion)
 
   AnalyzerResult* = object
     root*: Node
     ctx*: AnalyzerContext
+    specials*: seq[Node]                 ## D1: monomorphized auto-param FuncDefs
 
 # ---- unitname -----------------------------------------------------------------
 
@@ -239,6 +244,9 @@ proc bootstrap*(ctx: var AnalyzerContext) =
   printSym.codename = "nelua_print"
   printSym.isConst = true
   printSym.used = true
+  ctx.specTable = initTable[string, Node]()
+  ctx.specCounter = initTable[string, int]()
+  ctx.specInFlight = initTable[string, bool]()
 
 # ---- literal typing ------------------------------------------------------------
 
@@ -374,6 +382,11 @@ proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Ty
 proc analyzeBlock(ctx: var AnalyzerContext, node: Node)
 proc dumpAnaled*(ctx: var AnalyzerContext, node: Node, indent = 0): string
 proc dumpExprString(ctx: var AnalyzerContext, node: Node): string
+proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string = "")
+proc isPolymorphic(ftype: Type): bool
+proc allConcrete(argTypes: seq[Type]): bool
+proc specializeCall(ctx: var AnalyzerContext, calleeSym: Symbol,
+                    argTypes: seq[Type]): (string, Type, string)
 
 proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
   let caller = node.children[^1]
@@ -386,6 +399,7 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
     if t != nil: argTypes.add t
   var calleeSym: Symbol = nil
   var calleeType: Type = nil
+  var ca = ctx.getAttr(caller)
   if caller.kind == nkId:
     let nm = caller.str
     let sym = ctx.lookup(nm)
@@ -396,6 +410,15 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
       for i, at in argTypes:
         calleeType.args.add if at != nil: at else: BuiltinTypes["any"]
       calleeType.returns.add BuiltinTypes["void"]
+    elif sym != nil and sym.kind != skBuiltin and sym.kind != skFunc and sym.typ != nil and sym.typ.kind == tkFunction:
+      # Indirect call through a function-typed value (a param/variable/closure
+      # holding a function pointer).  The callee has no `skFunc` symbol, so it
+      # falls through to the generic branch below unless we bind its type here.
+      calleeType = sym.typ
+      ctx.symOf[caller] = sym
+      sym.used = true
+      ca.typ = calleeType
+      ca.used = true
     elif sym != nil and sym.kind == skFunc:
       calleeSym = sym
       calleeType = sym.typ
@@ -407,7 +430,6 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
         calleeType.args.add if at != nil: at else: BuiltinTypes["any"]
       calleeType.returns.add BuiltinTypes["void"]
   # caller Id attr
-  var ca = ctx.getAttr(caller)
   if calleeSym != nil and calleeSym.kind == skBuiltin:
     ctx.symOf[caller] = calleeSym
     calleeSym.used = true
@@ -466,6 +488,32 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
       a.typ = calleeType.returns[0]
     else:
       a.typ = BuiltinTypes["void"]
+    # D1: monomorphize a polymorphic (`auto`-param) callee at the call site.
+    # Only specialize when every argument type is concrete -- a call inside
+    # another polymorphic function's body (e.g. `id(x)` inside `twice`) has an
+    # `auto` argument at definition time and must wait until the outer function
+    # is itself specialized, or we'd emit a bogus `id(auto)` specialization.
+    if calleeSym.kind == skFunc and isPolymorphic(calleeSym.typ) and
+       allConcrete(argTypes):
+      let (specCodename, specFtype, specFtypeStr) =
+        specializeCall(ctx, calleeSym, argTypes)
+      ca.codename = specCodename
+      ca.typ = specFtype
+      d.calleeTypeStr = specFtypeStr
+      d.calleeSymStr = calleeSym.name & ": " & specFtypeStr
+      if specFtype.returns.len >= 1:
+        a.typ = specFtype.returns[0]
+      else:
+        a.typ = BuiltinTypes["void"]
+    else:
+      # Polymorphic `skFunc` callee but with an `auto` argument: defer; the
+      # call's type is the callee's (still-auto) return type, fixed when the
+      # outer function is specialized.  Non-skFunc callees (builtins, unknown)
+      # already have their type set above and are left untouched.
+      if calleeSym.kind == skFunc and calleeSym.typ.returns.len >= 1:
+        a.typ = calleeSym.typ.returns[0]
+      elif calleeSym.kind == skFunc:
+        a.typ = BuiltinTypes["void"]
   else:
     d.calleeSymStr = caller.str & ": " & ftypeStr
     d.calleeTypeStr = ftypeStr
@@ -721,9 +769,183 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
     else:
       discard analyzeExpr(ctx, init)
 
-proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node) =
+# ---- D1: polymorphic (`auto`-param) function monomorphization ----------------
+##
+## The reference oracle monomorphizes: one `<file>_<func>_<N>` C function is
+## emitted per distinct argument-type signature at each call site.  This pass
+## builds those specializations during `analyze` (one per distinct call signature,
+## deduplicated, in first-call order) and records them on `AnalyzerResult.specials`
+## for `cgen` to emit.  Uncalled `auto` functions emit nothing (dead-code elim).
+##
+## Out of scope (oracle rejects / crashes on all of these, so we do not handle
+## them): recursion through `auto`, the `any` type, `*auto`, variadic `auto`,
+## `auto` defaults, `function(x: auto): auto` value types, and the `## if`
+## compile-time type-query meta-programming used by the reference corpus.
+
+proc copyNode(n: Node): Node =
+  ## Structural deep copy.  Attr/dump payloads live in `ctx.attrOf`/`ctx.dumpOf`
+  ## keyed by node identity, so a specialized body must be a fresh tree.
+  if n == nil: return nil
+  let c = Node(kind: n.kind, str: n.str, litType: n.litType, boolVal: n.boolVal,
+               isFunction: n.isFunction, isCall: n.isCall,
+               isUnpackable: n.isUnpackable, isIndex: n.isIndex,
+               isOperator: n.isOperator)
+  for child in n.children:
+    c.children.add copyNode(child)
+  return c
+
+proc typeToExpr(t: Type): Node =
+  ## Render a concrete `Type` back into a type-expression node that
+  ## `resolveTypeExpr`/`analyzeTypeExpr` will resolve to the same Type object
+  ## (canonicalization dedups structurally-equal composites, so this round-trips).
+  if t == nil: return newId("any")
+  case t.kind:
+    of tkRecord:
+      var fields: seq[Node] = @[]
+      for f in t.fields:
+        fields.add newRecordField(if f.name.len > 0: f.name else: "f", typeToExpr(f.typ))
+      return newRecordType(fields)
+    of tkUnion:
+      var fields: seq[Node] = @[]
+      for f in t.fields:
+        fields.add newUnionField(if f.name.len > 0: f.name else: "x", typeToExpr(f.typ))
+      return newUnionType(fields)
+    of tkEnum:
+      var fields: seq[Node] = @[]
+      for ef in t.enumFields:
+        fields.add newEnumField(ef.name)
+      return newEnumType(fields)
+    of tkFunction:
+      var args: seq[Node] = @[]
+      for i, a in t.args:
+        args.add newIdDecl("a" & $(i + 1), typeToExpr(a))
+      var rets: seq[Node] = @[]
+      for r in t.returns:
+        rets.add typeToExpr(r)
+      return newFuncType(args, rets)
+    of tkOptional:
+      return newOptionalType(typeToExpr(t.subtype))
+    of tkPointer:
+      return newPointerType(typeToExpr(t.subtype))
+    of tkArray:
+      return newArrayType(typeToExpr(t.subtype))
+    else:
+      return newId(if t.name != "": t.name else: "any")
+
+proc isPolymorphic(ftype: Type): bool =
+  ## A function type is polymorphic if any param or return is the `auto` kind.
+  if ftype == nil or ftype.kind != tkFunction: return false
+  for a in ftype.args:
+    if a != nil and a.kind == tkAuto: return true
+  for r in ftype.returns:
+    if r != nil and r.kind == tkAuto: return true
+  return false
+
+proc allConcrete(argTypes: seq[Type]): bool =
+  ## True when no argument type is the `auto` placeholder -- i.e. the call is
+  ## ready to be monomorphized now rather than deferred to an outer
+  ## specialization pass.
+  for t in argTypes:
+    if t != nil and t.kind == tkAuto: return false
+  return true
+
+proc specKey(funcName: string, argTypes: seq[Type]): string =
+  ## Dedup key: function name + the concrete argument-type signature.
+  var parts: seq[string] = @[]
+  for t in argTypes:
+    parts.add if t == nil: "nil" else: neluaTypeName(t)
+  return funcName & "|" & parts.join(",")
+
+proc findFirstReturn(node: Node): Node =
+  ## First `nkReturn` in source order (textual, control-flow independent -- the
+  ## oracle fixes the `auto` return from the first textual return).
+  if node == nil: return nil
+  if node.kind == nkReturn: return node
+  for c in node.children:
+    let r = findFirstReturn(c)
+    if r != nil: return r
+  return nil
+
+proc deduceAutoReturns(ctx: var AnalyzerContext, node: Node, ftype: Type,
+                       isSpecialization: bool) =
+  ## Replace every `auto` return with the concrete type of the first textual
+  ## return in the body.  A specialization (an instantiated `auto` function)
+  ## whose body never returns is rejected, matching the oracle; the polymorphic
+  ## original is left alone so uncalled `auto` functions are dead-code-eliminated
+  ## instead of erroring.
+  let body = node.children[^1]
+  for i in 0 ..< ftype.returns.len:
+    let rt = ftype.returns[i]
+    if rt != nil and rt.kind == tkAuto:
+      let ret = findFirstReturn(body)
+      if ret != nil and ret.children.len == 1:
+        let ct = ctx.attrOf.getOrDefault(ret.children[0]).typ
+        ftype.returns[i] = if ct != nil: ct else: BuiltinTypes["void"]
+      else:
+        # No return, or a multi-value return -- both are rejected for an
+        # instantiated `auto` function (the oracle: "never returns" /
+        # "invalid return expression at index 2").
+        if isSpecialization:
+          ctx.diags.add(if ret == nil or ret.children.len < 2:
+                          "a function return is set to 'auto', but the function never returns"
+                        else: "invalid return expression at index 2")
+        ftype.returns[i] = BuiltinTypes["void"]
+
+proc specializeCall(ctx: var AnalyzerContext, calleeSym: Symbol,
+                    argTypes: seq[Type]): (string, Type, string) =
+  ## Build (or reuse) the monomorphized specialization of `calleeSym` for the
+  ## given concrete argument types.  Returns (specCodename, specFtype,
+  ## specFtypeStr) so the call site can point at the specialized C function.
+  let origNode = calleeSym.node            ## the FuncDef (set by analyzeFuncDef)
+  let origFtype = calleeSym.typ
+  let funcName = origNode.children[0].str
+  let key = specKey(funcName, argTypes)
+  if ctx.specTable.hasKey(key):
+    let sp = ctx.specTable[key]
+    let sa = ctx.attrOf.getOrDefault(sp)
+    return (sa.codename, sa.typ, ctx.funcTypeStrOf.getOrDefault(sp))
+  # Recursion through `auto` is unsupported (the oracle crashes on it); bail out
+  # rather than specializing infinitely, leaving the call pointing at the
+  # polymorphic original (which cgen drops, so the program is broken either way).
+  if ctx.specInFlight.hasKey(funcName):
+    return (calleeSym.codename, calleeSym.typ, ctx.funcTypeStrOf.getOrDefault(origNode))
+  ctx.specInFlight[funcName] = true
+  # Build the concrete argument types, inferring each `auto` param independently.
+  var concrete: seq[Type] = @[]
+  for i, p in origFtype.args:
+    if p != nil and p.kind == tkAuto and i < argTypes.len and argTypes[i] != nil:
+      concrete.add argTypes[i]
+    else:
+      concrete.add if p != nil: p else: BuiltinTypes["any"]
+  # Per-function counter, assigned in first-call order, starting at 1.
+  let n = ctx.specCounter.getOrDefault(funcName) + 1
+  ctx.specCounter[funcName] = n
+  let specName = ctx.unitname & "_" & funcName & "_" & $n
+  let specNode = copyNode(origNode)
+  specNode.children[0].str = specName
+  # Patch each `auto` param's type expression to its concrete type.
+  var ai = 1
+  while ai < specNode.children.len and specNode.children[ai].kind == nkIdDecl:
+    let idx = ai - 1
+    if idx < concrete.len and idx < origFtype.args.len and
+       origFtype.args[idx].kind == tkAuto and concrete[idx].kind != tkAuto:
+      if specNode.children[ai].children.len > 0:
+        specNode.children[ai].children[0] = typeToExpr(concrete[idx])
+    inc ai
+  # `auto` return type expressions are left as `auto`; analyzeFuncDef deduces
+  # the concrete return from the body after analysis.
+  analyzeFuncDef(ctx, specNode, specName)
+  ctx.specInFlight.del(funcName)
+  ctx.specTable[key] = specNode
+  ctx.specials.add specNode
+  let sa = ctx.attrOf.getOrDefault(specNode)
+  return (sa.codename, sa.typ, ctx.funcTypeStrOf.getOrDefault(specNode))
+
+proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string = "") =
   let nameNode = node.children[0]
   let nameStr = nameNode.str
+  let codename = if specCodename != "": specCodename else: ctx.unitname & "_" & nameStr
+  let symName = if specCodename != "": specCodename else: nameStr
   var args: seq[Node] = @[]
   var returns: seq[Node] = @[]
   var i = 1
@@ -744,42 +966,30 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node) =
     let rt = analyzeTypeExpr(ctx, r, false)
     if rt != nil: ftype.returns.add rt
   if ftype.returns.len == 0: ftype.returns.add BuiltinTypes["void"]
-  var rparts: seq[string] = @[]
-  for r in ftype.returns: rparts.add neluaTypeName(r)
-  let rs = if rparts.len == 0: "void"
-           elif rparts.len == 1: rparts[0]
-           else: "(" & rparts.join(", ") & ")"
-  let ftypeStr = "function(" & aparts.join(", ") & "): " & rs
-  ctx.funcTypeStrOf[nameNode] = ftypeStr
-  ctx.funcTypeStrOf[node] = ftypeStr
   var a = ctx.getAttr(node)
-  a.codename = ctx.unitname & "_" & nameStr
+  a.codename = codename
   a.comptime = true
   a.lvalue = true
   a.name = nameStr
   a.staticstorage = true
   a.typ = ftype
   a.used = true
-  a.value = nameStr & ": " & ftypeStr
   var na = ctx.getAttr(nameNode)
-  na.codename = a.codename
+  na.codename = codename
   na.comptime = true
   na.lvalue = true
   na.name = nameStr
   na.staticstorage = true
   na.typ = ftype
   na.used = true
-  na.value = a.value
   var nd = ctx.getDump(node)
-  nd.ftype = ftypeStr
   nd.funcdeclared = true
   nd.funcdefined = true
   var nd2 = ctx.getDump(nameNode)
-  nd2.ftype = ftypeStr
   nd2.funcdeclared = true
   nd2.funcdefined = true
-  let sym = register(ctx, nameStr, skFunc, ftype, nameNode)
-  sym.codename = ctx.unitname & "_" & nameStr
+  let sym = register(ctx, symName, skFunc, ftype, node)
+  sym.codename = codename
   sym.used = true
   ctx.symOf[nameNode] = sym
   ctx.symOf[node] = sym
@@ -799,6 +1009,20 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node) =
       discard analyzeTypeExpr(ctx, arg.children[0], false)
   analyzeBlock(ctx, body)
   ctx.scope = saved
+  # D1: an `auto` return is fixed by the first textual return in the body.
+  deduceAutoReturns(ctx, node, ftype, specCodename != "")
+  var rparts: seq[string] = @[]
+  for r in ftype.returns: rparts.add neluaTypeName(r)
+  let rs = if rparts.len == 0: "void"
+           elif rparts.len == 1: rparts[0]
+           else: "(" & rparts.join(", ") & ")"
+  let ftypeStr = "function(" & aparts.join(", ") & "): " & rs
+  ctx.funcTypeStrOf[nameNode] = ftypeStr
+  ctx.funcTypeStrOf[node] = ftypeStr
+  a.value = nameStr & ": " & ftypeStr
+  na.value = a.value
+  nd.ftype = ftypeStr
+  nd2.ftype = ftypeStr
 
 proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Type =
   if node == nil: return nil
@@ -1375,7 +1599,7 @@ proc analyze*(source: string, path: string): AnalyzerResult =
   # P4: analyze
   analyzeBlock(ctx, ast)
   finalize(ctx)
-  result.root = ast; result.ctx = ctx
+  result.root = ast; result.ctx = ctx; result.specials = ctx.specials
 
 when isMainModule:
   if paramCount() >= 1 and paramStr(1).endsWith(".nelua"):

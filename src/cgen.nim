@@ -49,6 +49,7 @@ const RUNTIME_C = """
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdarg.h>
+#include <string.h>
 
 typedef struct { const char* data; size_t size; } nlstring;
 typedef void* nilptr;
@@ -73,8 +74,17 @@ void nlcheck_float_overflow(double x, const char* what);
 #endif
 
 /* Builtin / runtime helpers.  Definitions live in src/runtime.c; here only the
-   declarations so the emitted translation unit links. */
-void nelua_print(...);
+   declarations so the emitted translation unit links.  C7: nelua_print is gone;
+   each typed helper takes exactly one argument, so the C generator can emit one
+   call per argument and the argument order is guaranteed correct. */
+void nelua_print_int64(int64_t v);
+void nelua_print_uint64(uint64_t v);
+void nelua_print_double(double d);
+void nelua_print_string(nlstring s);
+void nelua_print_bool(int b);
+void nelua_print_nil(void);
+void nelua_print_sep(void);
+void nelua_print_newline(void);
 nlstring nlstr(const char* s);
 nlstring nlstring_concat(nlstring a, nlstring b);
 void nlstring_free(nlstring* s);
@@ -314,7 +324,7 @@ proc genExpr(s: var Gen, node: Node): string =
   of nkBoolean:
     return cBoolLit(node.boolVal)
   of nkNil:
-    return "(void)0"
+    return "NULL"
   of nkNilptr:
     return cNilptrLit()
   of nkVarargs:
@@ -436,6 +446,36 @@ proc genCall(s: var Gen, node: Node): string =
   case caller.kind
   of nkId:
     let cn = if ca != nil and ca.codename != "": ca.codename else: cIdent(caller.str)
+    if cn == "nelua_print":
+      ## C7: emit one typed call per argument instead of a single variadic
+      ## call.  Coercion is ignored -- each argument is passed to its typed
+      ## helper unchanged, so mixed-type argument order is preserved exactly.
+      ##
+      ## Every emitted line carries its own trailing semicolon except the final
+      ## `nelua_print_newline()`, which has none: genStmt appends exactly one `;`
+      ## to the whole returned string, so the newline helper receives it.
+      var lines: seq[string] = @[]
+      for i, arg in args:
+        let aes = s.genExpr(arg)
+        let at = s.ctx.attrOf.getOrDefault(arg).typ
+        var helper = "nelua_print_nil"
+        var passArg = false
+        if at != nil:
+          case at.kind
+          of tkInteger: helper = "nelua_print_int64"; passArg = true
+          of tkUinteger: helper = "nelua_print_uint64"; passArg = true
+          of tkNumber, tkFloat32, tkFloat64: helper = "nelua_print_double"; passArg = true
+          of tkString: helper = "nelua_print_string"; passArg = true
+          of tkBoolean: helper = "nelua_print_bool"; passArg = true
+          of tkNilptr, tkPointer: helper = "nelua_print_nil"; passArg = false
+          else: helper = "nelua_print_nil"; passArg = false
+        let call = if passArg: helper & "(" & aes & ")" else: helper & "()"
+        if i > 0: lines.add "nelua_print_sep(); " & call & ";"
+        else: lines.add call & ";"
+      if lines.len == 0:
+        return "nelua_print_newline()"
+      lines.add "nelua_print_newline()"
+      return lines.join("\n")
     return cn & "(" & argstrs.join(", ") & ")"
   of nkDotIndex:
     let cexpr = s.genExpr(caller)
@@ -527,6 +567,16 @@ proc genInitList(s: var Gen, node: Node): string =
       else:
         parts.add s.genExpr(c)
     return "(union " & tag & "){" & parts.join(", ") & "}"
+  if ptype != nil and ptype.kind == tkArray:
+    let et = ptype.subtype
+    var parts: seq[string] = @[]
+    for c in node.children:
+      let valc = if c.kind == nkPair: c.children[0] else: c
+      let val = s.genExpr(valc)
+      let va = s.ctx.attrOf.getOrDefault(valc)
+      let vt = if va != nil: va.typ else: nil
+      parts.add s.coerce(val, vt, et)
+    return "(" & cType(ptype) & "){" & parts.join(", ") & "}"
   return "/*initlist*/"
 
 # ---------------------------------------------------------------------------
@@ -581,6 +631,62 @@ proc genBody(s: var Gen, node: Node) =
   s.pop
   s.line "}"
 
+proc cDecl(t: Type, name: string): string =
+  ## Render a C *declaration* of `name` with type `t`.
+  ## `cType` renders an array as `elemtype[size]`, which is right for compound
+  ## literals and indexing but wrong for a declarator -- C requires the bound
+  ## after the identifier (`int64_t x[3]`, never `int64_t[3] x`).  This helper
+  ## re-renders array types in declaration position.
+  if t == nil:
+    return "void " & name
+  if name == "":
+    return cType(t)
+  case t.kind
+  of tkArray:
+    let inner = cDecl(t.subtype, name)
+    let sz = if t.arraySize <= 0: "[]" else: "[" & $t.arraySize & "]"
+    return inner & sz
+  of tkFunction:
+    # Function-pointer declarator: the identifier nests INSIDE the parens,
+    # `ret (*name)(params)` -- `cType` spells the value form `ret (*)(params)`
+    # which is invalid in declaration position.
+    let ret = if t.returns.len == 0: "void"
+              elif t.returns.len == 1: cType(t.returns[0])
+              else: multiRetTag(t.returns)
+    var params: seq[string] = @[]
+    for a in t.args:
+      params.add if a == nil: "void" else: cType(a)
+    let paramStr = if params.len == 0: "void" else: params.join(", ")
+    return ret & " (*" & name & ")(" & paramStr & ")"
+  of tkNiltype:
+    # `void` is not a valid parameter/variable type in C (a void parameter must
+    # be the sole, unnamed argument).  Render niltype as nilptr so it is
+    # addressable and assignable; the nil literal is emitted as NULL (see nkNil).
+    return "nilptr " & name
+  else:
+    return cType(t) & " " & name
+
+proc cFuncDecl(retType: Type, name: string, paramStr: string): string =
+  ## Render a C function declarator for a function whose return type is
+  ## `retType`.  A plain return type spells `RET name(params)`; a function-pointer
+  ## return type nests as `RET (*name(params))(RETPARAMS)` (the only valid C form).
+  if retType != nil and retType.kind == tkFunction:
+    let r = retType
+    var rparams: seq[string] = @[]
+    for a in r.args:
+      rparams.add if a == nil: "void" else: cType(a)
+    let rp = if rparams.len == 0: "void" else: rparams.join(", ")
+    if r.returns.len == 0:
+      return "void (*" & name & "(" & paramStr & "))(" & rp & ")"
+    elif r.returns.len == 1 and r.returns[0].kind == tkFunction:
+      return cType(r) & " (*" & name & "(" & paramStr & "))(" & rp & ")"
+    else:
+      return cType(r.returns[0]) & " (*" & name & "(" & paramStr & "))(" & rp & ")"
+  let ret = if retType == nil: "void"
+          elif retType.kind == tkNiltype: "nilptr"
+          else: cType(retType)
+  return ret & " " & name & "(" & paramStr & ")"
+
 proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool) =
   var iddecls: seq[Node] = @[]
   var inits: seq[Node] = @[]
@@ -598,7 +704,7 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool) =
       if isGlobal: qual &= "static "
       if a != nil and a.isConst: qual &= "const "
       if a != nil and a.isVolatile: qual &= "volatile "
-      s.line qual & cType(vtype) & " " & cn & ";"
+      s.line qual & cDecl(vtype, cn) & ";"
     return
 
   # initializers, emitted as assignments
@@ -622,7 +728,15 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool) =
     let cn = if a != nil and a.codename != "": a.codename else: cIdent(iddecl.str)
     let vt = if a != nil: a.typ else: nil
     let it = s.ctx.attrOf.getOrDefault(init).typ
-    s.line cn & " = " & s.coerce(s.genExpr(init), it, vt) & ";"
+    if vt != nil and vt.kind == tkArray and init.kind == nkInitList:
+      ## C does not allow assigning to an array variable, so an array
+      ## init-list is lowered to a memcpy from the compound literal (which
+      ## also zero-fills any trailing elements, matching C initializer
+      ## semantics).  See `genInitList` for the compound-literal rendering.
+      let cl = s.genExpr(init)
+      s.line "memcpy(" & cn & ", " & cl & ", sizeof(" & cn & "));"
+    else:
+      s.line cn & " = " & s.coerce(s.genExpr(init), it, vt) & ";"
 
 proc genAssign(s: var Gen, node: Node) =
   let ntargets = s.ctx.assignTargets.getOrDefault(node, 1)
@@ -692,10 +806,53 @@ proc genForNum(s: var Gen, node: Node) =
   s.pop
   s.line "}"
 
+proc registerLoopVar(s: var Gen, node: Node, name, cn: string, et: Type) =
+  ## Walk `node` and attach an attr to every `nkId` reference of the loop
+  ## variable `name` so the statement/expression lowers below do not dereference
+  ## a nil attr.  The analyzer leaves `nkForIn` loop variables unannotated, so
+  ## cgen has to patch the body itself (see `genForIn`).
+  if node == nil: return
+  if node.kind == nkId and node.str == name:
+    var a = Attr()
+    a.typ = et
+    a.lvalue = true
+    a.name = name
+    a.codename = cn
+    s.ctx.attrOf[node] = a
+  for c in node.children:
+    s.registerLoopVar(c, name, cn, et)
+
 proc genForIn(s: var Gen, node: Node) =
   let body = node.children[^1]
-  s.line "/* for-in iterator lowering not implemented in this slice */"
-  s.genBody(body)
+  # Leading `nkIdDecl` children are the loop variables; everything after them
+  # (up to the body) is the iterable list.  This slice only supports a single
+  # loop variable over a single array iterable.
+  var nIddecls = 0
+  while nIddecls < node.children.len - 1 and node.children[nIddecls].kind == nkIdDecl:
+    inc nIddecls
+  if nIddecls != 1:
+    s.line "/* for-in iterator lowering not implemented in this slice */"
+    s.genBody(body)
+    return
+  let iddecl = node.children[0]
+  let iterable = node.children[nIddecls]
+  let ia = s.ctx.attrOf.getOrDefault(iddecl)
+  let cn = if ia != nil and ia.codename != "": ia.codename else: cIdent(iddecl.str)
+  let it = s.ctx.attrOf.getOrDefault(iterable).typ
+  if it != nil and it.kind == tkArray:
+    let et = it.subtype
+    let arrStr = s.genExpr(iterable)
+    let len = it.arraySize
+    s.registerLoopVar(body, iddecl.str, cn, et)
+    s.line "for (int64_t __i = 0; __i < " & $len & "; __i += 1) {"
+    s.push
+    s.line cType(et) & " " & cn & " = " & arrStr & "[__i];"
+    s.genScope(body)
+    s.pop
+    s.line "}"
+  else:
+    s.line "/* for-in iterator lowering not implemented in this slice */"
+    s.genBody(body)
 
 proc genReturn(s: var Gen, node: Node) =
   let rets = s.currentReturns
@@ -792,19 +949,22 @@ proc genForwardDecl(s: var Gen, node: Node) =
   let ftype = if a != nil: a.typ else: nil
   if ftype == nil or ftype.kind != tkFunction: return
   let codename = if a != nil and a.codename != "": a.codename else: cIdent(node.children[0].str)
-  var retStr: string
-  if ftype.returns.len == 0: retStr = "void"
-  elif ftype.returns.len == 1: retStr = cType(ftype.returns[0])
-  else: retStr = multiRetTag(ftype.returns)
   let args = funcArgList(node)
   var params: seq[string] = @[]
   for j, arg in args:
     let at = if j < ftype.args.len: ftype.args[j] else: BuiltinTypes["any"]
-    params.add cType(at) & " " & cIdent(arg.str)
+    params.add cDecl(at, cIdent(arg.str))
+  let paramStr = params.join(", ")
+  var decl: string
+  if ftype.returns.len > 1:
+    decl = multiRetTag(ftype.returns) & " " & codename & "(" & paramStr & ")"
+  else:
+    let retType = if ftype.returns.len == 1: ftype.returns[0] else: nil
+    decl = cFuncDecl(retType, codename, paramStr)
   if a != nil and a.cimport:
-    s.line "extern " & retStr & " " & codename & "(" & params.join(", ") & ");"
+    s.line "extern " & decl & ";"
     return
-  s.line retStr & " " & codename & "(" & params.join(", ") & ");"
+  s.line decl & ";"
 
 proc genFuncDef(s: var Gen, node: Node) =
   let a = s.ctx.attrOf.getOrDefault(node)
@@ -814,23 +974,25 @@ proc genFuncDef(s: var Gen, node: Node) =
   let cinclude = if a != nil: a.cinclude else: ""
   if cinclude.len > 0:
     s.line "#include \"" & cinclude & "\""
-  var retStr: string
-  if ftype.returns.len == 0: retStr = "void"
-  elif ftype.returns.len == 1: retStr = cType(ftype.returns[0])
-  else: retStr = multiRetTag(ftype.returns)
   let args = funcArgList(node)
   var params: seq[string] = @[]
   for j, arg in args:
     let at = if j < ftype.args.len: ftype.args[j] else: BuiltinTypes["any"]
-    params.add cType(at) & " " & cIdent(arg.str)
+    params.add cDecl(at, cIdent(arg.str))
   let paramStr = params.join(", ")
+  var decl: string
+  if ftype.returns.len > 1:
+    decl = multiRetTag(ftype.returns) & " " & codename & "(" & paramStr & ")"
+  else:
+    let retType = if ftype.returns.len == 1: ftype.returns[0] else: nil
+    decl = cFuncDecl(retType, codename, paramStr)
   var attrs = ""
   if a != nil and a.isInline: attrs &= "__attribute__((always_inline)) inline "
   if a != nil and a.cexport: attrs &= "__attribute__((visibility(\"default\"))) "
   if a != nil and a.cimport:
-    s.line "extern " & retStr & " " & codename & "(" & paramStr & ");"
+    s.line "extern " & decl & ";"
     return
-  s.line attrs & retStr & " " & codename & "(" & paramStr & ") {"
+  s.line attrs & decl & " {"
   s.push
   let oldInFunc = s.inFunc
   let oldReturns = s.currentReturns
@@ -866,6 +1028,27 @@ proc genC*(source: string, path: string, release = false, nochecks = false): str
   s.multiRetSeen = initTable[string, bool]()
   s.collectNode(res.root)
   collectFuncDefs(res.root, s.funcDefs)
+
+  # D1: a polymorphic (`auto`-param) FuncDef has no direct C form -- it is
+  # replaced by its monomorphized specializations.  Drop the originals and append
+  # the specializations the analyzer produced (uncalled auto functions have no
+  # specialization, so they emit nothing: dead-code elimination).
+  proc hasAutoParam(t: Type): bool =
+    if t == nil or t.kind != tkFunction: return false
+    for a in t.args:
+      if a != nil and a.kind == tkAuto: return true
+    for r in t.returns:
+      if r != nil and r.kind == tkAuto: return true
+    return false
+  var filtered: seq[Node] = @[]
+  for fd in s.funcDefs:
+    let fa = res.ctx.attrOf.getOrDefault(fd)
+    if hasAutoParam(if fa != nil: fa.typ else: nil): discard
+    else: filtered.add fd
+  s.funcDefs = filtered
+  for spec in res.specials:
+    s.collectNode(spec)
+    s.funcDefs.add spec
 
   # 1. includes / runtime preamble
   s.g(RUNTIME_C)
