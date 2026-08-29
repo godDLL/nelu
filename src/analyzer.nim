@@ -69,6 +69,7 @@ type
     multiRetCall*: Node
     diags*: seq[string]                  ## preprocessor diagnostics
     specials*: seq[Node]                 ## D1: monomorphized auto-param FuncDefs
+    loopDepth*: int                     ## nesting depth of loops (for break/continue validation)
     specTable*: Table[string, Node]      ## D1: dedup key -> specialized FuncDef
     specCounter*: Table[string, int]     ## D1: per-function specialization counter
     specInFlight*: Table[string, bool]   ## D1: re-entrancy guard (recursion)
@@ -1269,7 +1270,9 @@ proc analyzeIf(ctx: var AnalyzerContext, node: Node) =
 
 proc analyzeWhile(ctx: var AnalyzerContext, node: Node) =
   discard analyzeExpr(ctx, node.children[0])
+  inc ctx.loopDepth
   analyzeBlock(ctx, node.children[1])
+  dec ctx.loopDepth
 
 proc foldIntValue(ctx: var AnalyzerContext, node: Node): int =
   if node.kind == nkNumber:
@@ -1313,14 +1316,18 @@ proc analyzeForNum(ctx: var AnalyzerContext, node: Node) =
     ctx.getDump(node).fixedstep = "1"
   let saved = ctx.scope
   ctx.scope = newScope(saved, iddecl.str)
+  inc ctx.loopDepth
   analyzeBlock(ctx, body)
+  dec ctx.loopDepth
   ctx.scope = saved
 
 proc analyzeForIn(ctx: var AnalyzerContext, node: Node) =
   let body = node.children[^1]
   for i in 0 ..< node.children.len - 1:
     discard analyzeExpr(ctx, node.children[i])
+  inc ctx.loopDepth
   analyzeBlock(ctx, body)
+  dec ctx.loopDepth
 
 proc analyzeDefer(ctx: var AnalyzerContext, node: Node) =
   analyzeBlock(ctx, node.children[0])
@@ -1329,7 +1336,9 @@ proc analyzeDo(ctx: var AnalyzerContext, node: Node) =
   analyzeBlock(ctx, node.children[0])
 
 proc analyzeRepeat(ctx: var AnalyzerContext, node: Node) =
+  inc ctx.loopDepth
   analyzeBlock(ctx, node.children[0])
+  dec ctx.loopDepth
 
 proc analyzeAssign(ctx: var AnalyzerContext, node: Node) =
   let ntargets = ctx.assignTargets.getOrDefault(node, 1)
@@ -1405,7 +1414,12 @@ proc analyzeStmt(ctx: var AnalyzerContext, node: Node) =
   of nkAssign: analyzeAssign(ctx, node)
   of nkReturn: analyzeReturn(ctx, node)
   of nkSwitch: analyzeSwitch(ctx, node)
-  of nkBreak, nkContinue, nkLabel, nkGoto: discard
+  of nkBreak, nkContinue:
+    if ctx.loopDepth == 0:
+      let what = if node.kind == nkBreak: "`break`" else: "`continue`"
+      ctx.diags.add ctx.path & ": error: " & what & " statement is not inside a loop"
+    discard
+  of nkLabel, nkGoto: discard
   of nkCall: discard analyzeCall(ctx, node)
   else: discard analyzeExpr(ctx, node)
 
