@@ -95,6 +95,11 @@ proc lexNumber(s: string, start: int): (string, int) =
       inc i
       if i < s.len and (s[i] == '+' or s[i] == '-'): inc i
       while i < s.len and isDigit(s[i]): inc i
+  # numeric literal suffix, e.g. _u32, _f32, _cchar (the analyzer rejects
+  # unknown suffixes with "literal suffix '...' is undefined for numbers").
+  if i < s.len and s[i] == '_' and i + 1 < s.len and isIdentStart(s[i+1]):
+    inc i
+    while i < s.len and isIdentChar(s[i]): inc i
   return (s[start ..< i], i)
 
 proc isLongBracket(s: string, i: int): int =

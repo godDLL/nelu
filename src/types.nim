@@ -78,6 +78,7 @@ type
     mutate*: bool
     refed*: bool
     vardecl*: bool
+    value*: string           ## comptime literal value (set for <comptime> vardecls)
 
   Scope* = ref object
     name*: string
@@ -561,6 +562,38 @@ proc initBuiltinTypes() =
   BuiltinTypes["type"]     = makePrimitive("type",     "type",    tkMetatype)
 
 initBuiltinTypes()
+
+## Named fixed-size primitives (int8/int32/uint32/float32/...) that the oracle
+## accepts as type annotations and as numeric-literal suffixes. These are NOT
+## in `BuiltinTypes` (which only holds the bootstrap nicknames); the analyzer
+## resolves a type-annotation identifier against this table as a fallback.
+var PrimitiveTypes*: Table[string, Type]
+
+proc initPrimitiveTypes() =
+  PrimitiveTypes = initTable[string, Type]()
+  PrimitiveTypes["int8"]   = makePrimitive("int8",   "int8",   tkInt8,   true)
+  PrimitiveTypes["int16"]  = makePrimitive("int16",  "int16",  tkInt16,  true)
+  PrimitiveTypes["int32"]  = makePrimitive("int32",  "int32",  tkInt32,  true)
+  PrimitiveTypes["int64"]  = makePrimitive("int64",  "int64",  tkInt64,  true)
+  PrimitiveTypes["int128"] = makePrimitive("int128", "int128", tkInt128, true)
+  PrimitiveTypes["uint8"]  = makePrimitive("uint8",  "uint8",  tkUint8)
+  PrimitiveTypes["uint16"] = makePrimitive("uint16", "uint16", tkUint16)
+  PrimitiveTypes["uint32"] = makePrimitive("uint32", "uint32", tkUint32)
+  PrimitiveTypes["uint64"] = makePrimitive("uint64", "uint64", tkUint64)
+  PrimitiveTypes["uint128"]= makePrimitive("uint128","uint128",tkUint128)
+  PrimitiveTypes["float32"]= makePrimitive("float32","float32",tkFloat32)
+  PrimitiveTypes["float64"]= makePrimitive("float64","float64",tkFloat64)
+  PrimitiveTypes["float128"]=makePrimitive("float128","float128",tkFloat128)
+  PrimitiveTypes["clonglong"]  = makePrimitive("clonglong",  "clonglong",  tkClonglong,  true)
+  PrimitiveTypes["culonglong"] = makePrimitive("culonglong", "culonglong", tkCulonglong)
+  PrimitiveTypes["cptrdiff"]  = makePrimitive("cptrdiff",  "cptrdiff",  tkCptrdiff)
+  PrimitiveTypes["csize"]     = makePrimitive("csize",     "csize",     tkCsize)
+  PrimitiveTypes["cvalist"]   = makePrimitive("cvalist",   "cvalist",   tkCvalist)
+  PrimitiveTypes["cvarargs"]  = makePrimitive("cvarargs",  "cvarargs",  tkCvarargs)
+  PrimitiveTypes["cstring"]   = makePrimitive("cstring",   "cstring",   tkCstring)
+
+initBuiltinTypes()
+initPrimitiveTypes()
 
 let GenericPointer* = pointerType(BuiltinTypes["any"])
 

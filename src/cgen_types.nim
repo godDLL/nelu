@@ -125,7 +125,7 @@ proc cType*(t: Type): string =
     of tkAuto:
       "auto"
     of tkAny:
-      "void*"
+      "void"
     of tkVarargs, tkVaranys:
       "..."
     of tkPointer:
@@ -269,7 +269,7 @@ when isMainModule:
   doAssert cType(niltype)  == "void",      cType(niltype)
   doAssert cType(voidT)    == "void",      cType(voidT)
   doAssert cType(auto)     == "auto",      cType(auto)
-  doAssert cType(anyT)     == "void*",     cType(anyT)
+  doAssert cType(anyT)     == "void",      cType(anyT)
   doAssert cType(nilptr)   == "nilptr",    cType(nilptr)
 
   doAssert cType(int8)   == "int8_t",       cType(int8)

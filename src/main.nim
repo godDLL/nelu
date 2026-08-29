@@ -14,6 +14,12 @@ import parser
 import analyzer
 import osproc
 
+# Nim's `quit` clamps the exit code to the `int8` range on POSIX (anything > 127
+# becomes 127), which breaks exit-code propagation for programs that abort
+# (the oracle reports 255) or os.exit with a high code.  Bypass it with a direct
+# C `exit` import so the full 0..255 range is preserved.
+proc cexit(code: cint) {.importc: "exit", header: "<stdlib.h>", noreturn.}
+
 const VersionString = "Nelua-in-Nim 0.2.0-dev (clean-room reimplementation)"
 
 proc printHelp() =
@@ -63,6 +69,7 @@ proc main(): int =
     return 1
 
   var failed = false
+  var exitCode = 0
   for input in positionals:
     var source: string
     try:
@@ -104,8 +111,8 @@ proc main(): int =
       echo dumpAnaled(ar.ctx, ar.root)
     else:
       # Default / -b --binary: compile() already emitted and ran the binary.
-      # Honor -o by copying the produced binary to the requested name.
       if c.output.len > 0:
+        # Honor -o by copying the produced binary to the requested name.
         let builtBin = getCurrentDir() / "tmp" / analyzer.computeUnitname(input)
         try:
           if fileExists(builtBin):
@@ -120,8 +127,13 @@ proc main(): int =
         except OSError, IOError:
           stderr.writeLine("nelua: cannot copy binary to '" & c.output & "': " & getCurrentExceptionMsg())
           failed = true
+      else:
+        # No -o: the oracle compiles and runs, printing the program's stdout
+        # and propagating its exit code. compile() already captured both.
+        stdout.write(res.output)
+        exitCode = res.exitCode
 
-  return if failed: 1 else: 0
+  return if failed: 1 elif exitCode != 0: exitCode else: 0
 
 when isMainModule:
   if paramCount() == 0:
@@ -173,4 +185,4 @@ when isMainModule:
 
     quit(if failed: 1 else: 0)
   else:
-    quit(main())
+    cexit(cint(main()))

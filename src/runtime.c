@@ -120,12 +120,15 @@ void nelua_print_uint64(uint64_t v) {
 }
 
 void nelua_print_double(double d) {
-  /* Lua formats integral doubles without a decimal point. */
-  if (d == floor(d) && isfinite(d) && fabs(d) < 1e15) {
-    fprintf(nl_out, "%.0f", d);
-  } else {
-    fprintf(nl_out, "%g", d);
+  /* Lua's tostring for a float: %.14g, then append ".0" when the result has
+     no decimal point and no exponent, so integral values read "1.0" not "1". */
+  char buf[64];
+  snprintf(buf, sizeof buf, "%.14g", d);
+  if (strchr(buf, '.') == NULL && strchr(buf, 'e') == NULL &&
+      strchr(buf, 'E') == NULL) {
+    strcat(buf, ".0");
   }
+  fputs(buf, nl_out);
 }
 
 void nelua_print_string(nlstring s) {
@@ -143,7 +146,7 @@ void nelua_print_nil(void) {
 }
 
 void nelua_print_sep(void) {
-  fputc(' ', nl_out);
+  fputc('\t', nl_out);
 }
 
 void nelua_print_newline(void) {

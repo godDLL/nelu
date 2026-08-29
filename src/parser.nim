@@ -196,6 +196,20 @@ proc parseType*(p: var Parser): Node =
     else:
       p.advance()
       base = newId(t.value)
+  of tkLBrack:
+    # [size]type -- fixed-size array type. Multiple [...] prefix the base type,
+    # associating right-to-left: [H][W]boolean == [H]([W]boolean).
+    var sizes: seq[Node] = @[]
+    while p.check(tkLBrack):
+      p.advance()
+      sizes.add p.parseExpr()
+      p.expect(tkRBrack, "expected ']' after array size")
+    let sub = p.parseType()
+    if sub == nil:
+      raise ParseError(loc: t.loc, msg: "expected type after ']'")
+    base = sub
+    for sz in countdown(sizes.len - 1, 0):
+      base = newArrayType(base, sizes[sz])
   else:
     return nil
   if base == nil: return nil
@@ -515,12 +529,86 @@ proc parseBlock*(p: var Parser): Node =
     if p.match(tkSemi): discard
   return newBlock(stmts)
 
+proc canStartExpr*(p: Parser): bool =
+  ## Whether the current token may begin an expression.  Used by the switch
+  ## parser to distinguish a genuine case value from a clause terminator such
+  ## as `else`/`then`/`end`, which the reference reports as "expected
+  ## expressions" rather than "unexpected keyword".
+  let t = p.tok
+  case t.kind
+  of tkNumber, tkString, tkLString, tkIdent, tkDots, tkLParen, tkLBrace, tkAt,
+      tkMinus, tkHash, tkBxor:
+    return true
+  of tkKeyword:
+    return t.value in ["true", "false", "nil", "nilptr", "function", "not"]
+  else:
+    return false
+
+proc parseSwitchBlock*(p: var Parser): Node =
+  ## Parse a `switch` case body (or the `else` body): a statement list that
+  ## stops at the next clause -- `case` (an identifier, not a keyword), `else`
+  ## or `end` -- in addition to the usual block terminators.  `case` is not a
+  ## keyword, so `parseBlock` would not stop for it and would misparse the
+  ## following clause as part of this body.
+  var stmts: seq[Node] = @[]
+  while true:
+    let t = p.tok
+    if t.kind == tkEof: break
+    if t.kind == tkKeyword and (t.value == "end" or t.value == "else" or t.value == "elseif" or t.value == "until"):
+      break
+    if t.kind == tkIdent and t.value == "case": break
+    if t.kind == tkColonColon: break
+    let s = p.parseStatement()
+    if s != nil: stmts.add s
+    if p.match(tkSemi): discard
+  return newBlock(stmts)
+
+proc parseSwitch*(p: var Parser): Node =
+  ## Parse `switch <expr> { case <iv> [, <iv> ...] then <block> ; [else <block>] } end`.
+  ## Produces an `nkSwitch` (`Switch(expr, cases: seq[(seq[Node], Node)], elseBlock)`)
+  ## via the existing `newSwitch` constructor; the flat child layout is
+  ## `[subject, case1-vals..., case1-body, case2-vals..., ..., [else-body]]`,
+  ## which the analyzer/codegen/dump traverse by scanning for `nkBlock`
+  ## boundaries (case bodies are always Blocks; case values never are).
+  p.expectKeyword("switch", "expected 'switch' keyword")
+  let expr = p.parseExpr()
+  var cases: seq[tuple[exprs: seq[Node], body: Node]] = @[]
+  var elseBlock: Node = nil
+  while not p.checkKeyword("end"):
+    if p.tok.kind == tkIdent and p.tok.value == "case":
+      discard p.advance()
+      if not p.canStartExpr():
+        raise p.error("expected expressions")
+      var exprs: seq[Node] = @[]
+      exprs.add p.parseExpr()
+      while p.match(tkComma):
+        if not p.canStartExpr():
+          raise p.error("expected expressions")
+        exprs.add p.parseExpr()
+      p.expectKeyword("then", "expected `then` keyword to begin a statement block")
+      let body = p.parseSwitchBlock()
+      cases.add (exprs, body)
+    elif p.checkKeyword("else"):
+      discard p.advance()
+      if elseBlock != nil:
+        raise p.error("multiple `else` clauses in `switch` statement")
+      elseBlock = p.parseSwitchBlock()
+    else:
+      raise p.error("expected `case` keyword in `switch` statement")
+  if cases.len == 0 and elseBlock == nil:
+    raise p.error("expected `case` keyword in `switch` statement")
+  discard p.advance()  # consume `end`
+  return newSwitch(expr, cases, elseBlock)
+
 proc parseIdDecl*(p: var Parser): Node =
   let name = p.advance().value
   var typeexpr: Node = nil
   if p.match(tkColon):
     typeexpr = p.parseOptionalType()
-  return newIdDecl(name, typeexpr)
+  var children: seq[Node] = @[]
+  if typeexpr != nil: children.add typeexpr
+  children &= p.parseAnnotations()
+  return Node(kind: nkIdDecl, str: name, children: children)
 
 proc parseFuncName*(p: var Parser): Node =
   var name = newId(p.advance().value)
@@ -617,12 +705,23 @@ proc parseFor*(p: var Parser): Node =
     p.advance()
     let beginv = p.parseExpr()
     p.expect(tkComma, "expected ',' in for range")
-    let endv = p.parseExpr()
+    var cmpop = ""
+    var endv: Node
+    if p.check(tkLt):
+      ## `<expr>` exclusive upper bound: the loop runs while `i < expr`
+      ## (default inclusive `<=` becomes `lt`).  The oracle writes the
+      ## bound as `<N` (no closing `>`) in for-position, so this is a bare
+      ## `tkLt` token, not a `tkAnnotation`.
+      discard p.advance()
+      cmpop = "lt"
+      endv = p.parseExpr()
+    else:
+      endv = p.parseExpr()
     let step = if p.match(tkComma): p.parseExpr() else: nil
     p.expectKeyword("do", "expected 'do' in for")
     let body = p.parseBlock()
     p.expectKeyword("end", "expected 'end' to close for")
-    return newForNum(newIdDecl(first), beginv, "", endv, step, body)
+    return newForNum(newIdDecl(first), beginv, cmpop, endv, step, body)
   var iddecls: seq[Node] = @[newIdDecl(first)]
   while p.match(tkComma):
     iddecls.add newIdDecl(p.advance().value)
@@ -800,8 +899,16 @@ proc parseStatement*(p: var Parser): Node =
       discard p.advance()
       let lit = if mt.kind == tkLString: "lstring" else: "string"
       return newCall(@[newString(mt.value, lit)], newId("require"))
+    of "switch":
+      return p.parseSwitch()
     else:
       discard
+  if t.kind == tkIdent and t.value == "case":
+    ## `case` has no meaning outside a `switch`; the reference reports it as
+    ## "unexpected syntax".  This check fires only at genuine statement
+    ## position -- `parseSwitch` consumes `case` clauses itself and
+    ## `parseSwitchBlock` stops before handing the body to `parseStatement`.
+    raise p.error("unexpected syntax")
   let first = p.parseExpr()
   if p.check(tkComma) or p.check(tkAssign):
     var targets: seq[Node] = @[first]
@@ -869,6 +976,48 @@ proc unaryOpName*(op: string): string =
   of "not": "not"
   of "~": "bnot"
   else: op
+
+proc dump*(n: Node, indent = 0): string
+
+proc dumpSwitchChildren(n: Node, indent: int): string =
+  ## Render an `nkSwitch`'s children in the reference's nested shape:
+  ##
+  ##   Switch { <subject>, { { <case-vals> }, <case-body Block>, ... [, <else Block>] } }
+  ##
+  ## The flat `newSwitch` layout is `[subject, vals..., body, vals..., body,
+  ## ..., [else-body]]`; case bodies are always `nkBlock` and case values are
+  ## never blocks, so scanning on `nkBlock` boundaries recovers the clauses.
+  let fldInd = "  ".repeat(indent)        ## cases-container indent
+  let valInd = "  ".repeat(indent + 1)    ## value-list / body indent
+  var s = ""
+  s.add dump(n.children[0], indent)
+  s.add ",\n"
+  s.add fldInd & "{\n"
+  var i = 1
+  let nc = n.children.len
+  var first = true
+  while i < nc:
+    var vals: seq[Node] = @[]
+    while i < nc and n.children[i].kind != nkBlock:
+      vals.add n.children[i]
+      inc i
+    if i >= nc: break
+    let body = n.children[i]
+    inc i
+    if not first: s.add ",\n"
+    first = false
+    if vals.len > 0:
+      s.add valInd & "{\n"
+      for vi, v in vals:
+        s.add dump(v, indent + 2)
+        if vi < vals.len - 1: s.add ",\n"
+        else: s.add "\n"
+      s.add valInd & "},\n"
+      s.add dump(body, indent + 1)
+    else:
+      s.add dump(body, indent + 1)
+  s.add fldInd & "}\n"
+  return s
 
 proc dump*(n: Node, indent = 0): string =
   if n == nil: return "(nil)"
@@ -940,6 +1089,8 @@ proc dump*(n: Node, indent = 0): string =
     s.add dump(n.children[0], indent + 1)
     s.add "  ".repeat(indent + 1) & "nkBinaryOp " & binaryOpName(n.str) & "\n"
     s.add dump(n.children[1], indent + 1)
+  elif n.kind == nkSwitch:
+    s.add dumpSwitchChildren(n, indent + 1)
   else:
     for c in n.children:
       s.add dump(c, indent + 1)

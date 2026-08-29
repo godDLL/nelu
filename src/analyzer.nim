@@ -27,6 +27,7 @@ import hashes
 import sequtils
 import os
 import math
+import config
 
 # Node is a ref object; Table[Node, ..] needs a hash. Key by object identity
 # (pointer address), which is stable across the analysis pass.
@@ -76,6 +77,7 @@ type
     root*: Node
     ctx*: AnalyzerContext
     specials*: seq[Node]                 ## D1: monomorphized auto-param FuncDefs
+    deps*: seq[AnalyzerResult]          ## D2: recursively analyzed `require` dependencies
 
 # ---- unitname -----------------------------------------------------------------
 
@@ -244,29 +246,82 @@ proc bootstrap*(ctx: var AnalyzerContext) =
   printSym.codename = "nelua_print"
   printSym.isConst = true
   printSym.used = true
+  # Exception/panic primitives.  `error`/`panic`/`assert`/`check` are noreturn
+  # runtime helpers; `check` is elided by the code generator when the `nochecks`
+  # pragma / release mode is active.  They are global builtins like `print`, so
+  # a local with the same name shadows them (lookup walks the scope chain).
+  for (nm, cn) in [("error", "nelua_error"), ("panic", "nelua_panic"),
+                   ("assert", "nelua_assert"), ("check", "nelua_check")]:
+    let bsym = register(ctx, nm, skBuiltin, anyt)
+    bsym.codename = cn
+    bsym.isConst = true
+    bsym.used = true
   ctx.specTable = initTable[string, Node]()
   ctx.specCounter = initTable[string, int]()
   ctx.specInFlight = initTable[string, bool]()
 
 # ---- literal typing ------------------------------------------------------------
 
+const NumberSuffixTable = {
+  "_u": "uint64", "_i": "int64",
+  "_u8": "uint8", "_u16": "uint16", "_u32": "uint32", "_u64": "uint64",
+  "_i8": "int8", "_i16": "int16", "_i32": "int32", "_i64": "int64",
+  "_f32": "float32", "_f64": "float64", "_f128": "float128",
+  "_usize": "usize", "_isize": "isize",
+  "_cchar": "cchar", "_cshort": "cshort", "_cint": "cint",
+  "_clong": "clong", "_clonglong": "clonglong",
+  "_cfloat": "cfloat", "_cdouble": "cdouble", "_clongdouble": "clongdouble"
+}.toTable
+
+proc splitNumberSuffix(text: string): (string, string) =
+  ## Split a numeric literal into (numericPart, suffix). The suffix is the
+  ## trailing `_<ident>` (e.g. `_u32`); it is "" when absent. Nelua numeric
+  ## literals never contain `_` outside a suffix, so the first `_` delimits it.
+  let u = text.find('_')
+  if u < 0: return (text, "")
+  return (text[0 ..< u], text[u ..< text.len])
+
 proc numberTypeAndValue(text: string): (Type, string, int) =
-  if text.len >= 2 and text[0] == '0' and (text[1] == 'x' or text[1] == 'X'):
-    let hex = text[2 ..< text.len]
-    var iv = 0
+  let (num, suffix) = splitNumberSuffix(text)
+  var base = 10
+  var iv: int
+  var fv: float
+  var isFloat = false
+  if num.len >= 2 and num[0] == '0' and (num[1] == 'x' or num[1] == 'X'):
+    let hex = num[2 ..< num.len]
+    iv = 0
     for c in hex:
       let d = if c >= '0' and c <= '9': ord(c) - ord('0')
              elif c >= 'a' and c <= 'f': ord(c) - ord('a') + 10
              elif c >= 'A' and c <= 'F': ord(c) - ord('A') + 10
              else: 0
       iv = iv * 16 + d
-    return (BuiltinTypes["integer"], $iv, 16)
-  if text.contains('.') or text.contains('e') or text.contains('E'):
-    let fv = parseFloat(text)
-    return (BuiltinTypes["number"], $fv, 10)
-  var iv: int
-  iv = parseInt(text)
-  return (BuiltinTypes["integer"], $iv, 10)
+    base = 16
+  elif num.contains('.') or num.contains('e') or num.contains('E'):
+    fv = parseFloat(num)
+    isFloat = true
+  else:
+    iv = parseInt(num)
+  if suffix != "":
+    let tname = NumberSuffixTable.getOrDefault(suffix, "")
+    if tname == "":
+      raise newException(ValueError, "literal suffix '" & suffix & "' is undefined for numbers")
+    let t = if BuiltinTypes.hasKey(tname): BuiltinTypes[tname]
+            elif PrimitiveTypes.hasKey(tname): PrimitiveTypes[tname]
+            else: nil
+    if t == nil:
+      raise newException(ValueError, "literal suffix '" & suffix & "' is undefined for numbers")
+    if t.isFloat:
+      let v = if isFloat: $fv
+              elif num.len >= 2 and num[0] == '0' and (num[1] == 'x' or num[1] == 'X'):
+                $(parseFloat("0x" & num[2 ..< num.len]))
+              else:
+                $(parseFloat(num))
+      return (t, v, base)
+    return (t, $iv, base)
+  if isFloat:
+    return (BuiltinTypes["number"], $fv, base)
+  return (BuiltinTypes["integer"], $iv, base)
 
 proc stripQuotes(s: string): string =
   if s.len >= 2 and s[0] == '"' and s[^1] == '"':
@@ -603,13 +658,17 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
   if node == nil: return nil
   case node.kind
   of nkNumber:
-    let (t, val, base) = numberTypeAndValue(node.str)
-    var a = ctx.getAttr(node)
-    a.base = base
-    a.comptime = true
-    a.typ = t
-    a.value = val
-    return t
+    try:
+      let (t, val, base) = numberTypeAndValue(node.str)
+      var a = ctx.getAttr(node)
+      a.base = base
+      a.comptime = true
+      a.typ = t
+      a.value = val
+      return t
+    except ValueError as e:
+      ctx.diags.add ctx.path & ": error: " & e.msg
+      return BuiltinTypes["integer"]
   of nkString:
     var a = ctx.getAttr(node)
     a.comptime = true
@@ -659,6 +718,9 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
           a.staticstorage = sym.staticstorage
           a.used = true
           if sym.kind == skVar: a.vardecl = sym.vardecl
+        if sym.comptime:
+          a.comptime = true
+          a.value = sym.value
         if sym.kind == skFunc:
           a.comptime = true
           let fs = if sym.node != nil: ctx.funcTypeStrOf.getOrDefault(sym.node) else: neluaTypeName(sym.typ)
@@ -707,11 +769,15 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
       return inner
     return nil
   of nkColonIndex, nkKeyIndex:
-    if node.children.len > 0: discard analyzeExpr(ctx, node.children[0])
-    if node.children.len > 1: discard analyzeExpr(ctx, node.children[1])
     var a = ctx.getAttr(node)
     a.lvalue = true
     a.typ = BuiltinTypes["any"]
+    # children[0] is the index/key, children[1] is the base expression.
+    if node.children.len > 1:
+      let bt = analyzeExpr(ctx, node.children[1])
+      if bt != nil and bt.kind == tkArray and bt.subtype != nil:
+        a.typ = bt.subtype
+      discard analyzeExpr(ctx, node.children[0])
     return a.typ
   of nkVarargs:
     var a = ctx.getAttr(node)
@@ -722,10 +788,17 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
 
 # ---- statement analysis -------------------------------------------------------
 
+proc hasAnnotation(iddecl: Node, name: string): bool =
+  for c in iddecl.children:
+    if c.kind == nkAnnotation and c.str == name:
+      return true
+  return false
+
 proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
   var iddecls: seq[Node] = @[]
   var inits: seq[Node] = @[]
   var vtypes: seq[Type] = @[]
+  var syms: seq[Symbol] = @[]
   for c in node.children:
     if c.kind == nkIdDecl: iddecls.add c
     else: inits.add c
@@ -744,6 +817,16 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
         vtype = analyzeExpr(ctx, inits[i])
     if vtype == nil: vtype = BuiltinTypes["nil"]
     vtypes.add vtype
+    # §11.0c / oracle: the C backend has no representation for `any` as a
+    # variable type.  Reject it here (with the oracle's exact message) instead
+    # of letting it reach codegen and emit broken C.  A table-literal initializer
+    # gets the oracle's distinct "initializer list" message.
+    if vtype != nil and vtype.kind == tkAny:
+      let initNode = if i < inits.len: inits[i] else: nil
+      if initNode != nil and initNode.kind == nkInitList:
+        ctx.diags.add ctx.path & ": error: type 'any' cannot be initialized using an initializer list"
+      else:
+        ctx.diags.add ctx.path & ": error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type"
     if vtype.kind == tkFunction and iddecl.children.len > 0:
       let ts = ctx.funcTypeStrOf.getOrDefault(iddecl.children[0])
       if ts.len > 0: ctx.funcTypeStrOf[iddecl] = ts
@@ -752,7 +835,10 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
     sym.used = true
     sym.staticstorage = true
     sym.vardecl = true
+    sym.comptime = hasAnnotation(iddecl, "comptime")
+    if sym.comptime: sym.isConst = true
     ctx.symOf[iddecl] = sym
+    syms.add sym
     var a = ctx.getAttr(iddecl)
     a.codename = sym.codename
     a.lvalue = true
@@ -761,6 +847,7 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
     a.typ = vtype
     a.used = true
     a.vardecl = true
+    if sym.comptime: a.comptime = true
   ctx.multiRetCall = nil
   for i, init in inits:
     let pt = if i < vtypes.len: vtypes[i] else: nil
@@ -768,6 +855,11 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
       discard analyzeInitList(ctx, init, pt)
     else:
       discard analyzeExpr(ctx, init)
+    if i < syms.len and syms[i].comptime:
+      let ia = ctx.attrOf.getOrDefault(init)
+      if ia != nil and ia.comptime and ia.value != "":
+        syms[i].value = ia.value
+        ctx.attrOf[iddecls[i]].value = ia.value
 
 # ---- D1: polymorphic (`auto`-param) function monomorphization ----------------
 ##
@@ -960,11 +1052,20 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
   for arg in args:
     let atype = if arg.children.len > 0: resolveTypeExpr(arg.children[0]) else: BuiltinTypes["any"]
     let at = if atype != nil: atype else: BuiltinTypes["any"]
+    # Oracle: a parameter whose (deduced) type is `any` is not supported on the
+    # C backend -- this covers both `f(a: any)` and the untyped `f(a)`.
+    if at != nil and at.kind == tkAny:
+      ctx.diags.add ctx.path & ": error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type"
     ftype.args.add at
     aparts.add arg.str & ": " & neluaTypeName(at)
   for r in returns:
     let rt = analyzeTypeExpr(ctx, r, false)
-    if rt != nil: ftype.returns.add rt
+    if rt != nil:
+      # Oracle: an explicit `: any` return annotation is rejected; an untyped
+      # return (deduced from the body) is fine and lowers to `void` below.
+      if rt.kind == tkAny:
+        ctx.diags.add ctx.path & ": error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type"
+      ftype.returns.add rt
   if ftype.returns.len == 0: ftype.returns.add BuiltinTypes["void"]
   var a = ctx.getAttr(node)
   a.codename = codename
@@ -1028,7 +1129,9 @@ proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Ty
   if node == nil: return nil
   case node.kind
   of nkId:
-    let t = if BuiltinTypes.hasKey(node.str): BuiltinTypes[node.str] else: nil
+    let t = if BuiltinTypes.hasKey(node.str): BuiltinTypes[node.str]
+            elif PrimitiveTypes.hasKey(node.str): PrimitiveTypes[node.str]
+            else: nil
     if t != nil:
       var a = ctx.getAttr(node)
       a.codename = "nl" & neluaTypeName(t)
@@ -1056,9 +1159,12 @@ proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Ty
   of nkArrayType:
     let sub = if node.children.len > 0: analyzeTypeExpr(ctx, node.children[0], usedType) else: BuiltinTypes["integer"]
     var size = 0
-    if node.children.len > 1 and node.children[1].kind == nkNumber:
-      size = parseInt(node.children[1].str)
+    if node.children.len > 1:
       discard analyzeExpr(ctx, node.children[1])
+      let sa = ctx.attrOf.getOrDefault(node.children[1])
+      if sa != nil and sa.comptime and sa.value != "":
+        try: size = parseInt(sa.value)
+        except ValueError: discard
     let t = arrayType(if sub != nil: sub else: BuiltinTypes["integer"], size)
     var a = ctx.getAttr(node)
     a.typ = BuiltinTypes["type"]
@@ -1167,11 +1273,13 @@ proc analyzeWhile(ctx: var AnalyzerContext, node: Node) =
 
 proc foldIntValue(ctx: var AnalyzerContext, node: Node): int =
   if node.kind == nkNumber:
-    result = parseInt(node.str)
+    let (num, _) = splitNumberSuffix(node.str)
+    result = parseInt(num)
   elif node.kind == nkBinaryOp:
     let a = ctx.attrOf.getOrDefault(node)
     if a != nil and a.comptime and a.value.len > 0:
-      result = parseInt(a.value)
+      let (num, _) = splitNumberSuffix(a.value)
+      result = parseInt(num)
 
 proc analyzeForNum(ctx: var AnalyzerContext, node: Node) =
   let iddecl = node.children[0]
@@ -1194,9 +1302,8 @@ proc analyzeForNum(ctx: var AnalyzerContext, node: Node) =
   a.name = iddecl.str
   a.typ = vtype
   a.used = true
-  let bv = foldIntValue(ctx, begin); let ev = foldIntValue(ctx, endv)
-  if bv != 0 or ev != 0:
-    ctx.getDump(node).compop = if bv <= ev: "le" else: "ge"
+  if node.str != "":
+    ctx.getDump(node).compop = node.str
   else:
     ctx.getDump(node).compop = "le"
   ctx.getDump(node).fixedend = isComptime(endv, ctx)
@@ -1243,6 +1350,45 @@ proc analyzeReturn(ctx: var AnalyzerContext, node: Node) =
   for c in node.children:
     discard analyzeExpr(ctx, c)
 
+proc analyzeSwitch(ctx: var AnalyzerContext, node: Node) =
+  ## Validate and analyze an `nkSwitch`:
+  ##  * the subject expression must be convertible to an integral type;
+  ##  * every case value must be a compile-time foldable integral constant;
+  ##  * the subject is analyzed once (C evaluates it once inside the `switch`
+  ##    condition; the Lua backend would hoist it to a temp, which this
+  ##    compiler does not emit -- it has no Lua code generator).
+  ##
+  ## The flat `newSwitch` layout is `[subject, vals..., body, vals..., body,
+  ## ..., [else-body]]`; case bodies are always `nkBlock` and case values are
+  ## never blocks, so scanning on `nkBlock` boundaries recovers the clauses.
+  let subj = node.children[0]
+  let stype = analyzeExpr(ctx, subj)
+  if stype == nil or not stype.isIntegral:
+    let tn = if stype != nil: neluaTypeName(stype) else: "nil"
+    ctx.diags.add ctx.path & ": error: `switch` statement must be convertible to an integral type, but got type " & tn & " (non integral)"
+    return
+  var i = 1
+  let nc = node.children.len
+  while i < nc:
+    var vals: seq[Node] = @[]
+    while i < nc and node.children[i].kind != nkBlock:
+      vals.add node.children[i]
+      inc i
+    if i >= nc: break
+    let body = node.children[i]
+    inc i
+    if vals.len == 0:
+      ## the optional `else` block: a bare Block with no preceding value list
+      analyzeBlock(ctx, body)
+    else:
+      for v in vals:
+        discard analyzeExpr(ctx, v)
+        var va = ctx.attrOf.getOrDefault(v)
+        if va == nil or not va.comptime or va.typ == nil or not va.typ.isIntegral:
+          ctx.diags.add ctx.path & ": error: `case` statement must evaluate to a compile time integral value"
+          return
+      analyzeBlock(ctx, body)
+
 proc analyzeStmt(ctx: var AnalyzerContext, node: Node) =
   if node == nil: return
   case node.kind
@@ -1258,6 +1404,7 @@ proc analyzeStmt(ctx: var AnalyzerContext, node: Node) =
   of nkRepeat: analyzeRepeat(ctx, node)
   of nkAssign: analyzeAssign(ctx, node)
   of nkReturn: analyzeReturn(ctx, node)
+  of nkSwitch: analyzeSwitch(ctx, node)
   of nkBreak, nkContinue, nkLabel, nkGoto: discard
   of nkCall: discard analyzeCall(ctx, node)
   else: discard analyzeExpr(ctx, node)
@@ -1385,6 +1532,39 @@ proc blockOf(ctx: var AnalyzerContext, items: seq[Node], indent: int): string =
     else: result.add "\n"
   result.add blkInd & "}"
 
+proc buildSwitchCases(ctx: var AnalyzerContext, node: Node, indent: int): string =
+  ## Render the `nkSwitch` cases container (a bare `{ }`) in the reference's
+  ## nested shape, with each case's value list as a bare `{ }` and each body as
+  ## a `Block`.  The flat `newSwitch` layout is scanned on `nkBlock` boundaries.
+  let fldInd = "  ".repeat(indent + 1)      ## cases-container indent
+  let valInd = "  ".repeat(indent + 2)      ## value-list / body indent
+  var s = fldInd & "{\n"
+  var i = 1
+  let nc = node.children.len
+  var first = true
+  while i < nc:
+    var vals: seq[Node] = @[]
+    while i < nc and node.children[i].kind != nkBlock:
+      vals.add node.children[i]
+      inc i
+    if i >= nc: break
+    let body = node.children[i]
+    inc i
+    if not first: s.add ",\n"
+    first = false
+    if vals.len > 0:
+      s.add valInd & "{\n"
+      for vi, v in vals:
+        s.add dumpAnaled(ctx, v, indent + 3)
+        if vi < vals.len - 1: s.add ",\n"
+        else: s.add "\n"
+      s.add valInd & "},\n"
+      s.add dumpAnaled(ctx, body, indent + 2)
+    else:
+      s.add dumpAnaled(ctx, body, indent + 2)
+  s.add fldInd & "}\n"
+  return s
+
 proc dumpAnaled*(ctx: var AnalyzerContext, node: Node, indent = 0): string =
   if node == nil: return ""
   let ind = "  ".repeat(indent)
@@ -1474,13 +1654,16 @@ proc dumpAnaled*(ctx: var AnalyzerContext, node: Node, indent = 0): string =
   of nkWhile:
     allFields.add((true, dumpAnaled(ctx, node.children[0], indent + 1)))
     allFields.add((true, dumpAnaled(ctx, node.children[1], indent + 1)))
+  of nkSwitch:
+    allFields.add((true, dumpAnaled(ctx, node.children[0], indent + 1)))
+    allFields.add((true, buildSwitchCases(ctx, node, indent)))
   of nkForNum:
     let hasStep = node.children.len == 5
     let step = if hasStep: node.children[3] else: nil
     let body = node.children[^1]
     allFields.add((true, dumpAnaled(ctx, node.children[0], indent + 1)))
     allFields.add((true, dumpAnaled(ctx, node.children[1], indent + 1)))
-    allFields.add((false, "false"))
+    allFields.add((false, if node.str != "": quoteStr(node.str) else: "false"))
     allFields.add((true, dumpAnaled(ctx, node.children[2], indent + 1)))
     if hasStep:
       allFields.add((true, dumpAnaled(ctx, step, indent + 1)))
@@ -1575,12 +1758,92 @@ proc runM6Pipeline(ast: Node, source = "", path = "t.nelua"): tuple[ctx: Analyze
   finalize(ctx)
   return (ctx, ast)
 
-proc analyze*(source: string, path: string): AnalyzerResult =
+# ---- D2: `require` resolution -------------------------------------------------
+#
+# A top-level `require 'name'` statement is a call on the builtin `require`
+# (see parser.nim).  At analysis time we resolve it to a `.nelua` file, analyze
+# that module through the same pipeline, and import its exported symbols into
+# this unit's scope so references to them type-check and resolve to the
+# dependency's mangled codenames.  `compile.nim` still compiles each dependency
+# to a cached `.c` file (phase 1a); the analyzed trees returned here let `cgen`
+# emit the dependency's code inline in the parent's translation unit.
+
+proc findRequires*(ast: Node): seq[string] =
+  ## Collect the module names of every top-level `require 'name'` statement.
+  if ast == nil:
+    return
+  for c in ast.children:
+    if c.kind == nkCall and c.children.len == 2 and
+       c.children[1].kind == nkId and c.children[1].str == "require" and
+       c.children[0].kind == nkString:
+      result.add c.children[0].str
+
+proc resolveModule*(name: string, config: Config, requiringPath: string): string =
+  ## Resolve a required module name to an absolute `.nelua` file path.
+  ##
+  ## Module names use `.` as a path separator (`require 'allocators.general'`
+  ## -> `lib/allocators/general.nelua`).  A leading `.` segment means "the
+  ## directory of the file doing the requiring".  Search order: the requiring
+  ## file's own directory, then the current working directory, then the project
+  ## `lib/` dir, then any `--path` entries.  Returns "" when no candidate exists.
+  ##
+  ## The lexer keeps a string literal's delimiters in its token value, so a
+  ## `require 'foo'` name arrives as `'foo'`; strip the surrounding quotes here.
+  var name = name
+  if name.len >= 2 and ((name[0] == '"' and name[^1] == '"') or
+                        (name[0] == '\'' and name[^1] == '\'')):
+    name = name[1 ..< name.len - 1]
+  let segments = name.split('.')
+  var candidates: seq[string] = @[]
+  if segments.len > 0 and segments[0] == "":
+    let base = requiringPath.splitFile().dir
+    candidates.add base / segments[1 ..< segments.len].join("/") & ".nelua"
+  let reqDir = requiringPath.splitFile().dir
+  if reqDir.len > 0:
+    candidates.add reqDir / segments.join("/") & ".nelua"
+  candidates.add getCurrentDir() / segments.join("/") & ".nelua"
+  candidates.add getCurrentDir() / "lib" / segments.join("/") & ".nelua"
+  for p in config.paths:
+    candidates.add p / segments.join("/") & ".nelua"
+  for c in candidates:
+    if fileExists(c):
+      return c
+  return ""
+
+proc importSymbols(ctx: var AnalyzerContext, depCtx: AnalyzerContext) =
+  ## Copy a dependency's exported top-level symbols into the parent's global
+  ## scope.  Only symbols whose `scope` is the dependency's global scope are
+  ## exported; params and locals are invisible outside the module.  The copied
+  ## symbols keep the dependency's mangled `codename` (e.g. `tmp_dep1_answer`),
+  ## so a reference in the parent lowers to the same C identifier the dependency
+  ## defines.  A parent symbol of the same name registered later (during
+  ## `analyzeBlock`) shadows the imported one, matching Nelua scoping.
+  for node, sym in depCtx.symOf:
+    if sym == nil or sym.scope != depCtx.globals:
+      continue
+    let newSym = Symbol(name: sym.name, kind: sym.kind, typ: sym.typ,
+                        node: sym.node, scope: ctx.globals,
+                        used: sym.used, comptime: sym.comptime,
+                        isConst: sym.isConst, global: sym.global,
+                        staticstorage: sym.staticstorage, codename: sym.codename,
+                        mutate: sym.mutate, refed: sym.refed, vardecl: sym.vardecl)
+    ctx.globals.symbols[sym.name] = newSym
+    # The function-type render string is keyed by the declaring FuncDef node;
+    # carry it over so the parent's dump/codename lookup finds it.
+    if depCtx.funcTypeStrOf.hasKey(node):
+      ctx.funcTypeStrOf[node] = depCtx.funcTypeStrOf[node]
+
+proc analyzeModule(source: string, path: string, config: Config,
+                   visited: var Table[string, bool]): AnalyzerResult =
+  ## Recursive workhorse for `analyze`: parse, preprocess, resolve + analyze
+  ## every `require` dependency (importing its exported symbols), then analyze
+  ## this unit's own body.  `visited` breaks circular `require` chains.
   var ctx: AnalyzerContext
   ctx.source = source
   ctx.path = path
   ctx.unitname = computeUnitname(path)
   bootstrap(ctx)
+  visited[path] = true
   var ast = parse(source, path)
   if ast == nil:
     result.root = nil; result.ctx = ctx
@@ -1593,6 +1856,29 @@ proc analyze*(source: string, path: string): AnalyzerResult =
   except PreprocessError as e:
     ctx.diags.add e.msg
   ctx.diags &= pctx.diags
+
+  # P3-require: resolve each required module and recursively analyze it before
+  # this unit's body is analyzed, so the imported symbols are in scope.
+  for modname in findRequires(ast):
+    let depPath = resolveModule(modname, config, path)
+    if depPath == "":
+      ctx.diags.add "require '" & modname & "': module not found"
+      continue
+    if visited.hasKey(depPath):
+      continue
+    var depSrc = ""
+    try:
+      depSrc = readFile(depPath)
+    except OSError, IOError:
+      ctx.diags.add "require '" & modname & "': cannot read '" & depPath & "'"
+      continue
+    let depRes = analyzeModule(depSrc, depPath, config, visited)
+    result.deps.add depRes
+    if depRes.root != nil:
+      importSymbols(ctx, depRes.ctx)
+    for d in depRes.ctx.diags:
+      ctx.diags.add d
+
   countAssignTargets(ctx, ast)
   let ra = ctx.getAttr(ast)
   ra.filename = path
@@ -1600,6 +1886,17 @@ proc analyze*(source: string, path: string): AnalyzerResult =
   analyzeBlock(ctx, ast)
   finalize(ctx)
   result.root = ast; result.ctx = ctx; result.specials = ctx.specials
+
+proc analyze*(source: string, path: string,
+              config: Config = defaultConfig()): AnalyzerResult =
+  ## Analyze a Nelua `source` (at `path`), recursively resolving and importing
+  ## every `require` dependency.  The dependency analyzed trees are returned in
+  ## `AnalyzerResult.deps` (in require order) so the code generator can emit
+  ## their code inline.  `config` defaults to `defaultConfig()`, which is
+  ## sufficient for cwd-/lib-relative `require`s; callers with `--path` entries
+  ## should pass their real config.
+  var visited = initTable[string, bool]()
+  result = analyzeModule(source, path, config, visited)
 
 when isMainModule:
   if paramCount() >= 1 and paramStr(1).endsWith(".nelua"):

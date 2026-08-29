@@ -922,6 +922,79 @@ here so they are not lost when `tmp/` is eventually reviewed and pruned:
   (e.g. `local x: auto; print(x)` is rejected; `print(id(5))` is accepted).
 - `tmp/table_oracle-behavior-design.md` — table semantics, and that the C backend
   rejects tables outright (so C table support is beyond-oracle, not parity).
+- `tmp/exceptions_oracle-behavior-design.md` — the oracle has **no** structured
+  exception handling at all (`try`/`catch`/`throw`/`finally`/`raise`/`except`/
+  `recover`/`perror` are all rejected). What exists is fatal panic primitives only:
+  `error(msg?)`, `panic(msg?)` (C-backend only), `assert(v, msg?)`,
+  `check(cond, msg?)` (C-backend only) — all terminate the process (C: SIGABRT
+  exit 255; Lua: exit 1), none catchable. `defer` runs at scope end on C but
+  **not** on `error()`/`panic()`, and the Lua backend cannot compile `defer`.
+  The doc's own "parity = panic builtins + defer; beyond = try/catch" split is
+  **superseded by §11.0c below** — see that policy note before scoping work.
+- `tmp/pattern_matching_oracle-behavior-design.md` — the oracle's only matching
+  construct is the C-like `switch`/`case`/`else` **statement** (not an
+  expression). No `match`, no `case` outside `switch`, no `if`-expression, no
+  guards, no destructuring; `record`/`union`/`enum` are not even keywords.
+  Comma-separated case values and duplicate-case handling diverge between the
+  C backend (real C `switch`, rejects duplicates) and the Lua backend
+  (`if`/`elseif` chain, cannot parse commas, silently takes first duplicate).
+  `break`/`continue` bind to the enclosing loop. The doc's own "parity =
+  switch/case/else; beyond = match/cond/patterns" split is **superseded by
+  §11.0c below** — see that policy note before scoping work.
+- `tmp/oracle-any-behavior-design.md` — **the two backends disagree fundamentally
+  about `any`, and neither backend's type-value equality is a spec.** C backend
+  **rejects `any` as a variable/parameter/return type** (`compiler deduced type
+  'any' here, but it's not supported yet`); `any` *as a value* is a compile-time
+  constant of metatype `type` (like `number`), but type values cannot be
+  printed. Lua backend treats `any` as a fully **erased annotation** (`local
+  x: any = 5` → `local x = 5`), but the type-value globals `any`/`number`/
+  `boolean` are **undefined (nil)** in the emitted Lua (no preamble is injected),
+  so `any == nil`/`any == number` → true are undefined behavior, not a spec.
+  `any` is a plain identifier, not a keyword. **`any` cannot take a table
+  literal** (`type 'any' cannot be initialized using an initializer list` on
+  both backends) — a table *variable* works fine. Passing `nil` to an `any`
+  param is a compile error, but that is general, not `any`-specific. **Notable
+  for Nelu: our compiler currently accepts `any` and lowers it to `void*`**
+  (`cgen_types.nim:127`), producing broken C — a deliberate beyond-oracle design
+  that predates this survey and now has an oracle reference to check against.
+- `tmp/any-intended-design.md` — the **intended** `any`, per the docs
+  (`language-review.md` §11.1.2: "efficient tagged-representation `any` value"
+  enabling porting real Lua code). Two-phase: **Phase 1** (easy, non-interfering)
+  emits the oracle's exact rejection for deduced `any` and deletes the broken
+  `void*` lowering; **Phase 2** (Nelu, additive) implements the tagged
+  representation with runtime dispatch. Tagged word + payload union, Lua coercion
+  rules, implicit in-conversion / explicit out-conversion. Open questions on
+  whether deduced `any` should flow into the dynamic type (recommended: yes) and
+  the tag set.
+
+### 11.0c Scoping policy for §11 features (2026-08-29, user directive)
+
+Two priorities, in order:
+
+1. **Compatibility first.** We must be able to run **existing** Nelua programs —
+   including large ones, multi-file programs, and advanced usage. This is the
+   hard bar. Nothing in flight may break it.
+2. **Beyond-oracle is additive, not forbidden.** If we can support a
+   previously-unsupported thing **without interfering with existing user
+   programs**, it is fine to do more, to go beyond. We are **not** required to
+   replicate the oracle's rejections — "if it crashed before because Nelua
+   didn't do it yet, then we too need to crash the user program" is explicitly
+   rejected. The oracle's `error: type 'table' is not supported yet` and
+   `syntax error: unexpected syntax` on `try` were *limitations*, not specs.
+
+**Consequence for the design docs above:** the docs correctly record what the
+oracle *does* (ground truth for compatibility) and where it *fails* (informational).
+But the "parity = X, beyond-oracle (Nelu) = Y, do not invent Y" framing in them is
+too strict. The real bar is **non-interference with existing programs**, not
+matching the oracle's gaps. So `try`/`catch`, `match`/`cond`, full C table
+support, `any`, etc. are all fair game to implement additively — the constraint
+is that existing programs must keep running identically, not that we must refuse
+the constructs the oracle refused.
+
+**Sequencing:** compatibility (run existing programs, then multi-file/large/
+advanced) comes first; the additive-beyond work follows, and only once it can be
+verified against a working build. See `tmp/examples_parity.py` as the
+existing-program execution gate.
 
 **Design discipline.** Two principles govern how Nelu changes the compiler:
 

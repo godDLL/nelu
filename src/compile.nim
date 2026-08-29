@@ -135,7 +135,7 @@ proc compileUnit*(source: string, path: string, config: Config,
       if not depRes.success:
         result.diagnostics.add "require '" & modname & "': dependency '" & depPath & "' did not compile"
 
-  let cSource = genC(source, path, config.release, false)
+  let cSource = genC(source, path, config.release, false, config)
   result.cSource = cSource
   result.success = cSource.len > 0 and not cSource.startsWith("/* nelua")
   if not result.success:
@@ -195,7 +195,12 @@ proc compile*(source: string, path: string, config: Config = defaultConfig()): C
   if config.binary:
     let (runOut, runExit) = execCmdEx(bin.quoteShell)
     result.output = runOut
-    result.exitCode = runExit
+    # The oracle reports 255 when the compiled program is killed by a signal
+    # (error/panic/assert all abort via SIGABRT).  On POSIX the shell reports
+    # 128+N for signal N, so map any signal-death exit code (128..159) to 255
+    # to match; normal exit codes (including high ones like os.exit(200))
+    # are propagated unchanged.
+    result.exitCode = if runExit >= 128 and runExit <= 159: 255 else: runExit
 
 when isMainModule:
   let src = "print(1 + 2)\n"

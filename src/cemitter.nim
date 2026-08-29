@@ -14,6 +14,14 @@ proc cBoolLit*(b: bool): string =
   ## Nelua boolean literal → C literal.
   if b: "true" else: "false"
 
+proc stripNeluaNumberSuffix(s: string): string =
+  ## Drop a trailing Nelua numeric type suffix (`_u32`, `_f32`, `_cchar`, ...).
+  ## Nelua numeric literals never embed `_` outside a suffix, so the first `_`
+  ## delimits it; if there is none the literal is returned unchanged.
+  let u = s.find('_')
+  if u < 0: return s
+  return s[0 ..< u]
+
 proc cNilptrLit*(): string =
   ## Nelua `nilptr` literal → C null pointer.
   "NULL"
@@ -23,7 +31,9 @@ proc cNumberLit*(t: Type, s: string): string =
   ##
   ## Floats get a decimal point (and an `f`/`L` suffix for float32/float128)
   ## when the source literal has no radix marker; integers are returned as-is
-  ## (128-bit literals need no suffix on GCC/Clang).
+  ## (128-bit literals need no suffix on GCC/Clang). A trailing Nelua type
+  ## suffix (`_u32`, `_f32`, ...) is stripped -- it is not valid C.
+  let s = stripNeluaNumberSuffix(s)
   if t == nil:
     return s
   if t.isFloat:

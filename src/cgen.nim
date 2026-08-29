@@ -33,6 +33,7 @@ import ast
 import os
 import strutils
 import tables
+import config
 
 # ---------------------------------------------------------------------------
 # Embedded runtime preamble.
@@ -50,6 +51,8 @@ const RUNTIME_C = """
 #include <stddef.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 typedef struct { const char* data; size_t size; } nlstring;
 typedef void* nilptr;
@@ -97,6 +100,41 @@ extern const nltype nltype_of_int64;
 extern const nltype nltype_of_double;
 extern const nltype nltype_of_bool;
 extern const nltype nltype_of_string;
+
+/* Exception / panic primitives.  Definitions are inline here (rather than in
+   src/runtime.c) so every emitted translation unit is self-contained; they are
+   `static` so dependency `.c` files that never use them produce no linkage
+   symbols and no unused-function warnings.  `error`/`assert`/`check` raise a
+   fatal "runtime error:" and abort; `panic` prints its message and aborts. */
+
+static inline void nelua_abort(void) {
+  abort();
+}
+
+static inline void nelua_error_line(nlstring msg) {
+  fwrite("runtime error: ", 1, sizeof("runtime error: ") - 1, stderr);
+  if (msg.size > 0 && msg.data) {
+    fwrite(msg.data, 1, msg.size, stderr);
+  }
+  fwrite("\n", 1, 1, stderr);
+  fflush(stderr);
+  nelua_abort();
+}
+
+static inline void nelua_panic_string(nlstring s) {
+  if (s.size > 0 && s.data) {
+    fwrite(s.data, 1, s.size, stderr);
+  }
+  fwrite("\n", 1, 1, stderr);
+  fflush(stderr);
+  nelua_abort();
+}
+
+static inline void nelua_assert_line(bool cond, nlstring msg) {
+  if (!cond) {
+    nelua_error_line(msg);
+  }
+}
 """
 
 # ---------------------------------------------------------------------------
@@ -104,6 +142,10 @@ extern const nltype nltype_of_string;
 # ---------------------------------------------------------------------------
 
 type
+  DeferScopeKind = enum
+    dkBlock
+    dkFunc
+    dkLoop
   Gen = object
     ctx: AnalyzerContext
     release*: bool
@@ -119,7 +161,7 @@ type
     typesSeq: seq[Type]
     multiRetSeen: Table[string, bool]
     multiRetList: seq[seq[Type]]
-    deferStack: seq[seq[Node]]
+    deferStack: seq[(DeferScopeKind, seq[Node])]
     funcDefs: seq[Node]
 
 proc g(s: var Gen, text: string) =
@@ -130,6 +172,16 @@ proc line(s: var Gen, text: string) =
 
 proc push(s: var Gen) = inc s.indent
 proc pop(s: var Gen) = dec s.indent
+
+proc pushDefer(s: var Gen, kind: DeferScopeKind) =
+  ## Push a new defer scope onto the stack.  `kind` records whether this scope
+  ## is a function body (defers run on `return`), a loop body (defers run on
+  ## `break`/`continue`) or an ordinary block (defers run only at normal scope
+  ## termination), so that `return`/`break`/`continue` know how far to drain.
+  s.deferStack.add (kind, @[])
+
+proc popDefer(s: var Gen) =
+  discard s.deferStack.pop()
 
 # Forward declarations for the mutually-recursive expression/statement visitors.
 proc genExpr(s: var Gen, node: Node): string
@@ -143,9 +195,26 @@ proc genInitList(s: var Gen, node: Node): string
 proc genLvalue(s: var Gen, node: Node): string
 proc genStmt(s: var Gen, node: Node)
 proc genStmts(s: var Gen, node: Node)
-proc genScope(s: var Gen, node: Node)
+proc genScope(s: var Gen, node: Node, kind: DeferScopeKind = dkBlock)
 proc genBody(s: var Gen, node: Node)
 proc coerce(s: var Gen, expr: string, fromT: Type, toT: Type): string
+
+proc runDefersUpTo(s: var Gen, targetKind: DeferScopeKind) =
+  ## Run every pending defer from the innermost scope outward, stopping after
+  ## the first scope whose kind equals `targetKind` (that scope is included).
+  ##
+  ## The drained scopes' defer lists are *not* cleared: `genScope` still emits
+  ## each defer body at its normal scope-exit point.  After a `return`/`break`/
+  ## `continue` those exit points are unreachable dead code, so the defer body
+  ## runs exactly once at runtime -- emitted here for the jump path, and again
+  ## (harmlessly) for the fall-through path that is never taken.
+  var i = s.deferStack.len - 1
+  while i >= 0:
+    for j in countdown(s.deferStack[i][1].len - 1, 0):
+      s.genBody(s.deferStack[i][1][j].children[0])
+    if s.deferStack[i][0] == targetKind:
+      break
+    dec i
 proc arithCast(s: var Gen, expr: string, fromT: Type, toT: Type): string
 
 # ---------------------------------------------------------------------------
@@ -258,7 +327,7 @@ proc emitTypedef(s: var Gen, t: Type) =
 
 proc emitMultiRet(s: var Gen, rets: seq[Type]) =
   let tag = multiRetTag(rets)
-  s.line "typedef struct {"
+  s.line "typedef struct " & tag & " {"
   s.push
   for i, r in rets:
     s.line cType(r) & " field" & $i & ";"
@@ -430,8 +499,48 @@ proc genUnaryOp(s: var Gen, node: Node): string =
 
 proc genCall(s: var Gen, node: Node): string =
   let caller = node.children[^1]
+  # `require 'name'` is a compile-time directive: the analyzer resolves and
+  # analyzes the dependency, importing its symbols into scope.  There is no
+  # runtime `require` call to emit, so the statement lowers to nothing.
+  if caller.kind == nkId and caller.str == "require":
+    return ""
   let args = node.children[0 ..< node.children.len - 1]
   let ca = s.ctx.attrOf.getOrDefault(caller)
+  # Exception / panic primitives.  These are noreturn runtime helpers; `check`
+  # is elided entirely when the `nochecks` pragma / release mode is active.
+  if caller.kind == nkId:
+    let cn = if ca != nil and ca.codename != "": ca.codename else: cIdent(caller.str)
+    case cn
+    of "nelua_error":
+      let msg = if args.len > 0: s.genExpr(args[0]) else: "nlstr(\"error!\")"
+      return "nelua_error_line(" & msg & ")"
+    of "nelua_panic":
+      let msg = if args.len > 0: s.genExpr(args[0]) else: "((nlstring){NULL, 0})"
+      return "nelua_panic_string(" & msg & ")"
+    of "nelua_assert":
+      if args.len == 0:
+        return "nelua_assert_line(false, nlstr(\"assertion failed!\"))"
+      let condArg = args[0]
+      let cond = s.genExpr(condArg)
+      # The oracle only treats the boolean `false` as a failing assertion
+      # condition; any other type (integer 0, empty string, ...) is truthy.
+      # Emit a literal `true` for non-bool conditions rather than passing the
+      # value straight into a `bool` C parameter (which fails to compile for
+      # strings and does the wrong thing for integers).
+      let condType = s.ctx.attrOf.getOrDefault(condArg).typ
+      let condStr = if condType != nil and condType.kind != tkBoolean: "true" else: cond
+      let msg = if args.len > 1: s.genExpr(args[1]) else: "nlstr(\"assertion failed!\")"
+      return "nelua_assert_line(" & condStr & ", " & msg & ")"
+    of "nelua_check":
+      if s.nochecks: return ""
+      if args.len == 0:
+        return "nelua_assert_line(false, nlstr(\"assertion failed!\"))"
+      let condArg = args[0]
+      let cond = s.genExpr(condArg)
+      let condType = s.ctx.attrOf.getOrDefault(condArg).typ
+      let condStr = if condType != nil and condType.kind != tkBoolean: "true" else: cond
+      let msg = if args.len > 1: s.genExpr(args[1]) else: "nlstr(\"assertion failed!\")"
+      return "nelua_assert_line(" & condStr & ", " & msg & ")"
   var calleeType: Type = nil
   if ca != nil and ca.typ != nil and ca.typ.kind == tkFunction:
     calleeType = ca.typ
@@ -462,10 +571,19 @@ proc genCall(s: var Gen, node: Node): string =
         var passArg = false
         if at != nil:
           case at.kind
-          of tkInteger: helper = "nelua_print_int64"; passArg = true
-          of tkUinteger: helper = "nelua_print_uint64"; passArg = true
-          of tkNumber, tkFloat32, tkFloat64: helper = "nelua_print_double"; passArg = true
-          of tkString: helper = "nelua_print_string"; passArg = true
+          of tkInteger, tkInt8, tkInt16, tkInt32, tkInt64, tkInt128,
+             tkIsize, tkByte, tkCchar, tkCschar, tkCshort, tkCint,
+             tkClong, tkClonglong, tkCptrdiff:
+            helper = "nelua_print_int64"; passArg = true
+          of tkUinteger, tkUint8, tkUint16, tkUint32, tkUint64, tkUint128,
+             tkUsize, tkCuchar, tkCushort, tkCuint, tkCulong, tkCulonglong,
+             tkCsize:
+            helper = "nelua_print_uint64"; passArg = true
+          of tkNumber, tkFloat32, tkFloat64, tkFloat128,
+             tkCfloat, tkCdouble, tkClongdouble:
+            helper = "nelua_print_double"; passArg = true
+          of tkString, tkCstring:
+            helper = "nelua_print_string"; passArg = true
           of tkBoolean: helper = "nelua_print_bool"; passArg = true
           of tkNilptr, tkPointer: helper = "nelua_print_nil"; passArg = false
           else: helper = "nelua_print_nil"; passArg = false
@@ -613,12 +731,12 @@ proc genStmts(s: var Gen, node: Node) =
   for c in node.children:
     s.genStmt(c)
 
-proc genScope(s: var Gen, node: Node) =
+proc genScope(s: var Gen, node: Node, kind: DeferScopeKind = dkBlock) =
   ## Emit the statements of `node` and its defers, with no surrounding braces.
-  s.deferStack.add @[]
+  s.pushDefer(kind)
   if node != nil:
     s.genStmts(node)
-  let defers = s.deferStack[^1]
+  let defers = s.deferStack[^1][1]
   for i in countdown(defers.len - 1, 0):
     s.genBody(defers[i].children[0])
   discard s.deferStack.pop()
@@ -786,6 +904,59 @@ proc genIf(s: var Gen, node: Node) =
     s.pop
   s.line "}"
 
+proc bodyEndsInJump(node: Node): bool =
+  ## True when `node` (a case/else body Block) ends in a statement that
+  ## unconditionally transfers control -- `return`/`break`/`continue`/`goto`.
+  ## A trailing `break;` after such a body would be unreachable dead code, so
+  ## the reference omits it (it emits `break;` after every body that can fall
+  ## through, including bodies ending in a `panic`/`error` call, which are
+  ## calls rather than control-transfer statements).
+  if node == nil: return false
+  let stmts = if node.kind == nkBlock: node.children else: @[node]
+  if stmts.len == 0: return false
+  case stmts[^1].kind
+  of nkReturn, nkBreak, nkContinue, nkGoto: true
+  else: false
+
+proc genSwitch(s: var Gen, node: Node) =
+  ## Emit a C `switch`/`case`/`default`.  Case values are emitted from their
+  ## folded comptime attr (`a.value`), so `case 1+1` lowers to `case 2:`; comma
+  ## cases become consecutive `case` labels guarding one body; `else` becomes
+  ## `default`.  Duplicate case values surface as a C-compile error, matching
+  ## the reference's C backend.  The subject is evaluated directly inside the
+  ## `switch()` condition (the reference does not hoist it on the C backend).
+  s.line "switch (" & s.genExpr(node.children[0]) & ") {"
+  s.push
+  var i = 1
+  let nc = node.children.len
+  while i < nc:
+    var vals: seq[Node] = @[]
+    while i < nc and node.children[i].kind != nkBlock:
+      vals.add node.children[i]
+      inc i
+    if i >= nc: break
+    let body = node.children[i]
+    inc i
+    if vals.len == 0:
+      s.line "default: {"
+    else:
+      for v in vals:
+        let va = s.ctx.attrOf.getOrDefault(v)
+        let val = if va != nil and va.comptime and va.value != "":
+                    cNumberLit(if va.typ != nil: va.typ else: nil, va.value)
+                  else:
+                    s.genExpr(v)
+        s.line "case " & val & ":"
+      s.line "{"
+    s.push
+    s.genScope(body, dkBlock)
+    s.pop
+    s.line "}"
+    if not bodyEndsInJump(body):
+      s.line "break;"
+  s.pop
+  s.line "}"
+
 proc genForNum(s: var Gen, node: Node) =
   let iddecl = node.children[0]
   let beginv = node.children[1]
@@ -797,12 +968,16 @@ proc genForNum(s: var Gen, node: Node) =
   let cn = if ia != nil and ia.codename != "": ia.codename else: cIdent(iddecl.str)
   let vtype = if ia != nil: ia.typ else: nil
   let compop = s.ctx.dumpOf.getOrDefault(node).compop
-  let cmp = if compop == "ge": ">=" else: "<="
+  let cmp = case compop
+    of "ge": ">="
+    of "gt": ">"
+    of "lt": "<"
+    else: "<="
   let stepStr = if step != nil: s.genExpr(step) else: "1"
   s.line "for (" & cType(vtype) & " " & cn & " = " & s.genExpr(beginv) & "; " &
           cn & " " & cmp & " " & s.genExpr(endv) & "; " & cn & " += " & stepStr & ") {"
   s.push
-  s.genScope(body)
+  s.genScope(body, dkLoop)
   s.pop
   s.line "}"
 
@@ -847,7 +1022,7 @@ proc genForIn(s: var Gen, node: Node) =
     s.line "for (int64_t __i = 0; __i < " & $len & "; __i += 1) {"
     s.push
     s.line cType(et) & " " & cn & " = " & arrStr & "[__i];"
-    s.genScope(body)
+    s.genScope(body, dkLoop)
     s.pop
     s.line "}"
   else:
@@ -855,30 +1030,35 @@ proc genForIn(s: var Gen, node: Node) =
     s.genBody(body)
 
 proc genReturn(s: var Gen, node: Node) =
+  ## Emit a `return` statement.  Every pending defer from the current scope
+  ## outward, up to and including the nearest function-body scope, must run
+  ## *before* the jump -- otherwise they become unreachable dead code.
   let rets = s.currentReturns
-  if rets.len == 0 or (rets.len == 1 and rets[0].isVoid):
-    for c in node.children:
-      let e = s.genExpr(c)
-      if e.len > 0: s.line e & ";"
-    s.line "return;"
-    return
-  if node.children.len == 0:
-    s.line "return;"
-    return
-  if rets.len == 1:
-    let c = node.children[0]
-    let expr = s.genExpr(c)
-    let et = s.ctx.attrOf.getOrDefault(c).typ
-    s.line "return " & s.coerce(expr, et, rets[0]) & ";"
-  else:
-    let tag = multiRetTag(rets)
-    var parts: seq[string] = @[]
-    for i, c in node.children:
+  # Evaluate the return value first (if any) into a temporary we can reference
+  # after the defers have run, so defer bodies cannot observe a half-built
+  # return value.
+  var retPrefix = ""
+  if rets.len > 0 and not (rets.len == 1 and rets[0].isVoid) and node.children.len > 0:
+    if rets.len == 1:
+      let c = node.children[0]
       let expr = s.genExpr(c)
       let et = s.ctx.attrOf.getOrDefault(c).typ
-      let rt = if i < rets.len: rets[i] else: nil
-      parts.add ".field" & $i & " = " & s.coerce(expr, et, rt)
-    s.line "return (struct " & tag & "){" & parts.join(", ") & "};"
+      retPrefix = " " & s.coerce(expr, et, rets[0])
+    else:
+      let tag = multiRetTag(rets)
+      var parts: seq[string] = @[]
+      for i, c in node.children:
+        let expr = s.genExpr(c)
+        let et = s.ctx.attrOf.getOrDefault(c).typ
+        let rt = if i < rets.len: rets[i] else: nil
+        parts.add ".field" & $i & " = " & s.coerce(expr, et, rt)
+      retPrefix = " (struct " & tag & "){" & parts.join(", ") & "}"
+  # Run defers up to and including the nearest function-body scope.
+  s.runDefersUpTo(dkFunc)
+  if retPrefix.len > 0:
+    s.line "return" & retPrefix & ";"
+  else:
+    s.line "return;"
 
 proc genStmt(s: var Gen, node: Node) =
   if node == nil: return
@@ -895,13 +1075,15 @@ proc genStmt(s: var Gen, node: Node) =
   of nkWhile:
     s.line "while (" & s.genExpr(node.children[0]) & ") {"
     s.push
-    s.genScope(node.children[1])
+    s.genScope(node.children[1], dkLoop)
     s.pop
     s.line "}"
+  of nkSwitch:
+    s.genSwitch(node)
   of nkRepeat:
     s.line "do {"
     s.push
-    s.genScope(node.children[0])
+    s.genScope(node.children[0], dkLoop)
     s.pop
     s.line "} while(!(" & s.genExpr(node.children[1]) & "));"
   of nkForNum:
@@ -909,7 +1091,7 @@ proc genStmt(s: var Gen, node: Node) =
   of nkForIn:
     s.genForIn(node)
   of nkDefer:
-    s.deferStack[^1].add node
+    s.deferStack[^1][1].add node
   of nkDo:
     s.genBody(node.children[0])
   of nkAssign:
@@ -917,8 +1099,10 @@ proc genStmt(s: var Gen, node: Node) =
   of nkReturn:
     s.genReturn(node)
   of nkBreak:
+    s.runDefersUpTo(dkLoop)
     s.line "break;"
   of nkContinue:
+    s.runDefersUpTo(dkLoop)
     s.line "continue;"
   of nkCall:
     let e = s.genCall(node)
@@ -998,7 +1182,7 @@ proc genFuncDef(s: var Gen, node: Node) =
   let oldReturns = s.currentReturns
   s.inFunc = true
   s.currentReturns = ftype.returns
-  s.genScope(node.children[^1])
+  s.genScope(node.children[^1], dkFunc)
   s.inFunc = oldInFunc
   s.currentReturns = oldReturns
   s.pop
@@ -1008,10 +1192,16 @@ proc genFuncDef(s: var Gen, node: Node) =
 # Public entry point
 # ---------------------------------------------------------------------------
 
-proc genC*(source: string, path: string, release = false, nochecks = false): string =
+proc genC*(source: string, path: string, release = false, nochecks = false,
+           config: Config = defaultConfig()): string =
   ## Analyze `source` (at `path`) and emit a single self-contained `.c` file.
   ## On analysis failure returns a diagnostic comment.
-  let res = analyze(source, path)
+  ##
+  ## `config` is threaded through to `analyze` so that `require` resolution sees
+  ## the same `--path` entries the driver does -- otherwise a `--path` module
+  ## would compile (phase 1a) but its symbols would never be imported, since
+  ## `analyze` would fall back to `defaultConfig()`.
+  let res = analyze(source, path, config)
   if res.root == nil:
     return "/* nelua: unable to analyze " & path & " (parse error, see stderr) */"
   # Surface M6 preprocessor diagnostics through the existing nelua stub channel
@@ -1023,16 +1213,30 @@ proc genC*(source: string, path: string, release = false, nochecks = false): str
   var s: Gen
   s.ctx = res.ctx
   s.release = release
-  s.nochecks = nochecks
+  # `check` is elided when the `nochecks` pragma is active.  The driver passes
+  # `nochecks=false` literally (see compile.nim), so we also consult
+  # `config.pragmas` here -- `-P nochecks` lands there -- otherwise a program
+  # compiled with `-P nochecks` would still emit `check` guards.
+  s.nochecks = nochecks or "nochecks" in config.pragmas
   s.typeSeen = initTable[int, bool]()
   s.multiRetSeen = initTable[string, bool]()
-  s.collectNode(res.root)
-  collectFuncDefs(res.root, s.funcDefs)
 
-  # D1: a polymorphic (`auto`-param) FuncDef has no direct C form -- it is
-  # replaced by its monomorphized specializations.  Drop the originals and append
-  # the specializations the analyzer produced (uncalled auto functions have no
-  # specialization, so they emit nothing: dead-code elimination).
+  # D2: emit every `require` dependency's library code inline in this
+  # translation unit, in dependency order, followed by this unit's own code.
+  # Only the final (this) unit gets the nelua_main driver entry; the dependency
+  # `.c` files `compile.nim` still writes to the cache are separate translation
+  # units that `compile()` does not link, so they are harmless orphans.
+  #
+  # `res.deps` holds only the *direct* dependencies; flatten transitively so a
+  # dependency of a dependency is emitted before the dependent that uses it.
+  # `flattenDeps(res)` yields [..transitive deps in order.., res].
+  proc flattenDeps(r: AnalyzerResult): seq[AnalyzerResult] =
+    for d in r.deps:
+      result &= flattenDeps(d)
+    result.add r
+  var results = flattenDeps(res)
+
+  # Collect types and function definitions from every result.
   proc hasAutoParam(t: Type): bool =
     if t == nil or t.kind != tkFunction: return false
     for a in t.args:
@@ -1040,15 +1244,26 @@ proc genC*(source: string, path: string, release = false, nochecks = false): str
     for r in t.returns:
       if r != nil and r.kind == tkAuto: return true
     return false
-  var filtered: seq[Node] = @[]
-  for fd in s.funcDefs:
-    let fa = res.ctx.attrOf.getOrDefault(fd)
-    if hasAutoParam(if fa != nil: fa.typ else: nil): discard
-    else: filtered.add fd
-  s.funcDefs = filtered
-  for spec in res.specials:
-    s.collectNode(spec)
-    s.funcDefs.add spec
+
+  for r in results:
+    s.ctx = r.ctx
+    s.collectNode(r.root)
+    for spec in r.specials:
+      s.collectNode(spec)
+
+  # Ordered (funcDef node, owning-result index) pairs, dependencies first.
+  var funcEntries: seq[tuple[node: Node, ridx: int]] = @[]
+  for i, r in pairs(results):
+    var fds: seq[Node] = @[]
+    collectFuncDefs(r.root, fds)
+    for fd in fds:
+      let fa = r.ctx.attrOf.getOrDefault(fd)
+      if not hasAutoParam(if fa != nil: fa.typ else: nil):
+        funcEntries.add (fd, i)
+    for spec in r.specials:
+      let sa = r.ctx.attrOf.getOrDefault(spec)
+      if not hasAutoParam(if sa != nil: sa.typ else: nil):
+        funcEntries.add (spec, i)
 
   # 1. includes / runtime preamble
   s.g(RUNTIME_C)
@@ -1060,44 +1275,48 @@ proc genC*(source: string, path: string, release = false, nochecks = false): str
   for rets in s.multiRetList:
     s.emitMultiRet(rets)
 
-  # 3. forward declarations
-  for fd in s.funcDefs:
+  # 3. forward declarations (all results, dependency order)
+  for (fd, i) in funcEntries:
+    s.ctx = results[i].ctx
     s.genForwardDecl(fd)
 
   # 4. cimports are emitted as externs inside genForwardDecl; no separate pass.
 
-  # 5. function definitions
-  for fd in s.funcDefs:
+  # 5. function definitions (all results, dependency order)
+  for (fd, i) in funcEntries:
+    s.ctx = results[i].ctx
     s.genFuncDef(fd)
 
-  # 6. globals (file-scope declarations) + nelua_main
-  var globals: seq[Node] = @[]
-  var topstmts: seq[Node] = @[]
-  for c in res.root.children:
-    if c.kind == nkFuncDef: discard
-    elif c.kind == nkVarDecl: globals.add c
-    else: topstmts.add c
-
-  for g in globals:
-    s.genVarDecl(g, emitInits=false, isGlobal=true)
+  # 6. file-scope globals for every result, then nelua_main for this unit only.
+  for r in results:
+    s.ctx = r.ctx
+    for c in r.root.children:
+      if c.kind == nkVarDecl:
+        s.genVarDecl(c, emitInits=false, isGlobal=true)
 
   s.line "int nelua_main(void) {"
   s.push
   s.inFunc = false
   s.currentReturns = @[]
-  s.deferStack.add @[]
-  for g in globals:
-    s.genVarDecl(g, emitInits=true, isGlobal=false)
-  for st in topstmts:
-    s.genStmt(st)
-  let defers = s.deferStack[^1]
-  for i in countdown(defers.len - 1, 0):
-    s.genBody(defers[i].children[0])
+  # Run each result's top-level code (global initializers + statements) in
+  # dependency order, so a required module's globals are initialized before the
+  # requiring module references them.
+  for r in results:
+    s.ctx = r.ctx
+    s.pushDefer(dkFunc)
+    for c in r.root.children:
+      if c.kind == nkVarDecl:
+        s.genVarDecl(c, emitInits=true, isGlobal=false)
+      elif c.kind != nkFuncDef:
+        s.genStmt(c)
+    let defers = s.deferStack[^1][1]
+    for i in countdown(defers.len - 1, 0):
+      s.genBody(defers[i].children[0])
+    discard s.deferStack.pop()
   s.line "return 0;"
   s.pop
   s.line "}"
   s.line "int main(int argc, char** argv) { (void)argc; (void)argv; return nelua_main(); }"
-  discard s.deferStack.pop()
 
   if s.unsupported:
     return "/* nelua: " & s.unsupportedMsg & " */"
