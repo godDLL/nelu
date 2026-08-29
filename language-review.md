@@ -1019,9 +1019,124 @@ against it. Mapping (verified against each source's own header):
 | `lpeglabel/` | lpeg (Lua.org/PUC-Rio) with **Nelua's "label" fork** | base lpeg has no canonical github | partial — pull the base, keep our fork on top |
 | `sys.c` | no header; reads as Nelua's own sys Lua lib | — | no, ours |
 | `luainit.c/.h/.lua` | Nelua's init layer | — | no, ours |
-| `lualib/nelua/` | Nelua's lua stdlib | — | no, ours |
+| `lualib/nelua/` (57 files) | **the reference 0.2.0-dev compiler source, in Lua** | — | no, ours |
+| `nelua-decl/` | **nelua-decl**, edubart | `github.com/edubart/nelua-decl` | yes — but see blocker below |
+| `nelua-decl/gcc-lua/` | **gcc-lua** (GCC Lua plugin), Peter Colberg 2012–2015 | `github.com/edubart/gcc-lua` | yes — but does not build on GCC 16 |
 
-Three clean pulls (lua, lfs, rpmalloc), one partial (lpeg), three owned by us.
+**`lib/` is inherited stdlib — a different category from everything above.**
+The 44 `.nelua` files under `lib/` (allocators, arg, builtins, coroutine, filestream,
+hashmap, hash, io, iterators, list, math, memory, os, sequence, span,
+stringbuilder, string, table, traits, utf8, vector, plus the `lib/C` and
+`lib/detail` subtrees) are the upstream 0.2.0-dev **standard library**. We
+inherit them as *our* stdlib: they ship with the compiler, are MIT-licensed like
+the rest of the repo, and `require 'math'` / `require 'string'` resolve against
+them. `compile.nim`'s `resolveModule` searches `lib/` (after the requiring
+file's own dir and the cwd). Unlike the vendored `src/` libs above, `lib/` has
+no upstream to submodule-track — it is the stdlib we own and evolve as Nelu,
+and it is the parity reference for the `require` system (a `require`d module
+must behave like the oracle's).
+
+**But the inheritance is gated on our compiler compiling it cleanly.** `lib/`
+is shipped source, not a runtime dependency — it only becomes *usable* stdlib
+when `nelua` can compile it. This makes the whole stdlib a **compiler
+integration bar**: a harness that compiles every `lib/*.nelua` through our
+compiler and reports which fail is the natural gate above `regress.py`, and
+"all of `lib/` compiles and matches the oracle" is the honest end-of-parity
+signal for the reimplementation — stronger than any feature-count checklist.
+
+**Correction (2026-08-29):** that harness is the wrong shape. `lib/` is a
+**require-dependency graph, not a set of standalone files** — the oracle itself
+rejects `lib/math.nelua` compiled alone (`error: undeclared symbol 'Xoshiro256'`,
+because `Xoshiro256` is defined in `lib/detail/xoshiro256.nelua`, which `math`
+depends on). A program that `require "math"` compiles and runs fine (`m.pi` →
+`3.1415926535898`, exit 0). So the gate is **require-based usage matching the
+oracle**, not per-file compilation — which is exactly what the module system
+(`require` parse → resolve → recursive compile → transitive flatten) exercises,
+and what `regress.py` partly covers. This also means transitive `require`
+resolution is not optional: it is how the stdlib is wired together.
+
+**`lualib/nelua/` is not a small stdlib — it is the reference compiler's own
+source.** 57 Lua files: `aster.lua` (parser), `analyzer.lua`,
+`cgenerator.lua`/`luagenerator.lua`, `cemitter.lua`, `luacompiler.lua`,
+`ccompiler.lua`, `preprocessor.lua`, `types.lua`, `scope.lua`, `symbol.lua`,
+`configer.lua`, `runner.lua`, `astnode.lua`/`astdefs.lua`, `builtins.lua`/
+`cbuiltins.lua`/`luabuiltins.lua`, plus `utils/` (sstream, errorer, platform,
+console, tracker, traits, metamagic, pegger, iterators, stringer, fs, tabler,
+...) and `thirdparty/` (argparse, bint, inspect, lester, lpegrex, tableshape).
+`version.lua` declares `0.2.0-dev` — the exact baseline we match. `/usr/bin/nelua`
+is a 610-byte shell launcher that does `require'nelua.runner'.run(arg)`; the
+compiler it loads comes from here. So this tree is the authoritative
+implementation of the semantics, type system, codegen, and preprocessor that
+our clean-room Nim reimplementation is trying to match.
+
+**⚠ Resolved (2026-08-29, user decision): look, but leave it alone, and have
+our own.** `lualib/nelua/` is reference we may **read** to understand semantics
+(it is the authoritative definition of the type system, AST shapes, preprocessor
+and codegen we are matching) — but we do **not** modify it, and we do **not** port
+it. Our compiler stays a clean-room Nim implementation: our own design, our own
+structure, shaped to the language rather than a line-by-line translation of the
+Lua. This is path (b) from the tension note below, with the "leave it alone"
+guardrail — faster and more accurate than black-box probing, without sacrificing
+that the reimplementation is genuinely ours. It also means agents may consult
+`lualib/nelua/` when a semantic question is ambiguous, but must not edit it and
+must not lift code from it into `src/`.
+
+There is no "modern iteration" to follow here: Nelua-lang is dead, and this is
+the 0.2.0-dev baseline, not a newer fork. **We are the modern iteration (Nelu)**
+— this tree is what we evolve *from*, not a project we track *after*.
+
+**The other inherited corpus dirs (`tests/`, `examples/`, `spec/`, `lualib/`)
+are reference — but `tests/` doubles as the oracle's behavioral specification.**
+They are the oracle's own test/example/spec trees (32 Nelua test files, plus the
+Lua spec under `spec/` and the `-g lua` stdlib under `lualib/nelua/`). We
+inherit them as reference and ship them; we do **not** run the oracle's test
+suite as our gate. Our gates are separate and curated: `tmp/cmp.py` (M1
+AST-diff floor, 40 inline cases), `tmp/regress.py` (M1 corpus + M2 typed-AST
+over our own 14-file `tmp/m2_corpus/`, with `.ref` snapshots taken from the
+live oracle and *not* derived from `tests/`).
+
+But `tests/` should be used actively: **where the oracle has a test for a
+feature, matching that test *is* the parity bar for that feature.** It is the
+oracle's own behavioral specification, not inert reference. When scoping a
+§11 feature, the first thing to read is the oracle's own test for it — e.g.
+`tests/pattern_matching_test.nelua` is the canonical pattern-matching spec
+(accepted syntax + expected outputs, both backends). Probe variations around it,
+and treat matching `tests/<feature>_test.nelua` as the acceptance criterion.
+Also note these tests exercise features *via `require`* (e.g.
+`tests/math_test.nelua` requires `math`), so they exercise the module system
+too. Do not let `tests/` sit as dead weight — it is the cheapest available
+specification of what "match the oracle" means.
+
+**`examples/` is the end-to-end execution gate, and it is the cleanest one we
+have.** All 10 `examples/*.nelua` are *standalone programs* (unlike `lib/`,
+which the oracle rejects compiled alone), so each is a compile+run parity
+target with observable stdout and exit code — no `require` scaffolding needed.
+The oracle runs 7 of them to deterministic output (brainfuck `Hello World!`,
+fibonacci `55 55 55 55`, helloworld `hello world`, matmul `-18.8963499125`,
+mersenne, gameoflife, record_inheretance); 2 are interactive loops killed by
+timeout (condots, snakesdl); 1 is illustrative (overview, oracle exits 1). This
+is the gate *above* `regress.py` — regress.py checks parse/analyze *shape*
+(M1/M2), `examples/` checks that a real program actually *runs* and matches.
+Harness: `tmp/examples_parity.py` (rebuilds the compiler from `src/` whenever
+it is missing or stale, runs each example through the oracle and us, diffs
+stdout+exit, SKIPs the 3 non-runnable ones; exit 0 only when all runnable
+examples MATCH).
+
+**nelua-decl blocker (2026-08-29).** nelua-decl is a C-binding *generator* for
+Nelua that runs **through the gcc-lua plugin**. Vendored as a plain (de-nested)
+checkout to match the other vendor dirs — our repo uses no submodules. The
+plugin **will not build on this toolchain**: `gcc-lua/gcc/gcclua.c` hits
+`#error unsupported DOUBLE_TYPE_SIZE` against GCC 16
+(`/usr/lib/gcc/x86_64-pc-linux-gnu/16/plugin/include/system.h:999`). Upstream
+edubart/gcc-lua last shipped a fix for GCC 11 (2021); there is no GCC 16 fix.
+So the checkout is present and referenceable, but `nldecl.lua` cannot run until
+either (a) gcc-lua is patched for modern GCC ABIs (a Nelu job — our fork), or
+(b) the build is driven by an older GCC that has the plugin. The GCC plugin
+mechanism *is* present on this box (`gcc -print-file-name=plugin` resolves, and
+`gcc-plugin.h` exists), so (a) is the nearer path.
+
+Three clean pulls (lua, lfs, rpmalloc), one partial (lpeg), three owned by us,
+plus nelua-decl + gcc-lua (vendored, engine blocked on GCC 16).
 
 ### 11.5 Publish setup (Nelu → GitHub)
 
