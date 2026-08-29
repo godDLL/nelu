@@ -225,18 +225,23 @@ loop above a `pos = pos + 1`, the loop ran **5** times and `pos` ended at **5**
   while `local p: *integer = nil` is a `niltype` → `pointer` error. Use `nilptr`
   where Lua/M C would write `NULL`.
 - **`any` is not fully supported.** A function whose return type would deduce
-  to a union of types is rejected: *"unsupported 'any' deduced type"*.
-  Return a concrete type instead.
+  to a union of types is rejected:
+  *"compiler deduced type 'any' here, but it's not supported yet, please fix
+  this variable type"*. Return a concrete type instead.
 - **`facultative(T)` (the optional type) cannot be used in return position.**
   A function that may return "no value" returns a boolean signal plus the
   value, e.g. `(false, "", pos)` on failure.
-- **There is no `_` discard symbol.** `b, _ = s:find(p)` is an
-  *"undeclared symbol '_'"* error. Name it, e.g. `local b, e = ...`.
+- **`_` is a valid identifier** (no special discard semantics in 0.2.0-dev).
+  `local b, _ = s:find(p)` compiles fine; use a distinct name like `e` only if
+  you want the value.
 
 ### 3.6 Error handling
 
-- `pcall` works. `error(msg)` panics.
-- **`try / catch / finally`** — structured, expression/statement form.
+- **No `pcall`.** `pcall` is an *undeclared symbol* error in 0.2.0-dev.
+  `error(msg)` panics (runtime abort, SIGABRT).
+- **`try / catch / finally`** — **not implemented** in 0.2.0-dev:
+  `try print(1) catch print(2) end` → `syntax error: unexpected syntax`.
+  Use `error(msg)` panics for now.
 - **`defer`** — run a block at scope exit (Go-style), in reverse order, before
   any `return`/`break`/`continue`.
 - **`<close>` variables** — when they leave scope their `__close` metamethod
@@ -328,6 +333,16 @@ require 'C.stdio'     -- C.printf, C.scanf, C.fopen, C.stdin, C.stdout ...
 require 'C.stdlib'    -- C.malloc, C.free, C.qsort, C.exit, C.atoi ...
 require 'C.stdarg'    -- C.va_start, C.va_arg, C.va_end
 require 'C.string'    -- C.strcpy, C.memcpy, C.strlen ...
+require 'C.arg'       -- C.argc, C.argv
+require 'C.ctype'     -- C.isalpha, C.isdigit, C.toupper ...
+require 'C.errno'     -- C.errno, C.EDOM, C.ERANGE ...
+require 'C.init'      -- C.atexit
+require 'C.locale'    -- C.setlocale, C.localeconv, C.LC_ALL ...
+require 'C.math'      -- C.fabs, C.fmod, C.sqrt ...
+require 'C.signal'    -- C.signal, C.raise, C.SIGINT ...
+require 'C.stdatomic' -- C atomic ops, C.memory_order_*
+require 'C.threads'   -- C.thrd_create, C.mtx_t, C.cnd_t ...
+require 'C.time'      -- C.clock, C.time, C.mktime, C.strftime ...
 ```
 
 Each submodule `require`s `C` and declares members on the `C` record. The
@@ -456,6 +471,7 @@ All libraries use `require 'name'`. Builtins (`require`, `print`, `panic`,
 | `list`       | doubly-linked list: `make/destroy/__close/clear/pushfront/pushback/insert/popfront/popback/find/erase/empty/__len/__next/__mnext/__pairs/__mpairs/__convert` |
 | `hashmap`    | `hashmap(K, V, HashFunc, Allocator)`: `make/destroy/__close/clear/_find/rehash/reserve/_at/__atindex/peek/remove/loadfactor/bucketcount/capacity/__len/__pairs/__mpairs` |
 | `allocators` | `default`, `allocator` (interface), `general`, `gc`, `arena`, `stack`, `pool`, `heap` |
+| `table` / `builtins` | stubs — `table` errors on use (`tables are not implement yet`); `builtins` is documentation-only and must never be `require`d |
 
 ### 7.1 `string.find` and `string.match` are not like Lua
 
@@ -464,34 +480,37 @@ This is the single most surprising stdlib difference.
 - **`string.find` returns `(isize, isize)`.** On a match you get the start and
   end positions. **On no match it returns `(0, 0)`, not `nil`.** Write
   `local b, e = s:find(p); local hit = (b ~= 0)`.
-  - Runtime-confirmed: `'hello':find('ell')` → `(2, 4)` (observed by wrapping
-    the call in a function and converting the results to `integer` before
-    printing).
+  - Runtime-confirmed: `print(string.find("hello","ll"))` → `3 4` at the
+    entry point (`'hello':find('ell')` → `(2, 4)`).
   - The no-match `(0, 0)` is read directly from the stdlib source
     (`lib/string.nelua`: `if endpos ~= -1 then return startpos+1, endpos else
-    return 0, 0 end`). A bare `isize`-typed `(0, 0)` return prints as
-    `0 0` at runtime, so the value itself is sound — but `string.find`'s
-    no-match codegen path could not be observed at runtime because it trips
-    the compiler bug below.
+    return 0, 0 end`) and confirmed at runtime:
+    `print(string.find("hello","zzz"))` → `0 0`. A bare `isize`-typed
+    `(0, 0)` return prints as `0 0`, so the value itself is sound.
 - **`string.match` returns `(boolean, sequence(string))`** — a success flag
   *plus* a sequence of captures, not a single string. It cannot be fed to
   `tonumber` directly. Verified: `'a1b2':match('(%d')` → `ok=true`, one capture
   `'1'`. (Note: `local caps = t:match(p)` binds only the boolean; you must
   write `local ok, caps = ...`.)
-- **`string.find` trips a real 0.2.0-dev compiler bug.** Programs that call
-  `string.find` and let its `isize` results flow into the entry point crash
-  the C generator:
-  `cemitter.add_zeroed_type_literal: attempt to index a nil value (field
-  'integer index')`. It is a compiler crash, not a source error. Workarounds
-  that were verified to help: call `find` from inside a function rather than
-  at the entry point, and convert the `isize` results to `integer` before
-  printing them (`local bi: integer = b; print(bi)`).
+- **A real 0.2.0-dev C-generator bug exists, but `string.find` is not the
+  trigger.** `string.find` works at the entry point —
+  `print(string.find("hello","ll"))` → `3 4`, and the no-match case
+  `print(string.find("hello","zzz"))` → `0 0` (both verified, no crash).
+  The crash `cemitter.add_zeroed_type_literal: attempt to index a nil value
+  (field 'integer index')` is instead triggered by string-module functions
+  that **return a `string`** — `string.upper`, `string.format`,
+  `string.rep`, `string.sub`, `string.char`, and the module-level
+  `tostring`. It fires regardless of whether the result is bound to a local,
+  annotated with a type, or wrapped in a function, so the old "wrap it in a
+  function" and "convert to `integer`" workarounds do not help for those.
 
 ### 7.2 `os.execute` returns a boolean
 
-`os.execute(cmd)` returns `true`/`false` — a success flag, **not** the integer
-exit code you would get from C's `system()`. Write
-`if os.execute(cmd) then ... end`, never `os.execute(cmd) == 0`.
+`os.execute(cmd)` returns `(boolean, string, integer)` — a success flag, a
+status string (`"exit"`), and the command's exit status (the raw value
+returned by C's `system()`, e.g. `os.execute("false")` → `false  exit  256`,
+not `1`). Write `if os.execute(cmd) then ... end`; never
+`os.execute(cmd) == 0` (the integer is the third return).
 
 ### 7.3 `coroutine` has no varargs on yield/resume
 
@@ -544,15 +563,15 @@ embedded/freestanding use.
 | `local` scope | hoisted to whole block | enters scope at the declaration line (§3.4) |
 | `string.find` no match | returns `nil` | returns `(0, 0)` (§7.1) |
 | `string.match` | returns a string | returns `(boolean, sequence(string))` (§7.1) |
-| `os.execute` | (Lua has none) | returns `true`/`false`, not exit code (§7.2) |
-| `_` discard | valid | undeclared-symbol error (§3.5) |
-| `any` return type | (Lua is untyped) | rejected: "unsupported 'any' deduced type" (§3.5) |
+| `os.execute` | (Lua has none) | returns `(boolean, string, integer)` (§7.2) |
+| `_` discard | valid | valid (no special discard) (§3.5) |
+| `any` return type | (Lua is untyped) | rejected: "compiler deduced type 'any' here, but it's not supported yet, please fix this variable type" (§3.5) |
 | `facultative(T)` in returns | — | not allowed; return `(bool, value)` (§3.5) |
 | anonymous functions | closures | not closures (§4) |
 | `math` functions | (Lua's `math` needs no link) | require `## linklib 'm'` (§6.4) |
 | tables | dynamic, reference types | use `@record`/`@union`/`@enum`/`sequence`/`hashmap` (§3.3) |
 | runtime code loading | `load`/`loadfile` | none — AOT only; generate at compile time with the preprocessor (§5) |
-| `print` of `string.find` results | works | crashes the C generator (§7.1) |
+| `print` of `string.find` results | works | works (§7.1) |
 | entry point | `main` function | top-level statements; `print` builtin (§1) |
 
 ---
@@ -578,9 +597,13 @@ meta-type.
 `concept(...)` / `facultative(...)` / `overload(...)` for specialization.
 
 **Builtin functions.** `require`, `print`, `panic`, `error`, `assert`, `check`,
-`likely`, `unlikely`, `_VERSION`, `tonumber`, `tostring`, `tointeger`,
-`type`, `select`, `next`, `pairs`, `ipairs`, `sizeof`/`#`, `collectgarbage`
-(where applicable).
+`likely`, `unlikely`, `_VERSION`, `type`, `next`, `pairs`, `ipairs`,
+`sizeof`/`#`, `collectgarbage` (where applicable). `tonumber`, `tostring`,
+and `tointeger` are **not** builtins — they are `global function`s defined
+in `lib/string.nelua` and need `require "string"` (bare `tostring(42)` →
+`undeclared symbol 'tostring', maybe you forgot to require module 'string'?`).
+`select` is likewise not a Nelua runtime builtin; it is only a standard Lua
+function available inside `##` preprocessor blocks.
 
 ---
 
@@ -595,8 +618,13 @@ operator overloading, `span`, `<comptime>`/`<noinit>`, `string.find` match
 `math.sqrt` with `## linklib 'm'`, and an `isize`-typed `(0, 0)` return.
 Confirmed as real errors: `## linklib 'm'` required for `math.sqrt`;
 `require "C"` loading an empty record vs. `require 'C.stdio'` exposing C
-functions; `string.match`'s `(boolean, sequence)` shape; the `_`
-discard-symbol error; and the `add_zeroed_type_literal` C-generator crash
-tripped by `string.find` in the entry point. The no-match `(0, 0)` return of
-`string.find` is taken from the stdlib source (`lib/string.nelua`), since its
-runtime path could not be observed directly (it hits the same compiler bug).
+functions; and `string.match`'s `(boolean, sequence)` shape. (The `_`
+discard-symbol error and the `string.find` C-generator crash listed in
+earlier drafts are **not** real — see §3.5 and §7.1.) The
+`add_zeroed_type_literal` C-generator crash is real, but it is triggered by
+string-module functions that return a `string` (`string.upper`,
+`string.format`, `string.rep`, `string.sub`, `string.char`, `tostring`),
+not by `string.find`. The no-match `(0, 0)` return of `string.find` is
+confirmed at runtime (`print(string.find("hello","zzz"))` → `0 0`) and
+matches the stdlib source (`lib/string.nelua`: `if endpos ~= -1 then
+return startpos+1, endpos else return 0, 0 end`).

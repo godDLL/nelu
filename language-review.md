@@ -12,8 +12,9 @@
 - **License:** MIT (compiler, stdlib, and dependencies); programs written in
   Nelua may use any license
 - **Status:** alpha (0.2.0-dev at time of review); syntax is mostly stable, but
-  dynamic features (tables, runtime dynamic typing, exceptions, closures) are
-  *not yet implemented*
+  dynamic features (tables, runtime dynamic typing, structured exception
+  handling) are *not yet implemented*; top-scope closures and the `error()`
+  runtime panic primitive exist, but the full closure / exception model does not.
 - **Influences:** Lua, C, and "better C" languages — Nim, Odin, Zig
 - **Output model:** Nelua source → C source → native binary (via GCC/Clang/TCC)
 
@@ -70,10 +71,11 @@ and newcomers; manual memory management is enabled later for performance.
 
 ### 1.4 Scope / limitations (alpha)
 
-Not yet implemented: exceptions, tables, runtime dynamic typing, closures
-(except top-scope closures), and the `any` type is only partially supported.
-There is **no interpreter or JIT** — pure ahead-of-time compilation. Code
-generated at runtime cannot be loaded.
+Not yet implemented: structured exception handling (`try`/`catch`/`recover`),
+tables, runtime dynamic typing, closures (except top-scope closures). The
+`error(msg)` runtime panic primitive exists; the `any` type is not supported in
+value position. There is **no interpreter or JIT** — pure ahead-of-time
+compilation. Code generated at runtime cannot be loaded.
 
 ---
 
@@ -569,10 +571,12 @@ All libraries are used with `require 'name'`. Highlights (full signatures in
 
 Read these before assuming Lua semantics.
 
-- **`os.execute(cmd)` returns `true`/`false`** — a success flag, *not* the
-  integer exit code you would get from C's `system()`. Verified:
-  `os.execute("true")` → `true`, `os.execute("false")` → `false`. Write
-  `if os.execute(cmd) then ... end`, never `os.execute(cmd) == 0`.
+- **`os.execute(cmd)` returns `(boolean, string, integer)`** — a success flag,
+  a status string (`"exit"`), and the integer exit code you would get from C's
+  `system()`. Verified: `os.execute("true")` → `true  exit  0`,
+  `os.execute("false")` → `false  exit  1`. `if os.execute(cmd) then ... end`
+  still works (multi-return truncation); the exit code is available as the
+  third return.
 - **`string.find` returns `(start, end)` as integers; on no match it returns
   `(0, 0)`, not `nil`.** So `local b, e = s:find(p); hit = (b ~= 0)`. This is
   unlike Lua, where `string.find` returns `nil`.
@@ -580,8 +584,8 @@ Read these before assuming Lua semantics.
   be fed directly to `tonumber`; walk the captures by hand instead.
 - **`string.gmatch` / `string.gmatchview`** return an iterator (over string
   views for `gmatchview`); use `for x in s:gmatchview(pat) do ... end`.
-- **No `_` discard symbol.** `b, _ = s:find(p)` is an *"undeclared symbol
-  '_'"* error. Use a real name like `e`.
+- **`_` is a valid identifier** (no special discard semantics in 0.2.0-dev).
+  `local b, e = s:find(p)` works, and so does `local b, _ = s:find(p)`.
 - **`tostring` works on integers and floats** (e.g. `tostring(start)` to build
   a playlist-index string).
 
@@ -589,8 +593,10 @@ Read these before assuming Lua semantics.
 
 - **`any` is not fully supported.** A function whose return type would be
   deduced as a union of types (`string | number | boolean | table | nil`) is
-  rejected with *"unsupported 'any' deduced type"*. Workaround: parse straight
-  into concrete record types so every function returns one concrete type.
+  rejected with the message
+  `error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type`.
+  Workaround: parse straight into concrete record types so every function
+  returns one concrete type.
 - **`facultative(T)` (the optional type) cannot be used in return position.**
   A function that may legitimately return "no value" must instead return a
   boolean signal plus the value, e.g. `(false, "", pos)` on failure.
@@ -672,9 +678,9 @@ turns up by running code:
 ### 9.5 How to use this section for the clean-room reimplementation
 
 - **Faithful mode:** replicate the 0.2.0-dev behaviors above verbatim (bool
-  `os.execute`, `(0,0)`-on-no-match `string.find`, no `_`, non-hoisted
-  `local`). Existing Nelua code — including `zxplayer` — then ports with
-  minimal changes.
+  `os.execute`, `(0,0)`-on-no-match `string.find`, valid `_` identifier,
+  non-hoisted `local`). Existing Nelua code — including `zxplayer` — then ports
+  with minimal changes.
 - **Improved mode ("beyond"):** fix the divergences (hoist `local` like Lua,
   return `nil` from `string.find` on no match, support `_`, fully support
   `any`/`facultative`). You must then **tell users explicitly** where the new
@@ -794,9 +800,17 @@ into a single file. It produces declarations, then definitions, then a
 - Map Nelua types to C types (directly, since records→structs, arrays→C arrays,
   pointers→C pointers, enums→C enums).
 - Handle implicit/explicit conversions with optional runtime narrow checks.
+  **Not done in this build:** M2's `Attr.conv` is declared but never populated
+  by the current analyzer (binary-op conversions are computed and discarded),
+  so no runtime narrow checks are emitted. See the gap note in
+  `src/cgen.nim:20-21`.
 - Lower multiple returns to small C structs.
 - Lower polymorphic/varargs functions to monomorphic C functions (one
-  specialization per call signature).
+  specialization per call signature). **Not done in this build:** polymorphic
+  `auto` is not monomorphized; `AnalyzerResult` has no `specials` field
+  (`src/analyzer.nim:71-73` — only `root`, `ctx`), and `auto` params lower to
+  `any`/`void*` and currently emit the literal C `auto` keyword, which breaks
+  codegen. See the gap note in `src/cgen.nim:21-25`.
 - Lower method calls, metamethod dispatch, and auto(ref/deref) for records/arrays.
 - Implement the GC runtime (or omit it when `nogc`).
 - Honor annotations: `<inline>`, `<cimport>` (declare/import C functions),
@@ -813,13 +827,20 @@ and its module map is one file per concern:
 | `src/ast.nim` | AST node constructors and tree walkers | M1 |
 | `src/lexer.nim` / `src/parser.nim` | lexer and recursive-descent parser | M1 |
 | `src/span.nim` / `src/errors.nim` / `src/config.nim` / `src/cli.nim` | source spans, diagnostics, config, CLI | M1 infra |
+| `src/main.nim` | CLI entry point: wires `Config` → `compile` driver, `--print-ast`/`--print-analyzed-ast` dispatch | C1 |
 | `src/types.nim` | `Type`/`TypeKind`/`Attr`/`Conversion`/`Symbol`/`Scope`, builtin types, structural canonicalization | M2 |
 | `src/sema.nim` | pure type rules (`inferUnary`/`inferBinary`/`commonType`/`convert`/`checkCall`/`resolveTypeExpr`) | M2 |
-| `src/analyzer.nim` | `AnalyzerContext`, scope/symbol ops, P3 registration, P4 visitor, polymorphic specialization, `dumpAnalyzed` | M2 |
+| `src/analyzer.nim` | `AnalyzerContext`, scope/symbol ops, P3 registration, P4 visitor, polymorphic specialization, `dumpAnaled` | M2 |
 | `src/preprocessor.nim` | gradual per-node macro/preprocess pass | M6 |
 | `src/cgen_types.nim` / `src/cemitter.nim` | C-type mapping and emitter helpers (analyzer-free) | M3 |
 | `src/cgen.nim` | AST → C visitor | M3 |
 | `src/compile.nim` | end-to-end driver seam | M4 |
+> **Note:** `src/typedesc.nim` was a dead module: it was committed but nothing
+> imports it (its only `src/` reference was its own `isMainModule` echo). The
+> runtime type-info registry it claimed to emit was never produced here —
+> `src/cgen.nim` emits those `extern` declarations inline in its `RUNTIME_C`
+> preamble and `src/runtime.c` holds the definitions. `typedesc.nim` has been
+> removed.
 
 **Verification oracles (both flags on `/usr/bin/nelua`):**
 - `--print-ast` — the untyped AST. The M1 acceptance bar; `tmp/cmp.py` normalizes
