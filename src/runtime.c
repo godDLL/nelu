@@ -48,27 +48,12 @@ const struct nltype nltype_of_bool    = { "bool",    sizeof(uint8_t), _Alignof(u
 const struct nltype nltype_of_string  = { "string",  sizeof(nlstring),_Alignof(nlstring),NULL };
 
 /* ------------------------------------------------------------------ */
-/* nelua_print -- variadic, emulates Lua `print`.                     */
+/* nelua_print* -- typed print helpers, emulating Lua `print`.        */
 /*                                                                     */
-/* The generated code calls nelua_print with the raw, typed C values
- * (int64_t / double / nlstring / bool) and no type tags, so the only way
- * to recover the argument sequence on the x86-64 System V ABI is to read
- * the register save area directly.  GP args (integers, pointers, and the
- * two-slot by-value nlstrings) live at offsets 0..47, FP args (doubles)
- * at offsets 48..111 of the register save area.
- *
- * This is a best-effort heuristic: it cannot reliably tell a real pointer
- * argument from a stale register, nor a bool from an int.  It handles the
- * common cases (ints, doubles, strings, nil) and stops at the first
- * register-save-area slot that does not look like a real argument.
- */
+/* C7: the C generator emits one typed call per argument instead of a  */
+/* single variadic nelua_print, so each helper takes exactly one value */
+/* and the argument order is guaranteed correct regardless of type.   */
 /* ------------------------------------------------------------------ */
-
-/* Offsets within the x86-64 System V register save area. */
-#define NL_GP_SLOTS  6
-#define NL_FP_SLOTS  8
-#define NL_GP_REGION (NL_GP_SLOTS * 8)   /* 48 */
-#define NL_FP_REGION (NL_FP_SLOTS * 8)   /* 64, starts at offset 48  */
 
 /* Output stream nelua_print writes to.  Defaults to stdout so the generated
    program behaves normally; the test harness may redirect it.  stdout is not
@@ -126,84 +111,44 @@ static int nl_is_printable_string(const void* p, size_t n) {
   return ok;
 }
 
-void nelua_print(...) {
-  va_list ap;
-  __builtin_va_start(ap, ap);
+void nelua_print_int64(int64_t v) {
+  fprintf(nl_out, "%lld", (long long)v);
+}
 
-  /* On x86-64, va_list is struct __va_list_tag { int gp_offset; int fp_offset;
-     void *overflow_arg_area; void *reg_save_area; }.  We read the register
-     save area directly so we can tell GP slots from FP slots. */
-  unsigned char* rsa = (unsigned char*)ap[0].reg_save_area;
-  (void)ap[0].gp_offset;
-  (void)ap[0].fp_offset;
-  (void)ap[0].overflow_arg_area;
+void nelua_print_uint64(uint64_t v) {
+  fprintf(nl_out, "%llu", (long long)v);
+}
 
-  int first = 1;
-  int64_t last_string_data = -1;   /* guard against stale-slot string mimicry */
-
-  /* ---- general-purpose slots: int64_t, nil/pointer, nlstring (2 slots) ---- */
-  int i = 0;
-  while (i < NL_GP_SLOTS) {
-    int64_t v;
-    memcpy(&v, rsa + i * 8, 8);
-
-    if (v == 0) {
-      /* nil or int 0 -- indistinguishable; print 0 */
-      if (!first) fputc(' ', nl_out);
-      first = 0;
-      fputs("0", nl_out);
-      i++;
-      continue;
-    }
-
-    if (nl_is_small_int(v)) {
-      if (!first) fputc(' ', nl_out);
-      first = 0;
-      fprintf(nl_out, "%lld", (long long)v);
-      i++;
-      continue;
-    }
-
-    /* pointer-range value: maybe a by-value nlstring {data, size} */
-    if (i + 1 < NL_GP_SLOTS) {
-      int64_t s;
-      memcpy(&s, rsa + (i + 1) * 8, 8);
-      if (s > 0 && s < (int64_t)(1 << 28) && v != last_string_data &&
-          nl_is_printable_string((const void*)v, (size_t)s)) {
-        if (!first) fputc(' ', nl_out);
-        first = 0;
-        fwrite((const void*)v, 1, (size_t)s, nl_out);
-        last_string_data = v;
-        i += 2;
-        continue;
-      }
-    }
-
-    /* not a real argument (stale slot or a bare pointer we cannot
-       interpret) -- stop scanning GP slots */
-    break;
+void nelua_print_double(double d) {
+  /* Lua formats integral doubles without a decimal point. */
+  if (d == floor(d) && isfinite(d) && fabs(d) < 1e15) {
+    fprintf(nl_out, "%.0f", d);
+  } else {
+    fprintf(nl_out, "%g", d);
   }
+}
 
-  /* ---- floating-point slots: doubles ---- */
-  i = 0;
-  while (i < NL_FP_SLOTS) {
-    double d;
-    memcpy(&d, rsa + NL_GP_REGION + i * 8, 8);
-    if (nl_is_zero_or_denormal(d)) break;
-    if (!first) fputc(' ', nl_out);
-    first = 0;
-    /* Lua formats integral doubles without a decimal point. */
-    if (d == floor(d) && isfinite(d) && fabs(d) < 1e15) {
-      fprintf(nl_out, "%.0f", d);
-    } else {
-      fprintf(nl_out, "%g", d);
-    }
-    i++;
+void nelua_print_string(nlstring s) {
+  if (s.data != NULL && s.size > 0) {
+    fwrite(s.data, 1, s.size, nl_out);
   }
+}
 
+void nelua_print_bool(int b) {
+  fputs(b ? "true" : "false", nl_out);
+}
+
+void nelua_print_nil(void) {
+  fputs("nil", nl_out);
+}
+
+void nelua_print_sep(void) {
+  fputc(' ', nl_out);
+}
+
+void nelua_print_newline(void) {
   fputc('\n', nl_out);
   fflush(nl_out);
-  __builtin_va_end(ap);
 }
 
 /* ------------------------------------------------------------------ */
