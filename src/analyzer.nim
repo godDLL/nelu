@@ -1263,7 +1263,7 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
   var aparts: seq[string] = @[]
   for arg in args:
     let atype = if arg == selfDecl: pointerType(recordType)
-                elif arg.children.len > 0: resolveTypeExpr(arg.children[0])
+                elif arg.children.len > 0: analyzeTypeExpr(ctx, arg.children[0], false)
                 else: nil
     let at = if atype != nil: atype else: BuiltinTypes["any"]
     # Oracle: a parameter whose (deduced) type is `any` is not supported on the
@@ -1317,7 +1317,7 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
   ctx.scope = newScope(saved, nameStr)
   for arg in args:
     let atype = if arg == selfDecl: pointerType(recordType)
-                elif arg.children.len > 0: resolveTypeExpr(arg.children[0])
+                elif arg.children.len > 0: analyzeTypeExpr(ctx, arg.children[0], false)
                 else: nil
     let at = if atype != nil: atype else: BuiltinTypes["any"]
     var arga = ctx.getAttr(arg)

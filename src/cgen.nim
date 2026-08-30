@@ -479,7 +479,8 @@ proc genBinaryOp(s: var Gen, node: Node): string =
   let ra = s.ctx.attrOf.getOrDefault(rhs)
   let lt = if la != nil: la.typ else: nil
   let rt = if ra != nil: ra.typ else: nil
-  let rtype = s.ctx.attrOf.getOrDefault(node).typ
+  let na = s.ctx.attrOf.getOrDefault(node)
+  let rtype = if na != nil: na.typ else: nil
   let lstr0 = s.genExpr(lhs)
   let rstr0 = s.genExpr(rhs)
   let arithmetic = node.str in @["+","-","*","/","//","%","^","<<",">>","&","|","~"]
@@ -913,6 +914,14 @@ proc cFuncDecl(retType: Type, name: string, paramStr: string): string =
   return ret & " " & name & "(" & paramStr & ")"
 
 proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool) =
+  # A `global` declaration is only valid at the module top scope; the oracle's
+  # analyzer rejects it inside any function body (analyzer.lua:2217).  Ours
+  # does not check it yet, so enforce it here rather than emit broken C for a
+  # global that has no right to exist in that scope.
+  if node.str == "global" and s.inFunc:
+    s.unsupported = true
+    s.unsupportedMsg = "global variables can only be declared in top scope"
+    return
   var iddecls: seq[Node] = @[]
   var inits: seq[Node] = @[]
   for c in node.children:
