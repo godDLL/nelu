@@ -83,9 +83,14 @@ proc convert*(fromT, toT: Type, explicit: bool = false): Conversion =
     if explicit:
       return Conversion(kind: ckExplicit, check: false)
     return Conversion(kind: ckNone)
-  # nilptr -> pointer / optional
-  if fromT.isNilptr and (toT.isPointer or toT.isOptional):
+  # nilptr -> optional is an implicit conversion.  Assigning nil/nilptr to a
+  # *typed pointer* is rejected (the oracle errors
+  # `local p: *byte = nil` with "no viable type conversion from 'niltype' to
+  # 'pointer(uint8)'"), so nilptr -> pointer no longer auto-succeeds here.
+  if fromT.isNilptr and toT.isOptional:
     return Conversion(kind: ckImplicit, check: false)
+  if fromT.isNilptr and toT.isPointer:
+    return Conversion(kind: ckNone)
   # record value -> pointer-to-record: implicit address-taking (no check)
   if fromT.isRecord and toT.isPointer and fromT == toT.subtype:
     return Conversion(kind: ckImplicit, check: false)
@@ -385,7 +390,9 @@ when isMainModule:
   doAssert convert(p1, pi).kind == ckImplicit and convert(p1, pi).check == false
   doAssert convert(fnT, p1, explicit=true).kind == ckExplicit
   doAssert convert(fnT, p1).kind == ckNone
-  doAssert convert(nilptr, p1).kind == ckImplicit and convert(nilptr, p1).check == false
+  # nilptr -> typed pointer is no longer an implicit conversion (see the matrix
+  # row above); nilptr -> optional still is.
+  doAssert convert(nilptr, p1).kind == ckNone
   doAssert convert(boolean, i64).kind == ckImplicit and convert(boolean, i64).check == true
   doAssert convert(voidT, i64).kind == ckNone
 

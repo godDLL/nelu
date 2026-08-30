@@ -462,6 +462,8 @@ proc specializeCall(ctx: var AnalyzerContext, calleeSym: Symbol,
 proc analyzeNominalType*(ctx: var AnalyzerContext, node: Node, usedType = true): Type
 proc analyzeInitList(ctx: var AnalyzerContext, node: Node, parentType: Type = nil): Type
 proc foldIntValue(ctx: var AnalyzerContext, node: Node): int
+proc typeValueKey(node: Node, ct: Type): string
+proc resolveTypeValue(ctx: var AnalyzerContext, key: string): Type
 
 proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
   let caller = node.children[^1]
@@ -1016,12 +1018,13 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
     # dropped; resolve it here and record it on the symbol so a later `x: T`
     # in a type position dereferences it.  Without this `local x: T = 0`
     # resolves T to `type` and prints `nil` instead of `0`.
-    if isTypeBinding and vtype == BuiltinTypes["type"] and i < inits.len:
+    if vtype == BuiltinTypes["type"] and i < inits.len and not isTypeBinding:
       let ct = analyzeTypeExpr(ctx, inits[i])
       if ct != nil:
-        let tv = neluaTypeName(ct)
+        let tv = typeValueKey(inits[i], ct)
         sym.value = tv
         a.value = tv
+        a.isTypeBinding = true
     if not isTypeBinding:
       a.lvalue = true
       a.staticstorage = true
@@ -1406,9 +1409,47 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
   nd.ftype = ftypeStr
   nd2.ftype = ftypeStr
 
+proc resolveTypeValue(ctx: var AnalyzerContext, key: string): Type =
+  ## Resolve a type-as-value lookup key to its concrete Type.  Builtins use
+  ## their canonical C name (int64, uint8); named user types are looked up in
+  ## scope as type symbols; a key that is itself a type alias dereferences
+  ## transitively.  Returns nil when the key names no type.
+  if key.len == 0: return nil
+  if BuiltinTypes.hasKey(key): return BuiltinTypes[key]
+  if PrimitiveTypes.hasKey(key): return PrimitiveTypes[key]
+  let sym = ctx.lookup(key)
+  if sym != nil and sym.typ != nil:
+    if sym.kind == skType:
+      return sym.typ
+    if sym.typ == BuiltinTypes["type"] and sym.value.len > 0:
+      return resolveTypeValue(ctx, sym.value)
+  return nil
+
+proc typeValueKey(node: Node, ct: Type): string =
+  ## The lookup key for a type-as-value: the canonical C name for builtins
+  ## (int64, uint8) and the source identifier for named user types (Record,
+  ## Color), unwrapping any surrounding parens.  This is what the oracle stores
+  ## as a type alias's `value` and what `resolveTypeValue` consumes.
+  if ct == nil: return ""
+  let cn = neluaTypeName(ct)
+  if BuiltinTypes.hasKey(cn) or PrimitiveTypes.hasKey(cn):
+    return cn
+  var n = node
+  while n != nil and n.kind == nkParen and n.children.len > 0:
+    n = n.children[0]
+  if n != nil and n.kind == nkId:
+    return n.str
+  return cn
+
 proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Type =
   if node == nil: return nil
   case node.kind
+  of nkParen:
+    # A parenthesized type-value, `local T: type = (Record)`, unwraps to its
+    # inner type expression -- matching the oracle, which accepts the parens.
+    if node.children.len > 0:
+      return analyzeTypeExpr(ctx, node.children[0], usedType)
+    return nil
   of nkId:
     let t = if BuiltinTypes.hasKey(node.str): BuiltinTypes[node.str]
             elif PrimitiveTypes.hasKey(node.str): PrimitiveTypes[node.str]
@@ -1447,6 +1488,22 @@ proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Ty
           a.value = neluaTypeName(rt)
           return rt
       return sym.typ
+    # A2: a type-typed *variable* (a type alias, `local T: type = Record`)
+    # has `typ` = primtypes.type and carries the aliased type's lookup key in
+    # `value`.  In a type position it dereferences to the aliased type,
+    # matching the oracle's `*T` resolving to `pointer(Record)` -- without this
+    # `*T` collapses to `void*` exactly like the old `*Record` parameter bug.
+    if sym != nil and sym.typ != nil and sym.typ == BuiltinTypes["type"] and sym.value.len > 0:
+      var a = ctx.getAttr(node)
+      a.name = node.str
+      a.typ = BuiltinTypes["type"]
+      a.value = sym.value
+      a.vardecl = true
+      a.used = usedType
+      let rt = resolveTypeValue(ctx, sym.value)
+      if rt != nil:
+        return rt
+      return nil
     return nil
   of nkPointerType:
     let sub = if node.children.len > 0: analyzeTypeExpr(ctx, node.children[0], usedType) else: nil
