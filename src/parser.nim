@@ -166,12 +166,19 @@ proc parseType*(p: var Parser): Node =
       base = newArrayType(subtype, size)
     of "pointer":
       p.advance()
-      p.expect(tkLParen, "expected '(' after pointer")
-      var subtype: Node = nil
-      if not p.check(tkRParen):
-        subtype = p.parseType()
-      p.expect(tkRParen, "expected ')' after pointer type")
-      base = newPointerType(subtype)
+      if p.check(tkLParen):
+        p.advance()
+        var subtype: Node = nil
+        if not p.check(tkRParen):
+          subtype = p.parseType()
+        p.expect(tkRParen, "expected ')' after pointer type")
+        base = newPointerType(subtype)
+      else:
+        ## bare `pointer` is the generic pointer type; the reference accepts it
+        ## bare, e.g. `local function f(a: pointer)`. It lowers to a pointer
+        ## type with no element subtype (the analyzer treats a missing subtype
+        ## as `void`, which is what the reference's `primtypes.pointer` is).
+        base = newPointerType(nil)
     of "function":
       p.advance()
       p.expect(tkLParen, "expected '(' after function type")
@@ -332,6 +339,26 @@ proc parsePrimary*(p: var Parser): Node =
     if ty != nil:
       return newType(ty)
     raise ParseError(loc: t.loc, msg: "expected type after '@'")
+  of tkHashLBrack:
+    ## `#[expr]#` compile-time splice.  The inner text is captured raw (the
+    ## lexer folds string literals into single tokens, so a `]` inside a
+    ## string is never a `tkRBrack`) and stored on an `nkPreprocessExpr` leaf
+    ## for the preprocessor to evaluate at compile time.  Termination is the
+    ## first `]` immediately followed by `#`; splices do not nest.
+    let start = t.loc.offset + 2    ## text right after the `#[` chars
+    p.advance()                      ## consume `#[`
+    while p.pos < p.tokens.len and p.tokens[p.pos].kind != tkEof:
+      let cur = p.tokens[p.pos]
+      if cur.kind == tkRBrack and p.pos + 1 < p.tokens.len and
+         p.tokens[p.pos + 1].kind == tkHash:
+        break
+      inc p.pos
+    if p.pos >= p.tokens.len or p.tokens[p.pos].kind != tkRBrack:
+      raise p.error("unterminated '#[' splice (expected ']#')")
+    let rbrackTok = p.advance()      ## consume `]`
+    discard p.expect(tkHash, "expected '#' after ']' to close splice")
+    let inner = p.source[start ..< rbrackTok.loc.offset]
+    return Node(kind: nkPreprocessExpr, str: inner)
   of tkKeyword:
     case t.value
     of "true":
@@ -423,6 +450,13 @@ proc parseUnary*(p: var Parser): Node =
   if t.kind == tkBxor:
     p.advance()
     return newUnaryOp("~", p.parseUnary())
+  if t.kind == tkBand:
+    ## `&` is address-of (`ref`) when it prefixes an expression; the same token
+    ## is the bitwise `band` operator between expressions (see parseBand). The
+    ## reference grammar treats one `&` token as both `opunary`->'ref' and
+    ## `opband`->'band', disambiguated by position.
+    p.advance()
+    return newUnaryOp("&", p.parseUnary())
   return p.parsePower()
 
 proc parsePower*(p: var Parser): Node =
@@ -546,7 +580,7 @@ proc canStartExpr*(p: Parser): bool =
   let t = p.tok
   case t.kind
   of tkNumber, tkString, tkLString, tkIdent, tkDots, tkLParen, tkLBrace, tkAt,
-      tkMinus, tkHash, tkBxor:
+      tkMinus, tkHash, tkBxor, tkBand:
     return true
   of tkKeyword:
     return t.value in ["true", "false", "nil", "nilptr", "function", "not"]

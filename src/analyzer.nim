@@ -285,6 +285,11 @@ proc splitNumberSuffix(text: string): (string, string) =
 proc numberTypeAndValue(text: string): (Type, string, int) =
   let (num, suffix) = splitNumberSuffix(text)
   var base = 10
+  # `inf` / `nan` arrive here from compile-time splices (e.g. `#[math.huge]#`
+  # -> Number "inf"); they are not decimal/hex integers and would make
+  # `parseInt` raise, so accept them as float values first.
+  if num == "inf" or num == "-inf" or num == "nan" or num == "-nan":
+    return (BuiltinTypes["number"], num, base)
   var iv: int
   var fv: float
   var isFloat = false
@@ -959,6 +964,20 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
     a.typ = vtype
     a.used = true
     a.isTypeBinding = isTypeBinding
+    # Stage 0 (`: type` annotation binding): `local T: type = <typevalue>`
+    # binds a *type-typed* variable, exactly as the oracle does -- its `typ`
+    # is `primtypes.type` and its *value* is the concrete type
+    # (attr={type="type", value="int64"}).  The `: type` annotation forces
+    # `vtype` to primtypes.type, so the init's concrete type would otherwise be
+    # dropped; resolve it here and record it on the symbol so a later `x: T`
+    # in a type position dereferences it.  Without this `local x: T = 0`
+    # resolves T to `type` and prints `nil` instead of `0`.
+    if isTypeBinding and vtype == BuiltinTypes["type"] and i < inits.len:
+      let ct = analyzeTypeExpr(ctx, inits[i])
+      if ct != nil:
+        let tv = neluaTypeName(ct)
+        sym.value = tv
+        a.value = tv
     if not isTypeBinding:
       a.lvalue = true
       a.staticstorage = true
@@ -1380,6 +1399,16 @@ proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Ty
       a.value = node.str
       a.vardecl = true
       a.used = usedType
+      # Stage 0: a type-typed variable holding a concrete type value (e.g.
+      # `local T: type = integer`) dereferences to that type when it appears in
+      # a type position, matching the oracle's `x: T` resolving to `int64`.
+      if sym.value.len > 0 and sym.value != node.str:
+        let rt = if BuiltinTypes.hasKey(sym.value): BuiltinTypes[sym.value]
+                 elif PrimitiveTypes.hasKey(sym.value): PrimitiveTypes[sym.value]
+                 else: nil
+        if rt != nil:
+          a.value = neluaTypeName(rt)
+          return rt
       return sym.typ
     return nil
   of nkPointerType:

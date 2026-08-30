@@ -1,7 +1,9 @@
 ## M6 preprocessor — gradual per-node pass over the M1 AST.
 ##
-## Consumes every `nkDirective` / `nkPreprocess` / `nkPreprocessExpr` /
-## `nkPreprocessName` node so that none survive into analysis. Implements the
+## Consumes every `nkDirective` / `nkPreprocess` / `nkPreprocessName` node so
+## that none survive into analysis.  `nkPreprocessExpr` (`#[expr]#`) is
+## **evaluated** at compile time through the embedded Lua engine and spliced
+## in place (see `evalSpliceExpr`), so it does NOT survive either.  Implements the
 ## C-preprocessor-flavoured subset of the Nelua preprocessor (language-review
 ## §6, §10 step 2, tmp/M2_design.md §4.1):
 ##
@@ -16,15 +18,16 @@
 ##
 ## The pass driver is `preprocess(root, ctx) -> Node`.
 ##
-## §6 scope note: the reference's full-Lua preprocessor (`##` statement lines,
-## `##[[ ... ]]` blocks, `#[expr]#` expression replacement, `#|name|#` name
-## replacement, `inject_astnode`) requires an embedded Lua interpreter. That
-## engine is out of scope for this clean-room build; the corresponding AST
-## nodes are consumed (with a diagnostic) rather than left in the tree, so the
+## §6 scope note: the reference's full-Lua preprocessor needs an embedded Lua
+## interpreter, which this build ships (`src/luaengine.nim`).  `##` statement
+## lines and `#[expr]#` expression replacement are both evaluated through it;
+## `#[expr]#` is spliced in place (see `evalSpliceExpr`).  What remains
+## unsupported (consumed with a diagnostic rather than evaluated) is
+## `#|name|#` name replacement and `##[[ ... ]]` multi-line Lua blocks, so the
 ## "none survive into analysis" invariant still holds.
 
 import
-  ast, astshapes, parser, span, strutils, tables
+  ast, astshapes, parser, span, strutils, tables, types
 import std/streams
 import ./luaengine
 
@@ -765,6 +768,104 @@ proc registerPreprocessorBuiltins*(L: PLuaState) =
   L.lua_pushcfunction(cStaticAssert); L.lua_setglobal("static_assert")
   L.lua_createtable(0, 0); L.lua_setglobal("ppregistry")
   registerAster(L)
+  # --- splice-environment globals (`#[expr]#`) ---
+  # The reference's splice environment exposes `primtypes` (every primitive
+  # Type), `typedefs`, and the nelua type-name identifiers.  We seed the same
+  # surface into the shared Lua state so `#[math.huge]#` and `#[integer]#`
+  # resolve.  Each Type is carried as lightuserdata (the `Type` ref IS a
+  # pointer; the objects live in the module-global `BuiltinTypes` table, so
+  # they are GC-rooted for the whole compilation).
+  L.lua_createtable(0, BuiltinTypes.len)
+  for nm, ty in BuiltinTypes:
+    L.lua_pushlightuserdata(cast[pointer](ty))
+    L.lua_setfield(-2, nm)
+  L.lua_setglobal("primtypes")
+  L.lua_createtable(0, 1)
+  L.lua_getglobal("primtypes")
+  L.lua_setfield(-2, "primtypes")
+  L.lua_setglobal("typedefs")
+  # Seed the type-name identifiers as globals, skipping the three that collide
+  # with standard Lua (`string` is the library, `nil` is a keyword, `type` is
+  # the type-query function) so those keep their Lua meaning.
+  for nm, ty in BuiltinTypes:
+    if nm == "string" or nm == "nil" or nm == "type": continue
+    L.lua_pushlightuserdata(cast[pointer](ty))
+    L.lua_setglobal(nm)
+
+proc luaTableToNode*(L: PLuaState, idx: int): Node   # forward, see below
+proc luaValueToNode*(L: PLuaState, idx: int): Node =
+  ## Convert a Lua value on the stack at `idx` into a Nelua AST node -- the Nim
+  ## analogue of the reference's `aster.value`.  Conversion is by Lua type:
+  ##
+  ##   nil -> nkNil, boolean -> nkBoolean, string -> nkString,
+  ##   number -> nkNumber (decimal text; `math.huge` -> "inf"),
+  ##   a nelua `Type` (lightuserdata) -> `nkType(@nkId(name))` so
+  ##     `analyzeVarDecl`'s `isTypeBinding` branch handles it,
+  ##   table -> nkInitList, function -> `cannot convert ... function`.
+  let tt = lua_type(L, idx)
+  case tt
+  of LUA_TNIL:
+    return newNil()
+  of LUA_TBOOLEAN:
+    return newBoolean(lua_toboolean(L, idx) != 0)
+  of LUA_TSTRING:
+    let s = lua_tolstring(L, idx, nil)
+    return newString(if s != nil: $s else: "")
+  of LUA_TNUMBER:
+    if lua_isinteger(L, idx) != 0:
+      let i = lua_tointegerx(L, idx, nil)
+      return newNumber($i)
+    let f = lua_tonumberx(L, idx, nil)
+    return newNumber($f)
+  of LUA_TLIGHTUSERDATA:
+    let p = lua_touserdata(L, idx)
+    if p != nil:
+      let ty = cast[Type](p)
+      if ty != nil:
+        let nm = if ty.name.len > 0: ty.name else: "any"
+        return newType(newId(nm))
+    return newNil()
+  of LUA_TTABLE:
+    return luaTableToNode(L, idx)
+  of LUA_TFUNCTION:
+    raise PreprocessError(loc: newSourceLoc("", "", 0),
+      msg: "cannot convert preprocess value of type \"function\" to an AST node")
+  else:
+    raise PreprocessError(loc: newSourceLoc("", "", 0),
+      msg: "cannot convert preprocess value of type \"" & $tt & "\" to an AST node")
+
+proc luaTableToNode*(L: PLuaState, idx: int): Node =
+  ## Convert a Lua table into an `nkInitList`.  The C backend cannot consume
+  ## tables, so this is MVP-only; it is here so a table splice does not crash.
+  var elems: seq[Node] = @[]
+  let narr = lua_rawlen(L, idx)
+  for i in 1 .. narr:
+    lua_rawgeti(L, idx, i)
+    elems.add luaValueToNode(L, -1)
+    lua_pop(L, 1)
+  return newInitList(elems)
+
+proc evalSpliceExpr(ctx: var PreprocessContext, node: Node): Node =
+  ## Evaluate a `#[expr]#` splice: run `node.str` as a Lua chunk in the shared
+  ## engine, convert the first return value to a Node, and return it.  Lua
+  ## errors are surfaced as `PreprocessError` with the reference's
+  ## `error while preprocessing block: <chunk>: <msg>` shape.
+  let L = getLuaEngine(ctx.path)
+  registerPreprocessorBuiltins(L)
+  gActiveCtx = addr ctx
+  let chunkName = "@" & ctx.path & ":splice"
+  let src = node.str.strip()
+  let chunkText = if src.len == 0: "" else: "return (" & src & ")"
+  let (errMsg, nres) = runChunkGetResult(L, chunkText, chunkName)
+  gActiveCtx = nil
+  if errMsg.len > 0:
+    raise PreprocessError(loc: newSourceLoc(ctx.path, ctx.source, 0),
+      msg: "error while preprocessing block: " & chunkName & ": " & errMsg)
+  if nres == 0:
+    return newNil()
+  let result = luaValueToNode(L, -nres)
+  lua_settop(L, 0)
+  return result
 
 proc executeLuaBuffer*(ctx: var PreprocessContext) =
   ## Concatenate every `##` line collected during this pass into one Lua chunk
@@ -1107,7 +1208,8 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
             rewritten.add n
             ppNodes.add n
       elif n.kind == nkPreprocessExpr:
-        ctx.diags.add "#[] / #|| preprocessor replacement is unsupported in this build; node consumed"
+        if condStack.len == 0 or condStack[^1].active:
+          rewritten.add evalSpliceExpr(ctx, n)
       elif n.kind == nkPreprocessName:
         ctx.diags.add "#|name|# preprocessor replacement is unsupported in this build; node consumed"
       else:
@@ -1145,8 +1247,10 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
     # chunk so its side effects (print, defines, inject) take effect.
     discard runPreprocessChunk(ctx, @[root])
     return nil
-  of nkPreprocessExpr, nkPreprocessName:
-    ctx.diags.add "#[] / #|| preprocessor replacement is unsupported in this build; node consumed"
+  of nkPreprocessExpr:
+    return evalSpliceExpr(ctx, root)
+  of nkPreprocessName:
+    ctx.diags.add "#|name|# preprocessor replacement is unsupported in this build; node consumed"
     return newNil()
   else:
     for i in 0 ..< root.children.len:
