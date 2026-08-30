@@ -132,7 +132,10 @@ proc cType*(t: Type): string =
       if t.subtype == nil or t.subtype.isAny:
         "void*"
       elif t.subtype.isArray:
-        "(" & cType(t.subtype) & ")*"
+        if t.subtype.arraySize <= 0:
+          cType(t.subtype.subtype) & "*"
+        else:
+          "(" & cType(t.subtype) & ")*"
       else:
         cType(t.subtype) & "*"
     of tkNilptr:
