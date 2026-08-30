@@ -40,14 +40,19 @@ CORPUS2 = os.path.join(ROOT, "tmp", "m2_corpus")
 OUR = os.path.join(ROOT, "tmp", "nelua")
 ORACLE = "/usr/bin/nelua"
 
-# M1 baseline measured 2026-08-29: 16 MATCH / 12 DIFF out of 28, 3 of which
-# crash (SIGSEGV). The diffs are real parse/analyze gaps: a.b:c(1), anonymous
-# function, and if/elseif SIGSEGV; plus a mixed table-literal C warning. The gate
-# requires M1 to not regress (diffs/crashes at or below baseline) but allows it
-# to improve as gaps close -- "0 regressions", not "0 diffs".
-M1_BASELINE_MATCHES = 16
-M1_BASELINE_DIFFS = 12
-M1_BASELINE_CRASHES = 3
+# M1 baseline measured 2026-08-30 after the --print-ast driver fix
+# (src/main.nim:82 no longer runs genC during --print-ast; the three emitter
+# SIGSEGVs -- a.b:c(1), anonymous function, if/elseif -- no longer abort the
+# dump) and the M1 normalizer (norm_m1, below): 24 MATCH / 4 DIFF out of 28,
+# 0 crashes.  The 4 remaining DIFFs are _8/_11/_12/_13, which use an
+# @-prefixed type constructor in type position; the oracle 0.2.0-dev rejects
+# that syntax outright (no oracle AST to diff against), so they are a
+# corpus-convention issue, not a parser bug.  The gate requires M1 to not
+# regress (diffs/crashes at or below baseline) but allows it to improve as
+# gaps close -- "0 regressions", not "0 diffs".
+M1_BASELINE_MATCHES = 24
+M1_BASELINE_DIFFS = 4
+M1_BASELINE_CRASHES = 0
 
 
 def run(cmd, timeout=30):
@@ -144,6 +149,40 @@ def norm(s):
     return s
 
 
+# ---- M1 normalizer --------------------------------------------------------
+#
+# The two parse-AST dumps are structurally different by design (ours is the
+# nk-prefixed flat dump, the oracle is the nested Block/VarDecl form), so
+# tokenization is the only honest comparison.  Even so, two canonicalization
+# rules are needed before the streams are comparable -- both are verified NOT
+# to mask real regressions (see tmp/m1probe_test.py):
+#
+#   Rule 1 -- drop the absent-field placeholder.  A genuine boolean literal is
+#     always wrapped on both sides (Boolean { false } -> (Boolean,'false')).
+#     A *bare* (None,'false') therefore only ever appears in the oracle dump as
+#     a placeholder for a field our dump renders by omission (IdDecl type slot
+#     -> false, FuncDef flag2 -> false, ForNum pos2/step slots -> false).  No
+#     oracle dump ever emits a bare (None,'true'), so scoping the rule to
+#     'false' cannot mask a genuine value.
+#
+#   Rule 2 -- canonicalize the binary operator.  Our dump renders the operator
+#     as a pseudo-node (nkBinaryOp add -> (BinaryOp,'add')); the oracle renders
+#     it as a bare scalar between the operands ("add" -> (None,'add')).  The
+#     (BinaryOp,<scalar>) token only ever arises from that special case in
+#     proc dump, so remapping is unambiguous.  Unary operators need no rule:
+#     the op is the first child and fills the node's scalar slot on both sides.
+def norm_m1(tokens):
+    out = []
+    for kind, scalar in tokens:
+        if kind is None and scalar == "false":      # Rule 1: absent-field placeholder
+            continue
+        if kind == "BinaryOp" and scalar is not None:  # Rule 2: operator -> bare scalar
+            out.append((None, scalar))
+            continue
+        out.append((kind, scalar))
+    return out
+
+
 def main():
     if not build_our():
         return 1
@@ -160,8 +199,8 @@ def main():
             crashes += 1
             m1_detail.append((name, "CRASH", our_out.strip()[:60]))
             continue
-        mo = toks_mine(our_out)
-        oo = toks_oracle(ora_out)
+        mo = norm_m1(toks_mine(our_out))
+        oo = norm_m1(toks_oracle(ora_out))
         if mo == oo:
             matches_m1 += 1
         else:

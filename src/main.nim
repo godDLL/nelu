@@ -79,7 +79,15 @@ proc main(): int =
       failed = true
       continue
 
-    let res = compile(source, input, c)
+    ## `--print-ast` / `--print-analyzed-ast` / `--analyze` / `--print-ppcode`
+    ## only need the parser or analyzer.  They must NOT run the C code
+    ## generator (genC in compile.nim:138): the emitter segfaults on valid
+    ## constructs (method calls, anonymous functions, if/elseif) and would
+    ## abort the dump.  The oracle's --print-ast also does not codegen.
+    let needsCompile = not (c.printAst or c.printAnalyzedAst or
+                            c.analyze or c.printPpcode)
+    let res = if needsCompile: compile(source, input, c)
+              else: CompileResult(success: true)
     for d in res.diagnostics:
       stderr.writeLine(d)
     if res.diagnostics.len > 0:
