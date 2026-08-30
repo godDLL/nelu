@@ -550,6 +550,11 @@ proc genBinaryOp(s: var Gen, node: Node): string =
   let rt = if ra != nil: ra.typ else: nil
   let na = s.ctx.attrOf.getOrDefault(node)
   let rtype = if na != nil: na.typ else: nil
+  if na != nil and na.comptime and na.value != "" and not (node.str in @["//", "%"]):
+    let nt = na.typ
+    if nt != nil and nt.isStringy:
+      return "nlstr(" & cStringLit(na.value) & ")"
+    return na.value
   let lstr0 = s.genExpr(lhs)
   let rstr0 = s.genExpr(rhs)
   let arithmetic = node.str in @["+","-","*","/","//","%","^","<<",">>","&","|","~"]

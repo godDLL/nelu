@@ -362,12 +362,15 @@ void nlstring_free(nlstring* s) {
 
 /* ------------------------------------------------------------------ */
 /* nlidiv / nlmod -- integer division and modulo with Lua semantics.  */
-/* nlidiv truncates toward zero; nlmod returns a - floor(a/b)*b, i.e.  */
-/* the remainder takes the sign of the divisor.                       */
+/* nlidiv floors toward negative infinity (Lua //); nlmod returns a -  */
+/* floor(a/b)*b, i.e. the remainder takes the sign of the divisor.    */
 /* ------------------------------------------------------------------ */
 int64_t nlidiv(int64_t a, int64_t b) {
   if (b == 0) return 0;
-  return a / b;   /* C99 division truncates toward zero */
+  int64_t q = a / b;
+  int64_t r = a % b;
+  if (r != 0 && ((a < 0) != (b < 0))) q -= 1;
+  return q;
 }
 
 int64_t nlmod(int64_t a, int64_t b) {

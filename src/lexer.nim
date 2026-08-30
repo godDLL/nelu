@@ -67,6 +67,13 @@ proc isDigit(c: char): bool =
 proc isHexDigit(c: char): bool =
   isDigit(c) or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F')
 
+proc hexVal(c: char): int =
+  case c
+  of '0'..'9': ord(c) - ord('0')
+  of 'a'..'f': ord(c) - ord('a') + 10
+  of 'A'..'F': ord(c) - ord('A') + 10
+  else: 0
+
 proc isSpace(c: char): bool =
   c == ' ' or c == '\t' or c == '\r' or c == '\n' or c == '\f' or c == '\v'
 
@@ -127,17 +134,42 @@ proc lexLongString(s: string, start: int): (string, int) =
 
 proc lexString(s: string, start: int, quote: char): (string, int) =
   var i = start + 1
+  var buf = newStringOfCap(s.len)
+  buf.add quote
   while i < s.len:
     let c = s[i]
     if c == '\\':
-      inc i, 2
+      inc i
+      if i >= s.len: break
+      case s[i]
+      of 'a': buf.add '\a'; inc i
+      of 'b': buf.add '\b'; inc i
+      of 'f': buf.add '\f'; inc i
+      of 'n': buf.add '\n'; inc i
+      of 'r': buf.add '\r'; inc i
+      of 't': buf.add '\t'; inc i
+      of 'v': buf.add '\v'; inc i
+      of '\\': buf.add '\\'; inc i
+      of '"': buf.add '"'; inc i
+      of '\'': buf.add '\''; inc i
+      of 'z':
+        inc i
+        while i < s.len and isSpace(s[i]): inc i
+        continue
+      of 'x':
+        inc i; var hx = ""
+        while i < s.len and isHexDigit(s[i]) and hx.len < 2: hx.add s[i]; inc i
+        if hx.len > 0:
+          var v = hexVal(hx[0]) * 16
+          if hx.len > 1: v += hexVal(hx[1])
+          buf.add char(v)
+        else: buf.add 'x'
+      else: buf.add s[i]; inc i     # unknown escape: keep literally (current behavior)
       continue
-    if c == quote:
-      return (s[start ..< i + 1], i + 1)
-    if c == '\n':
-      break
-    inc i
-  return (s[start ..< s.len], s.len)
+    if c == quote: buf.add quote; return (buf, i + 1)
+    if c == '\n': break
+    buf.add c; inc i
+  return (buf, s.len)
 
 proc skipComment(s: string, i: int): int =
   if i + 1 >= s.len: return i + 1
