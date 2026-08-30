@@ -103,7 +103,7 @@ nelua-lang/
 ├── lib/, lualib/       # stdlib + oracle source (read-only reference)
 ├── examples/, tests/, spec/   # oracle's own corpus (read-only reference)
 └── plan/              # design docs + gates (tracked): cmp.py, regress.py,
-                      #   examples_parity.py, probes (rec.nelua, sw2.nelua)
+                      #   examples_parity.py
 ```
 
 `src/` modules (current):
