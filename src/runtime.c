@@ -124,7 +124,13 @@ void nelua_print_double(double d) {
      no decimal point and no exponent, so integral values read "1.0" not "1". */
   char buf[64];
   snprintf(buf, sizeof buf, "%.14g", d);
-  if (strchr(buf, '.') == NULL && strchr(buf, 'e') == NULL &&
+  /* `%.14g` renders inf/nan as the bare words "inf"/"-inf"/"nan"/"-nan",
+     which contain no decimal point and no exponent, so the integral-suffix
+     scan below would wrongly append ".0" to them.  The oracle's `tostring`
+     prints these bare, so skip the suffix for them. */
+  if (strcmp(buf, "inf") != 0 && strcmp(buf, "-inf") != 0 &&
+      strcmp(buf, "nan") != 0 && strcmp(buf, "-nan") != 0 &&
+      strchr(buf, '.') == NULL && strchr(buf, 'e') == NULL &&
       strchr(buf, 'E') == NULL) {
     strcat(buf, ".0");
   }

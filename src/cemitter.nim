@@ -33,7 +33,18 @@ proc cNumberLit*(t: Type, s: string): string =
   ## when the source literal has no radix marker; integers are returned as-is
   ## (128-bit literals need no suffix on GCC/Clang). A trailing Nelua type
   ## suffix (`_u32`, `_f32`, ...) is stripped -- it is not valid C.
+  ##
+  ## `inf` / `nan` arrive from compile-time splices (e.g. `#[math.huge]#`).
+  ## They are not valid C identifiers and would be misparsed (and `inf` even
+  ## trips the float-marker scan because it contains `f`), so they are lowered
+  ## to the IEEE literals the reference runtime uses: `(1.0/0.0)` etc.
   let s = stripNeluaNumberSuffix(s)
+  case s
+  of "inf": return "(1.0/0.0)"
+  of "-inf": return "(-1.0/0.0)"
+  of "nan": return "(0.0/0.0)"
+  of "-nan": return "(-0.0/0.0)"
+  else: discard
   if t == nil:
     return s
   if t.isFloat:
