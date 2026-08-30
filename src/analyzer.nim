@@ -96,6 +96,16 @@ proc computeUnitname*(path: string): string =
 proc newScope*(parent: Scope, name: string = ""): Scope =
   Scope(name: name, symbols: initTable[string, Symbol](), parent: parent)
 
+proc getUpFunctionScope(scope: Scope): Scope =
+  ## Walk the scope chain until a function body scope is found. Returns nil if
+  ## the referencing code is not inside any function (e.g. module scope). Used by
+  ## the upvalue check to tell "same function" access from closure capture.
+  var s = scope
+  while s != nil:
+    if s.isFunction: return s
+    s = s.parent
+  return nil
+
 proc register*(ctx: var AnalyzerContext, name: string, kind: SymbolKind,
                typ: Type, node: Node = nil): Symbol =
   let sym = Symbol(name: name, kind: kind, typ: typ, node: node,
@@ -776,6 +786,20 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
     if sym != nil:
       ctx.symOf[node] = sym
       sym.used = true
+      # Mirror the oracle's upvalue check (analyzer.lua:670-673). A variable
+      # that is not module-scope and not in the same function as the referencing
+      # code is an upvalue, which Nelua does not support. Function symbols are
+      # exempt: the oracle marks every function staticstorage, which is what
+      # makes recursion through an inner function legal. Comptime vars are
+      # exempt too (the oracle exempts them via is_directly_accesible_from_scope).
+      if sym.kind in {skVar, skParam} and not sym.comptime:
+        if sym.scope != ctx.globals:
+          let symUp = getUpFunctionScope(sym.scope)
+          let refUp = getUpFunctionScope(ctx.scope)
+          if symUp != refUp:
+            ctx.diags.add ctx.path & ": error: attempt to access upvalue '" &
+              nm & "', but closures are not supported"
+            return nil
       var a = ctx.getAttr(node)
       if sym.kind == skBuiltin:
         a.codename = sym.codename
@@ -1327,6 +1351,7 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
     recordType.methods[methodName] = MethodDesc(sym: sym, codename: codename, ftype: ftype)
   let saved = ctx.scope
   ctx.scope = newScope(saved, nameStr)
+  ctx.scope.isFunction = true
   for arg in args:
     let atype = if arg == selfDecl: pointerType(recordType)
                 elif arg.children.len > 0: analyzeTypeExpr(ctx, arg.children[0], false)

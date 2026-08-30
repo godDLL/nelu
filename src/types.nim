@@ -91,6 +91,7 @@ type
     name*: string
     symbols*: Table[string, Symbol]
     parent*: Scope
+    isFunction*: bool          ## true for scopes pushed by a function body
 
   Attr* = ref object
     ## Per-node analysis payload. Filled by M2, read by M4 codegen.

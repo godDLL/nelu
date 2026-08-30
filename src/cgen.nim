@@ -98,6 +98,7 @@ void nelua_print_double(double d);
 void nelua_print_string(nlstring s);
 void nelua_print_bool(int b);
 void nelua_print_nil(void);
+void nelua_print_ptr(void* v);
 void nelua_print_sep(void);
 void nelua_print_newline(void);
 extern FILE* nl_out;
@@ -714,7 +715,7 @@ proc genCall(s: var Gen, node: Node): string =
           of tkString, tkCstring:
             helper = "nelua_print_string"; passArg = true
           of tkBoolean: helper = "nelua_print_bool"; passArg = true
-          of tkNilptr, tkPointer: helper = "nelua_print_nil"; passArg = false
+          of tkNilptr, tkPointer: helper = "nelua_print_ptr"; passArg = true
           of tkAny: helper = "nelua_print_any"; passArg = true
           else: helper = "nelua_print_nil"; passArg = false
         let call = if passArg: helper & "(" & aes & ")" else: helper & "()"
@@ -1522,6 +1523,19 @@ proc genC*(source: string, path: string, release = false, nochecks = false,
     s.ctx = results[i].ctx
     s.genForwardDecl(fd)
 
+  # 3b. file-scope static declarations, BEFORE function definitions. Every
+  # module-level VarDecl is lowered to `static <type> <name>;` here so that
+  # nested functions emitted as free functions can reference it. This is what
+  # makes module-scope capture (the only closure form Nelua supports) actually
+  # compile. The initializers still run inside nelua_main, in source order, so
+  # view semantics are preserved (the closure and the reassignment share one
+  # static).
+  for r in results:
+    s.ctx = r.ctx
+    for c in r.root.children:
+      if c.kind == nkVarDecl:
+        s.genVarDecl(c, emitInits=false, isGlobal=true)
+
   # 4. cimports are emitted as externs inside genForwardDecl; no separate pass.
 
   # 5. function definitions (all results, dependency order)
@@ -1529,12 +1543,7 @@ proc genC*(source: string, path: string, release = false, nochecks = false,
     s.ctx = results[i].ctx
     s.genFuncDef(fd)
 
-  # 6. file-scope globals for every result, then nelua_main for this unit only.
-  for r in results:
-    s.ctx = r.ctx
-    for c in r.root.children:
-      if c.kind == nkVarDecl:
-        s.genVarDecl(c, emitInits=false, isGlobal=true)
+  # 6. nelua_main: global initializers + top-level statements, then the driver.
 
   s.line "int nelua_main(void) {"
   s.push

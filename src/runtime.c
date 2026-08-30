@@ -171,6 +171,18 @@ void nelua_print_nil(void) {
   fputs("(null)", nl_out);
 }
 
+/* A pointer prints as a hex address (the oracle spells `0x` + lowercase hex,
+   natural width, no leading zeros); a null pointer prints `(null)`, matching
+   the nil/nilptr spelling.  The generated TU passes the pointer value through
+   (passArg=true), so the NULL check here is what makes null distinct. */
+void nelua_print_ptr(void* v) {
+  if (v == NULL) {
+    fputs("(null)", nl_out);
+  } else {
+    fprintf(nl_out, "%p", v);
+  }
+}
+
 void nelua_print_sep(void) {
   fputc('\t', nl_out);
 }
