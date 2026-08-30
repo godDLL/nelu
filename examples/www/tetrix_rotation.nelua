@@ -1,0 +1,60 @@
+-- Standalone snippet extracted from examples/www/tetrix/tetrix.nelua
+-- Tests: @record{}, [4][4]byte fixed arrays, colon methods, nested record
+-- literal init, $copy operator. Rotation parity oracle-vs-ours.
+local Piece = @record{
+  x: integer,
+  y: integer,
+  size: integer,
+  layout: [4][4]byte,
+}
+
+local PIECES: [2]Piece = {
+  { size=2, layout={
+      {1,1,0,0},
+      {1,1,0,0},
+      {0,0,0,0},
+      {0,0,0,0},
+    },
+  },
+  { size=3, layout={
+      {0,1,0,0},
+      {1,1,1,0},
+      {0,0,0,0},
+      {0,0,0,0},
+    },
+  },
+}
+
+function Piece:rotate_left()
+  local layout = self.layout
+  for i=0,self.size-1 do
+    for j=0,self.size-1 do
+      self.layout[i][j] = layout[j][self.size-1-i]
+    end
+  end
+end
+
+function Piece:rotate_right()
+  local layout = self.layout
+  for i=0,self.size-1 do
+    for j=0,self.size-1 do
+      self.layout[j][self.size-1-i] = layout[i][j]
+    end
+  end
+end
+
+function Piece:dump()
+  for i=0,self.size-1 do
+    for j=0,self.size-1 do
+      print(self.layout[i][j])
+    end
+  end
+  print('---')
+end
+
+local p = PIECES[1]
+p:dump()
+p:rotate_left()
+p:dump()
+p:rotate_right()
+p:dump()

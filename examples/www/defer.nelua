@@ -1,0 +1,18 @@
+local function f()
+  print('body')
+  defer print('d2') end
+  defer print('d1') end
+  return
+end
+f()
+
+local function g()
+  print('g-start')
+  defer print('g-end') end
+  do
+    defer print('g-inner') end
+    print('g-body')
+  end
+  return
+end
+g()

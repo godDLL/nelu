@@ -1,0 +1,3 @@
+local a = 'hello'
+local b = 'world'
+print(#a, #b)

@@ -1,0 +1,11 @@
+local function pair(a: integer, b: integer): (integer, integer)
+  return a, b
+end
+local x, y = pair(3, 4)
+print(x, y)
+
+local function first(a: integer, b: integer): integer
+  return a
+end
+local p, q = first(7, 8), 9
+print(p, q)

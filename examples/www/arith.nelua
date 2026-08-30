@@ -1,0 +1,13 @@
+local a: integer = 7 // 2
+local b: integer = 7 % 3
+local c: integer = -7 % 3
+local d: integer = 1 << 4
+local e: integer = 256 >> 2
+local f: integer = ~0
+local g: integer = 3 & 7
+local h: integer = 3 | 5
+local i: integer = 3 ~ 7
+local j: integer = 0 - 1
+local big: integer = 1152921504606846976
+local wrap: integer = big + big
+print(a, b, c, d, e, f, g, h, i, j, wrap)
