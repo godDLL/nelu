@@ -18,7 +18,8 @@ import sys
 import glob
 import subprocess
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+# Lives in plan/ now, so ROOT is the project root (parent of plan/).
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXAMPLES = os.path.join(ROOT, "examples")
 TMP = os.path.join(ROOT, "tmp")
 OUR = os.path.join(TMP, "nelua")

@@ -2,11 +2,6 @@
 /tmp/
 /AGENT.md
 
-# Top-level scratch probes from ad-hoc verification. Only rec.nelua remains
-# here (the record/enum probe the record/enum design pass is working on); the
-# other probes live in tmp/ (already ignored wholesale by /tmp/ above).
-/rec.nelua
-
 # Build artefacts.
 /*.bin
 /*.c

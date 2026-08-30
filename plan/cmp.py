@@ -1,6 +1,10 @@
 import subprocess
 import os
 
+# Lives in plan/ now, so ROOT is the project root (parent of plan/).
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUR = os.path.join(ROOT, "tmp", "nelua")
+
 # The oracle caches --print-ast output by source filename, so every case MUST
 # use a unique path or the oracle returns the first case's AST forever.
 COUNTER = [0]
@@ -47,7 +51,7 @@ def toks_oracle(s):
 def mine(src):
     p = _fresh("m")
     open(p, 'w').write(src)
-    r = subprocess.run(['./tmp/nelua', '--print-ast', p],
+    r = subprocess.run([OUR, '--print-ast', p],
                        capture_output=True, text=True)
     os.remove(p)
     return toks_mine(r.stdout), r.stderr

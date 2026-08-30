@@ -22,10 +22,10 @@ but the baseline count is recorded inline so a *change* in M1 state is itself
 a regression signal (new crash = always a regression; diff-count movement is
 flagged, not fatal, so the gate stays green while M1 slowly converges).
 
-Note on location: this file lives at the project root and IS version-
-controlled. Its corpora (tmp/corpus_nelua/, tmp/m2_corpus/) remain in the
-gitignored scratch dir, so a fresh checkout has the gate script but not the
-data -- regenerate the corpora from the oracle before running.
+Note on location: this file lives in plan/ and IS version-controlled. Its
+corpora (tmp/corpus_nelua/, tmp/m2_corpus/) remain in the gitignored scratch
+dir, so a fresh checkout has the gate script but not the data -- regenerate
+the corpora from the oracle before running.
 """
 import glob
 import os
@@ -33,7 +33,8 @@ import re
 import subprocess
 import sys
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+# Lives in plan/ now, so ROOT is the project root (parent of plan/).
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS1 = os.path.join(ROOT, "tmp", "corpus_nelua")
 CORPUS2 = os.path.join(ROOT, "tmp", "m2_corpus")
 OUR = os.path.join(ROOT, "tmp", "nelua")

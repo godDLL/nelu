@@ -652,7 +652,7 @@ Details:
 ## Deliberately not wired into any gate
 
 These programs live only under `examples/www/`. The gate scripts
-(`cmp.py`, `regress.py`, `examples_parity.py`) and the corpora they read
+(`plan/cmp.py`, `plan/regress.py`, `plan/examples_parity.py`) and the corpora they read
 (`tmp/corpus_nelua/`, `tmp/m2_corpus/`) were **not** modified. If a kept
 program should be wired into a gate, that is a separate decision to be
 made by the owner of the gate scripts — this pass only curates the

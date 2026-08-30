@@ -102,7 +102,8 @@ nelua-lang/
 ├── src/                # the compiler (what we ship)
 ├── lib/, lualib/       # stdlib + oracle source (read-only reference)
 ├── examples/, tests/, spec/   # oracle's own corpus (read-only reference)
-└── cmp.py, regress.py, examples_parity.py   # gates (tracked, at project root)
+└── plan/              # design docs + gates (tracked): cmp.py, regress.py,
+                      #   examples_parity.py, probes (rec.nelua, sw2.nelua)
 ```
 
 `src/` modules (current):
@@ -130,8 +131,6 @@ Vendored third-party (read-only, **do not port**): `src/lua/*`, `src/lpeglabel/`
 
 `tmp/` contents worth knowing:
 - `tmp/NOTE_backlog.md` — the task queue.
-- `tmp/cmp.py`, `tmp/regress.py`, `tmp/examples_parity.py` — gates; the tracked
-  copies live at the project root, the `tmp/` copies run while agents finish.
 - `tmp/m2_corpus/`, `tmp/corpus_nelua/` — oracle AST dumps the gates diff against.
 
 ---
@@ -148,7 +147,7 @@ in-flight edits):
 | exceptions (running) | exceptions feature files (see its design doc) |
 | `any` (done, integrated) | `cgen_types.nim`, `analyzer.nim` (any-rejection blocks) |
 | module phase 1b (mine) | `analyzer.nim`, `cgen.nim` |
-| gate scripts (mine) | `cmp.py`, `regress.py`, `examples_parity.py` at project root |
+| gate scripts (mine) | `plan/cmp.py`, `plan/regress.py`, `plan/examples_parity.py` |
 
 **Concurrency: never launch more than 2 agents at once.** Files edited by
 multiple agents race — queue the rest and re-check ownership before launching.
@@ -160,8 +159,8 @@ multiple agents race — queue the rest and re-check ownership before launching.
 
 - **Build:** `nim c -d:release --path:src -o:tmp/nelua src/main.nim`
 - **Oracle dumps:** `--print-ast` (M1), `--print-analyzed-ast` (M2→M4).
-- **Gates:** `python3 cmp.py` (M1 diff floor), `python3 regress.py` (permanent
-  regression loop), `python3 examples_parity.py` (end-to-end execution).
+- **Gates:** `python3 plan/cmp.py` (M1 diff floor), `python3 plan/regress.py` (permanent
+  regression loop), `python3 plan/examples_parity.py` (end-to-end execution).
 - **End-to-end:** parse → preprocessor → analyze → codegen → gcc with
   `src/runtime.c` + `-lm` → run. The real test is a compiled program producing
   the right output and exit code 0.

@@ -1,0 +1,5 @@
+local x = 2
+switch x do
+  case 1 then print(1) end
+  else print(2) end
+end

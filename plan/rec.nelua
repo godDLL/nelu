@@ -1,0 +1,23 @@
+## linklib 'm'
+require 'math'
+local Vec2: type = @record{ x: float64, y: float64 }
+function Vec2:__add(other: Vec2): Vec2
+  return (@Vec2){ x = self.x + other.x, y = self.y + other.y }
+end
+function Vec2:len(): float64
+  return math.sqrt(self.x * self.x + self.y * self.y)
+end
+local a = (@Vec2){ x = 3.0, y = 4.0 }
+local b = (@Vec2){ x = 1.0, y = 0.0 }
+local c = a + b
+print('len(a)=', a:len(), 'len(c)=', c:len())
+
+require 'span'
+local arr: [4]float64 = {1.0, 2.0, 3.0, 4.0}
+local s: span(float64) = &arr
+print('span len=', #s, 's[2]=', s[2])
+
+local N <comptime> = 8
+local cbuf: [N]float64 <noinit>
+for i:isize=0,<N do cbuf[i] = i * i end
+print('arr[3]=', cbuf[3])
