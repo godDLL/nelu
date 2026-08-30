@@ -75,7 +75,7 @@ the bundled `lib/`.
 | M9 | bootstrap | stretch |
 | M10 | beyond-features sprints | queued: exceptions (in flight), pattern matching, enum, `any` phase 2, tables, closures, generators |
 
-Active work (live queue in `tmp/NOTE_backlog.md`):
+Active work (live queue in `NOTE_backlog.md`):
 - **Module system** — phase 1a (parse + resolve + recursive compile + cache)
   committed `02e162f`; **phase 1b** (analyzer scope-wiring + cgen inline dep
   emission) done, gate-verified, **not yet committed**.
@@ -130,7 +130,7 @@ Vendored third-party (read-only, **do not port**): `src/lua/*`, `src/lpeglabel/`
 `src/rpmalloc/`, `src/luainit.c`.
 
 `tmp/` contents worth knowing:
-- `tmp/NOTE_backlog.md` — the task queue.
+- `NOTE_backlog.md` — the task queue.
 - `tmp/m2_corpus/`, `tmp/corpus_nelua/` — oracle AST dumps the gates diff against.
 
 ---

@@ -1,6 +1,7 @@
 # Scratch: throwaway probes, build artefacts, captures. Never tracked.
 /tmp/
 /AGENT.md
+/NOTE_backlog.md
 
 # Build artefacts.
 /*.bin
