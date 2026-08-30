@@ -1,4 +1,4 @@
-# Nelua-in-Nim: Clean-Room Reimplementation — Work Plan
+# Nelua-in-Nim: Clean-Room Reimplementation - Work Plan
 
 Target: a Nelua compiler in **Nim** (2.2.10, `/usr/bin/nim`), emitting **C**,
 compiled through `gcc`/`cc`, covering Nelua 0.2.0-dev and the beyond-enhancements
@@ -7,11 +7,11 @@ in `language-review.md`.
 Reference under test: `/usr/bin/nelua`, Build 1635 (`0.2.0-dev.1635+a5845056`).
 
 This is a step-by-step plan, not a second spec: every path, ownership, and
-verification command is concrete and executable. It is kept terse on purpose —
+verification command is concrete and executable. It is kept terse on purpose -
 `language-review.md` is the canonical spec; this file records decisions and state
 that change.
 
-- The oracle's source is vendored at `lualib/nelua/` — read for semantics, but
+- The oracle's source is vendored at `lualib/nelua/` - read for semantics, but
   **do not modify and do not port into `src/`**.
 - After the reimplementation lands, development continues as the user's own
   branch **Nelu** (syntactic sugar, missing features, bug fixes). 0.2.0-dev
@@ -39,7 +39,7 @@ that change.
 | Reference nelua | `/usr/bin/nelua`, Build 1635 |
 | C compiler | `/usr/bin/gcc`, `/usr/bin/cc` |
 
-Real CLI flags on Build 1635 (these differ from Appendix B of the review — use
+Real CLI flags on Build 1635 (these differ from Appendix B of the review - use
 these):
 
 ```
@@ -52,9 +52,9 @@ these):
 --sanitize      -g <generator>     --no-cache
 ```
 
-Module resolution (needed for `require`): dotted `allocators.arena` →
-`lib/allocators/arena.nelua`; `require 'tests.io_test'` → relative to cwd;
-leading-dot `.foo` → relative to the requiring file's dir. Search order:
+Module resolution (needed for `require`): dotted `allocators.arena` ->
+`lib/allocators/arena.nelua`; `require 'tests.io_test'` -> relative to cwd;
+leading-dot `.foo` -> relative to the requiring file's dir. Search order:
 requiring file's dir (only for `.`-prefixed names), then `--path` entries, then
 the bundled `lib/`.
 
@@ -66,24 +66,37 @@ the bundled `lib/`.
 |-----------|-------|-------|
 | M1 | lexer + parser + AST | committed |
 | M2 | type system, scope, symbols | committed |
-| M3 | preprocessor | committed; Lua-side `##`/inject in flight |
+| M3 | preprocessor | committed |
 | M4 | analyzer | committed |
-| M5 | C runtime | committed (dead code — see `language-review.md`) |
+| M5 | C runtime | committed (dead code - see `language-review.md`) |
 | M6 | codegen | committed |
-| M7 | end-to-end compile + run | committed (driver fix pending commit) |
+| M7 | end-to-end compile + run | committed; the --print-ast driver no longer runs genC,
+  so the three emitter SIGSEGVs (a.b:c(1), anonymous function, if/elseif) no
+  longer abort AST dumps |
 | M8 | stdlib compilation | committed |
 | M9 | bootstrap | stretch |
-| M10 | beyond-features sprints | queued: exceptions (in flight), pattern matching, enum, `any` phase 2, tables, closures, generators |
+| M10 | beyond-features sprints | landed this cycle: any phase 2 (214102c), closures /
+  upvalue scoping (75f315e), pointer print spelling (75f315e), type-as-value,
+  nilptr-to-pointer, lshift/escapes/floor_div, M1 gate green. Designed & queued:
+  generators, scope_shadow, stepped_for, tetrix_rotation, record-value-to-pointer,
+  splice Stage 4. See NOTE_backlog.md "Ready to launch". |
 
 Active work (live queue in `NOTE_backlog.md`):
-- **Module system** — phase 1a (parse + resolve + recursive compile + cache)
-  committed `02e162f`; **phase 1b** (analyzer scope-wiring + cgen inline dep
-  emission) done, gate-verified, **not yet committed**.
-- **Bounded examples parser gaps** — in flight (literal suffixes, `<comptime>`,
-  `[N]T`, print tab separator, defensiveness).
-- **`any` type** — phase 1 done & integrated; phase 2 (tagged) deferred.
-- **Exceptions** — in flight.
-- **Queued:** pattern matching, record/enum type system.
+- **Module system** - phase 1a committed 02e162f; phase 1b (analyzer
+  scope-wiring + cgen inline dep emission) done, gate-verified, not yet committed.
+- **Bounded examples parser gaps** - in flight (literal suffixes, <comptime>,
+  [N]T, print tab separator, defensiveness).
+- **any type** - phase 1 done & integrated; phase 2 (tagged runtime any)
+  landed & committed 214102c.
+- **Closures / upvalues** - landed & committed 75f315e. Function-local
+  variable capture is rejected at analysis with the oracle's message; closure
+  statics are declared before the function bodies that read them.
+- **Pointer printing** - landed & committed 75f315e. Non-null pointers print
+  0x + lowercase hex (natural width), null prints (null), matching the oracle.
+- **Exceptions** - DONE, integrated & committed.
+- **Pattern matching** - DONE, integrated; 34/34 oracle probes match.
+- **Queued (ready to launch):** scope_shadow + stepped_for, tetrix_rotation,
+  record-value-to-pointer conversion, cmp.py tokenizer robustness.
 
 ---
 
@@ -91,18 +104,18 @@ Active work (live queue in `NOTE_backlog.md`):
 
 ```
 nelua-lang/
-├── AGENT.md            # standing brief for agents (read this first)
-├── README.md           # this plan
-├── language-review.md  # canonical spec/architecture (read-only)
-├── NELUA-200.md        # reader reference aid, checked against the oracle
-├── CONTRIBUTING.md     # untracked
-├── nim.cfg             # compiler build flags
-├── tmp/                # scratch: build artefacts, probes, captures. Stays until the user deletes it.
-├── plan/               # design docs + survey probes (scratch, not tracked)
-├── src/                # the compiler (what we ship)
-├── lib/, lualib/       # stdlib + oracle source (read-only reference)
-├── examples/, tests/, spec/   # oracle's own corpus (read-only reference)
-└── plan/              # design docs + gates (tracked): cmp.py, regress.py,
+|-- AGENT.md            # standing brief for agents (read this first)
+|-- README.md           # this plan
+|-- language-review.md  # canonical spec/architecture (read-only)
+|-- NELUA-200.md        # reader reference aid, checked against the oracle
+|-- CONTRIBUTING.md     # untracked
+|-- nim.cfg             # compiler build flags
+|-- tmp/                # scratch: build artefacts, probes, captures. Stays until the user deletes it.
+|-- plan/               # design docs + survey probes (scratch, not tracked)
+|-- src/                # the compiler (what we ship)
+|-- lib/, lualib/       # stdlib + oracle source (read-only reference)
+|-- examples/, tests/, spec/   # oracle's own corpus (read-only reference)
++-- plan/              # design docs + gates (tracked): cmp.py, regress.py,
                       #   examples_parity.py
 ```
 
@@ -111,70 +124,78 @@ nelua-lang/
 | Module | Role |
 |--------|------|
 | `main.nim` | CLI entry: parse opts, drive the pipeline |
-| `compile.nim` | compile driver (parse → preproc → analyze → codegen → cc) |
+| `compile.nim` | compile driver (parse -> preproc -> analyze -> codegen -> cc) |
 | `config.nim` | Config object: pragmas, paths, cc, flags |
 | `cli.nim` | CLI option parsing |
 | `span.nim`, `errors.nim` | source location + diagnostics |
 | `lexer.nim` | tokenizer |
-| `parser.nim` | recursive descent → AST |
+| `parser.nim` | recursive descent -> AST |
 | `ast.nim`, `astshapes.nim` | AST node types + shape registry |
 | `sema.nim` | semantic-analysis helpers |
 | `types.nim` | type object hierarchy + properties |
 | `preprocessor.nim` | preprocessor driver |
-| `luaengine.nim` | embedded Lua 5.x VM running `##` blocks (see §6) |
+| `luaengine.nim` | embedded Lua 5.x VM running `##` blocks (see section 6) |
 | `analyzer.nim` | visitor-based analyzer |
-| `cgen.nim`, `cemitter.nim`, `cgen_types.nim` | AST → C visitor + C type mapping |
+| `cgen.nim`, `cemitter.nim`, `cgen_types.nim` | AST -> C visitor + C type mapping |
 | `runtime.c` | C runtime the generated code links against |
 
 Vendored third-party (read-only, **do not port**): `src/lua/*`, `src/lpeglabel/`,
 `src/rpmalloc/`, `src/luainit.c`.
 
 `tmp/` contents worth knowing:
-- `NOTE_backlog.md` — the task queue.
-- `tmp/m2_corpus/`, `tmp/corpus_nelua/` — oracle AST dumps the gates diff against.
+- `NOTE_backlog.md` - the task queue.
+- `tmp/m2_corpus/`, `tmp/corpus_nelua/` - oracle AST dumps the gates diff against.
 
 ---
 
 ## 4. File ownership
 
 Tasks own **only** their listed new files and must not edit files owned by other
-tasks or the gate scripts. Current owners (check `git status` — it shows
+tasks or the gate scripts. Current owners (check `git status` - it shows
 in-flight edits):
 
 | Owner | Files |
+| Owner | Files |
 |-------|-------|
 | bounded-gaps (running) | `parser.nim`, `lexer.nim`, `analyzer.nim`, `cgen.nim` |
-| exceptions (running) | exceptions feature files (see its design doc) |
+| exceptions (done, integrated) | exceptions feature files (see its design doc) |
 | `any` (done, integrated) | `cgen_types.nim`, `analyzer.nim` (any-rejection blocks) |
 | module phase 1b (mine) | `analyzer.nim`, `cgen.nim` |
 | gate scripts (mine) | `plan/cmp.py`, `plan/regress.py`, `plan/examples_parity.py` |
+| type-as-value (done, integrated) | `src/analyzer.nim` |
+| nilptr-to-pointer (done, integrated) | `src/sema.nim` |
+| lshift/escapes/floor_div (done, integrated) | `src/cgen.nim`, `src/lexer.nim`, `src/runtime.c` |
+| M1 gate (mine) | `src/main.nim`, `plan/regress.py`, `plan/cmp.py` |
 
 **Concurrency: never launch more than 2 agents at once.** Files edited by
-multiple agents race — queue the rest and re-check ownership before launching.
-`analyzer.nim` and `cgen.nim` are currently edited by three owners each.
+multiple agents race - queue the rest and re-check ownership before launching.
+`analyzer.nim` is currently edited by bounded-gaps, module phase 1b, `any`, and
+type-as-value; `cgen.nim` by bounded-gaps, module phase 1b, `any`, and
+lshift/escapes/floor_div.  Two impl agents editing the same file race -- check
+ownership before launching.
 
 ---
 
 ## 5. How to verify
 
 - **Build:** `nim c -d:release --path:src -o:tmp/nelua src/main.nim`
-- **Oracle dumps:** `--print-ast` (M1), `--print-analyzed-ast` (M2→M4).
+- **Oracle dumps:** `--print-ast` (M1), `--print-analyzed-ast` (M2->M4).
 - **Gates:** `python3 plan/cmp.py` (M1 diff floor), `python3 plan/regress.py` (permanent
   regression loop), `python3 plan/examples_parity.py` (end-to-end execution).
-- **End-to-end:** parse → preprocessor → analyze → codegen → gcc with
-  `src/runtime.c` + `-lm` → run. The real test is a compiled program producing
+- **End-to-end:** parse -> preprocessor -> analyze -> codegen -> gcc with
+  `src/runtime.c` + `-lm` -> run. The real test is a compiled program producing
   the right output and exit code 0.
 
 Note: `regress.py` rebuilds `tmp/nelua` whenever any `src/*.nim|*.c` is newer
 than the binary. While any agent is mid-edit on shared `src/`, that rebuild
-produces an inconsistent binary and the gate goes red on unrelated code — a
+produces an inconsistent binary and the gate goes red on unrelated code - a
 false alarm. Re-run only when `src/` is quiescent.
 
 ---
 
 ## 6. Decisions settled (do NOT re-litigate)
 
-- Target model: Nelua source → (new compiler) → C source → (gcc/cc) → binary.
+- Target model: Nelua source -> (new compiler) -> C source -> (gcc/cc) -> binary.
 - AST node shapes: exactly Appendix A of the review, with `tag`, `attr`, `is_*`.
 - Type hierarchy properties: `is_integral`, `is_float`, `is_stringy`,
   `is_pointer`, `is_array`, `is_record`, `is_niltype`, `metafields`, `codename`,
@@ -190,16 +211,16 @@ false alarm. Re-run only when `src/` is quiescent.
   compiles `src/lua/*` + `luainit.c` into the binary and runs `##` blocks as Lua
   chunks (state persists across blocks and across `require`d modules within one
   compilation; `resetLuaState()` isolates each compile). This reversed the
-  "reimplement in Nim" recommendation — the macro surface is now Lua-driven.
-- **Faithful-mode divergences to replicate verbatim** (M0–M8):
+  "reimplement in Nim" recommendation - the macro surface is now Lua-driven.
+- **Faithful-mode divergences to replicate verbatim** (M0-M8):
   1. `local` is not hoisted (scope at its declaration line).
   2. `string.find` returns `(0, 0)` on no match, never `nil`.
   3. `string.match` returns a *sequence* of captures, not a string.
-  4. No `_` discard — `_` is an undeclared identifier.
+  4. No `_` discard - `_` is an undeclared identifier.
   5. `os.execute` returns `true`/`false`, not an exit code.
   6. `any` is unsupported (deduced-`any` is a compile error); `facultative(T)`
      cannot be used in return position.
-  7. C-keyword record fields break C emission — reject at parse time.
+  7. C-keyword record fields break C emission - reject at parse time.
 
 ---
 
@@ -210,10 +231,10 @@ false alarm. Re-run only when `src/` is quiescent.
 | 1 | 128-bit int/float type width | single config knob, default 64-bit everywhere |
 | 2 | Freestanding mode | `-P freestanding` omits libc-dependent runtime parts |
 | 3 | Test harness | Nim `unittest` for the compiler; nelua programs diffed against the oracle |
-| 4 | `any` full representation | tagged + runtime dispatch (phase 2), deferred until codegen files free up |
+| 4 | `any` full representation | tagged + runtime dispatch (phase 2) - DONE, landed `214102c`; see `plan/any-phase2-design.md` |
 | 5 | C type-name mangling for records/unions/enums | define in `types.nim` codename rules (Q1) |
 | 6 | `traits.typeidof` id assignment | monotonic per type, stable across runs (Q2) |
-| 7 | `--cache-dir` incremental compilation | enhancement; accept full recompilation for M0–M8 (Q3) |
+| 7 | `--cache-dir` incremental compilation | enhancement; accept full recompilation for M0-M8 (Q3) |
 
 ---
 
@@ -221,7 +242,7 @@ false alarm. Re-run only when `src/` is quiescent.
 
 | Risk | Sev | Mitigation |
 |------|-----|------------|
-| Preprocessor generality (generics, concepts, AST mutation) is the hardest subsystem; stdlib containers depend on it | H | Invest M3–M4 before codegen; port `preprocessor_spec` first |
+| Preprocessor generality (generics, concepts, AST mutation) is the hardest subsystem; stdlib containers depend on it | H | Invest M3-M4 before codegen; port `preprocessor_spec` first |
 | C codegen correctness for metamethod dispatch, multi-return structs, polymorphic specialization | H | M7 acceptance gate; structural `--print-code` diff |
 | Conservative GC stack scanning is error-prone | M | Make `-P nogc` work from M5 so the non-GC path is testable first |
 | Merge friction on shared contract files (`ast.nim`, `types.nim`) | M | Freeze contracts per milestone; contract owner resolves disputes |
