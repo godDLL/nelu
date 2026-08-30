@@ -481,6 +481,25 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
     if t != nil: argTypes.add t
   var calleeSym: Symbol = nil
   var calleeType: Type = nil
+  # C1: a type cast `(T)(e)` has a type node (or a paren wrapping one) as the
+  # caller.  Resolve the target type T, bind it as the call's calleeType and
+  # return type, and flag the node so codegen emits `(cType(T))(e)` instead of
+  # a function call.  Without this the `else` branch below dereferences a nil
+  # calleeType and SIGSEGVs -- a cast was previously left unanalyzed.
+  var castTarget: Type = nil
+  if caller.kind == nkParen and caller.children.len > 0 and
+     caller.children[0].kind == nkType:
+    castTarget = analyzeTypeExpr(ctx, caller.children[0].children[0])
+  elif caller.kind == nkType:
+    castTarget = analyzeTypeExpr(ctx, caller.children[0])
+  if castTarget != nil:
+    calleeType = Type(kind: tkFunction, name: "function", codename: "function")
+    calleeType.name = "function"; calleeType.codename = "function"
+    for at in argTypes:
+      calleeType.args.add if at != nil: at else: BuiltinTypes["any"]
+    calleeType.returns.add castTarget
+    ca.calleeType = castTarget
+    a.calleeType = castTarget
   if caller.kind == nkId:
     let nm = caller.str
     let sym = ctx.lookup(nm)
@@ -882,7 +901,15 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
     # children[0] is the index/key, children[1] is the base expression.
     if node.children.len > 1:
       let bt = analyzeExpr(ctx, node.children[1])
-      if bt != nil and bt.kind == tkArray and bt.subtype != nil:
+      # A base that is itself an array yields its element type; a base that is
+      # a pointer TO an array (e.g. a `*[0]byte` parameter, which the C backend
+      # lowers to an element pointer) yields the array's element type too.
+      # Without the pointer case the element silently resolves to `any`, which
+      # then mis-drives the `any` load path in codegen.
+      if bt != nil and bt.subtype != nil and bt.subtype.kind == tkArray and
+         bt.subtype.subtype != nil:
+        a.typ = bt.subtype.subtype
+      elif bt != nil and bt.kind == tkArray and bt.subtype != nil:
         a.typ = bt.subtype
       discard analyzeExpr(ctx, node.children[0])
     return a.typ

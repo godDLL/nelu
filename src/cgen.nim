@@ -132,6 +132,7 @@ uint64_t nlany_load_uint(nlany v);
 double   nlany_load_num(nlany v);
 uint8_t  nlany_load_bool(nlany v);
 nlstring nlany_load_string(nlany v);
+void*    nlany_load_ptr(nlany v);
 bool nlany_eq(nlany a, nlany b);
 
 /* Exception / panic primitives.  Definitions are inline here (rather than in
@@ -664,6 +665,13 @@ proc genCall(s: var Gen, node: Node): string =
       if pair.kind == nkPair:
         parts.add "." & cIdent(pair.str) & " = " & s.genExpr(pair.children[0]) & ","
     return "((struct " & tag & "){ " & parts.join(" ") & " })"
+  # C1: type cast `(T)(e)` -> `(cType(T))(e)`.  The caller attr carries the
+  # target type (bound by the analyzer); there is no callee symbol to call, so
+  # emit an explicit C cast of the single argument instead of a call expression.
+  if ca != nil and ca.calleeType != nil and caller.kind in {nkParen, nkType}:
+    let ct = cType(ca.calleeType)
+    let argstr = if args.len > 0: argstrs[0] else: "void"
+    return "(" & ct & ")(" & argstr & ")"
   case caller.kind
   of nkId:
     let cn = if ca != nil and ca.codename != "": ca.codename else: cIdent(caller.str)

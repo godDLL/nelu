@@ -168,7 +168,7 @@ void nelua_print_bool(int b) {
 }
 
 void nelua_print_nil(void) {
-  fputs("nil", nl_out);
+  fputs("(null)", nl_out);
 }
 
 void nelua_print_sep(void) {
@@ -243,6 +243,70 @@ void nelua_print_any(nlany v) {
     case NLANY_NUM:    nelua_print_double(v.as.n); break;
     case NLANY_STRING: nelua_print_string(v.as.s); break;
     default:           nelua_print_nil(); break;
+  }
+}
+
+/* `any` load helpers.  The construction set lives above; these extract a    */
+/* typed payload out of a tagged `nlany`.  A tag mismatch returns the zero    */
+/* value for the requested type (the analyzer only emits a load when the    */
+/* source is itself `any`, so the tag is runtime-unknown and the fallback    */
+/* must be safe).                                                            */
+int64_t nlany_load_int(nlany v) {
+  switch (v.tag) {
+    case NLANY_INT:  return v.as.i;
+    case NLANY_UINT: return (int64_t)v.as.u;
+    case NLANY_BOOL: return v.as.b;
+    case NLANY_NUM:  return (int64_t)v.as.n;
+    default:         return 0;
+  }
+}
+uint64_t nlany_load_uint(nlany v) {
+  switch (v.tag) {
+    case NLANY_UINT: return v.as.u;
+    case NLANY_INT:  return (uint64_t)v.as.i;
+    case NLANY_BOOL: return v.as.b;
+    case NLANY_NUM:  return (uint64_t)v.as.n;
+    default:         return 0;
+  }
+}
+double nlany_load_num(nlany v) {
+  switch (v.tag) {
+    case NLANY_NUM:  return v.as.n;
+    case NLANY_INT:  return (double)v.as.i;
+    case NLANY_UINT: return (double)v.as.u;
+    case NLANY_BOOL: return (double)v.as.b;
+    default:         return 0.0;
+  }
+}
+uint8_t nlany_load_bool(nlany v) {
+  switch (v.tag) {
+    case NLANY_BOOL: return v.as.b;
+    case NLANY_INT:  return v.as.i != 0;
+    case NLANY_UINT: return v.as.u != 0;
+    case NLANY_NUM:  return v.as.n != 0.0;
+    default:         return 0;
+  }
+}
+nlstring nlany_load_string(nlany v) {
+  if (v.tag == NLANY_STRING) return v.as.s;
+  nlstring empty; empty.data = NULL; empty.size = 0; return empty;
+}
+void* nlany_load_ptr(nlany v) {
+  if (v.tag == NLANY_POINTER) return v.as.p;
+  return NULL;
+}
+bool nlany_eq(nlany a, nlany b) {
+  if (a.tag != b.tag) return false;
+  switch (a.tag) {
+    case NLANY_NIL:    return true;
+    case NLANY_BOOL:   return a.as.b == b.as.b;
+    case NLANY_INT:    return a.as.i == b.as.i;
+    case NLANY_UINT:   return a.as.u == b.as.u;
+    case NLANY_NUM:    return a.as.n == b.as.n;
+    case NLANY_STRING: return a.as.s.data == b.as.s.data &&
+                         a.as.s.size == b.as.s.size;
+    case NLANY_POINTER: return a.as.p == b.as.p;
+    default:           return false;
   }
 }
 
