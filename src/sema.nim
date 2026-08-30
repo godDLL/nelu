@@ -86,6 +86,9 @@ proc convert*(fromT, toT: Type, explicit: bool = false): Conversion =
   # nilptr -> pointer / optional
   if fromT.isNilptr and (toT.isPointer or toT.isOptional):
     return Conversion(kind: ckImplicit, check: false)
+  # record value -> pointer-to-record: implicit address-taking (no check)
+  if fromT.isRecord and toT.isPointer and fromT == toT.subtype:
+    return Conversion(kind: ckImplicit, check: false)
   # pointer <-> pointer (subtype pointers)
   if fromT.isPointer and toT.isPointer:
     return Conversion(kind: ckImplicit, check: false)

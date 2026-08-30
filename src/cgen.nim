@@ -373,6 +373,9 @@ proc coerce(s: var Gen, expr: string, fromT: Type, toT: Type): string =
   of ckIdentity:
     return expr
   of ckNone:
+    # record value -> pointer-to-record: emit address-of instead of a cast
+    if fromT.isRecord and toT.isPointer and fromT == toT.subtype:
+      return "&" & expr
     # incompatible scalar pair: emit an explicit cast so the C stays valid
     return cCast(toT, expr)
   of ckExplicit:
@@ -388,6 +391,9 @@ proc coerce(s: var Gen, expr: string, fromT: Type, toT: Type): string =
           return cCast(toT, expr)
       return cCast(toT, expr)
     else:
+      # record value -> pointer-to-record: implicit address-taking
+      if fromT.isRecord and toT.isPointer and fromT == toT.subtype:
+        return "&" & expr
       return expr   # widening: C's own promotion applies
   of ckNarrow:
     return cCast(toT, expr)
