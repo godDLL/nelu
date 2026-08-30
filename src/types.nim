@@ -43,6 +43,12 @@ type
     isSigned*: bool
     typeid*: int
     note*: string             ## optional human note (e.g. "unsupported")
+    methods*: Table[string, MethodDesc]  ## colon-methods defined on this type
+
+  MethodDesc* = object
+    sym*: Symbol              ## the defining function symbol
+    codename*: string         ## C function name (<unit>_<Record>_<method>)
+    ftype*: Type              ## full function type (args incl. self, returns)
 
   Field* = object
     name*: string
@@ -114,7 +120,10 @@ type
     conv*: Conversion         ## pending implicit conversion
     calleeSym*: Symbol        ## Call/CallMethod: resolved callee symbol
     calleeType*: Type         ## Call: type callee (record ctor / cast target)
+    isConstructor*: bool      ## Call: record/enum constructor (compound literal)
+    isTypeBinding*: bool      ## VarDecl: `local X = @record/@enum` binds a TYPE
     isMethod*: bool           ## CallMethod
+    isMethodCall*: bool       ## DotIndex caller of a method (R.m(args))
     dotFieldName*: string     ## DotIndex/ColonIndex
     parentType*: Type         ## Pair: enclosing record/union type
     polySpec*: Node           ## Call into a polymorphic func: the specialization node
@@ -523,6 +532,23 @@ proc variantType*(alts: seq[Type]): Type =
 
 proc genericType*(name: string, args: seq[Type] = @[]): Type =
   canonicalize(Type(kind: tkGeneric, name: name, args: args))
+
+# --- nominal constructors (§6) ----------------------------------------------
+# `@record`/`@enum` are NOMINAL: each definition site yields a fresh Type with
+# its own typeid and C tag, distinct from any structural twin. These bypass the
+# TypeCache canonicalization that structural `record{}`/`enum{}` rely on.
+
+proc nominalRecordType*(name: string, fields: seq[Field] = @[]): Type =
+  inc TypeCounter
+  var t = Type(kind: tkRecord, name: name, fields: fields, typeid: TypeCounter)
+  t.methods = initTable[string, MethodDesc]()
+  t
+
+proc nominalEnumType*(name: string, underlying: Type, enumFields: seq[EnumField] = @[]): Type =
+  inc TypeCounter
+  var t = Type(kind: tkEnum, name: name, subtype: underlying, enumFields: enumFields,
+               typeid: TypeCounter)
+  t
 
 # --- builtin bootstrap -------------------------------------------------------
 

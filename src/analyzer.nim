@@ -444,18 +444,38 @@ proc allConcrete(argTypes: seq[Type]): bool
 proc specializeCall(ctx: var AnalyzerContext, calleeSym: Symbol,
                     argTypes: seq[Type]): (string, Type, string)
 
+proc analyzeNominalType*(ctx: var AnalyzerContext, node: Node, usedType = true): Type
+proc analyzeInitList(ctx: var AnalyzerContext, node: Node, parentType: Type = nil): Type
+proc foldIntValue(ctx: var AnalyzerContext, node: Node): int
+
 proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
   let caller = node.children[^1]
   let args = node.children[0 ..< node.children.len - 1]
   var a = ctx.getAttr(node)
   var d = ctx.getDump(node)
+  var ca = ctx.getAttr(caller)
+  # A5: record/enum constructor `Rect{ x = 1 }` -> Call(InitList, Rect id).
+  # The single arg is an nkInitList; analyze it against the callee's type and
+  # mark the call as a constructor so codegen emits a compound literal.
+  if caller.kind == nkId and args.len == 1 and args[0].kind == nkInitList:
+    let csym = ctx.lookup(caller.str)
+    if csym != nil and csym.typ != nil and csym.typ.kind in {tkRecord, tkUnion, tkEnum}:
+      discard analyzeInitList(ctx, args[0], csym.typ)
+      ctx.symOf[caller] = csym
+      csym.used = true
+      ca.typ = BuiltinTypes["type"]
+      ca.calleeType = csym.typ
+      ca.name = caller.str
+      a.calleeType = csym.typ
+      a.isConstructor = true
+      a.typ = csym.typ
+      return csym.typ
   var argTypes: seq[Type] = @[]
   for arg in args:
     let t = analyzeExpr(ctx, arg)
     if t != nil: argTypes.add t
   var calleeSym: Symbol = nil
   var calleeType: Type = nil
-  var ca = ctx.getAttr(caller)
   if caller.kind == nkId:
     let nm = caller.str
     let sym = ctx.lookup(nm)
@@ -631,11 +651,36 @@ proc analyzeDotIndex(ctx: var AnalyzerContext, node: Node): Type =
   var a = ctx.getAttr(node)
   a.dotFieldName = node.str
   a.lvalue = true
+  # A3: resolve the receiver type, dereferencing pointer-to-record (`self.w`
+  # where self is `*Record`) so the field table is the record, not the ptr.
+  var rt: Type = nil
   if bt != nil and bt.kind == tkRecord:
-    for f in bt.fields:
-      if f.name == node.str:
-        a.typ = f.typ
-        break
+    rt = bt
+  elif bt != nil and bt.kind == tkPointer and bt.subtype != nil and
+       bt.subtype.kind == tkRecord:
+    rt = bt.subtype
+  elif bt != nil and bt.kind == tkEnum:
+    rt = bt
+  if rt != nil:
+    if rt.kind == tkRecord:
+      for f in rt.fields:
+        if f.name == node.str:
+          a.typ = f.typ
+          break
+      # A3: record method access `R.m` (type as caller in `R.m(args)`).
+      if a.typ == nil and rt.methods.hasKey(node.str):
+        let m = rt.methods[node.str]
+        a.isMethodCall = true
+        a.calleeSym = m.sym
+        a.codename = m.codename
+        a.typ = m.ftype
+    elif rt.kind == tkEnum:
+      for ef in rt.enumFields:
+        if ef.name == node.str:
+          a.typ = rt.subtype
+          a.comptime = true
+          a.value = $ef.value
+          break
   if a.typ == nil: a.typ = BuiltinTypes["any"]
   return a.typ
 
@@ -648,7 +693,16 @@ proc analyzeInitList(ctx: var AnalyzerContext, node: Node, parentType: Type = ni
     if c.kind == nkPair:
       var pa = ctx.getAttr(c)
       pa.parentType = t
-      discard analyzeExpr(ctx, c.children[0])
+      # A nested initializer list (`v = { ... }`) inherits the type of the
+      # field it is filling, so a `[N]uint32` field lowers to
+      # `(uint32_t[N]){ ... }` rather than an empty `struct` wrapper.
+      var ft: Type = nil
+      for f in fieldsOf(t):
+        if f.name == c.str: ft = f.typ; break
+      if ft != nil and c.children.len > 0 and c.children[0].kind == nkInitList:
+        discard analyzeInitList(ctx, c.children[0], ft)
+      else:
+        discard analyzeExpr(ctx, c.children[0])
   return t
 
 proc analyzePair(ctx: var AnalyzerContext, node: Node): Type =
@@ -754,9 +808,56 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
       d.isConst = true
       return a.typ
     return nil
+  of nkType:
+    # `@record{...}` / `@enum(integer){...}` in value position: build a nominal
+    # Type (fresh typeid, distinct C tag) and bind it as a type value.
+    let ty = analyzeNominalType(ctx, node.children[0])
+    if ty != nil:
+      var a = ctx.getAttr(node)
+      a.typ = BuiltinTypes["type"]
+      a.value = neluaTypeName(ty)
+      a.vardecl = true
+      return ty
+    return nil
   of nkBinaryOp: return analyzeBinaryOp(ctx, node)
   of nkUnaryOp: return analyzeUnaryOp(ctx, node)
   of nkCall: return analyzeCall(ctx, node)
+  of nkCallMethod:
+    # A4: colon-method call `recv:m(args)`. node.str is the method name,
+    # node.children[^1] is the receiver expression; the rest are args.
+    let recv = node.children[^1]
+    let rt = analyzeExpr(ctx, recv)
+    var mtype: Type = nil
+    var msym: Symbol = nil
+    var mcodename = ""
+    var mname = node.str
+    if rt != nil:
+      var rt2 = rt
+      if rt2.kind == tkPointer and rt2.subtype != nil and rt2.subtype.kind == tkRecord:
+        rt2 = rt2.subtype
+      if rt2.kind == tkRecord and rt2.methods.hasKey(mname):
+        let m = rt2.methods[mname]
+        msym = m.sym
+        mtype = m.ftype
+        mcodename = m.codename
+    var a = ctx.getAttr(node)
+    a.isMethod = true
+    a.isMethodCall = false
+    if msym != nil:
+      ctx.symOf[recv] = msym
+      msym.used = true
+      a.calleeSym = msym
+      a.calleeType = mtype
+      a.codename = mcodename
+      a.name = mname
+      if mtype != nil and mtype.returns.len >= 1:
+        a.typ = mtype.returns[0]
+      else:
+        a.typ = BuiltinTypes["void"]
+    else:
+      a.name = mname
+      a.typ = BuiltinTypes["any"]
+    return a.typ
   of nkDotIndex: return analyzeDotIndex(ctx, node)
   of nkInitList: return analyzeInitList(ctx, node)
   of nkPair: return analyzePair(ctx, node)
@@ -817,6 +918,17 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
       if vtype == nil and i < inits.len:
         vtype = analyzeExpr(ctx, inits[i])
     if vtype == nil: vtype = BuiltinTypes["nil"]
+    # A6-naming: nominal @record/@enum types get the C tag <unit>_<binding>
+    # (matches the oracle's `typedef ... tmp_unit_Rect;` shape).
+    let nameSrc = if i < inits.len and inits[i].kind == nkType: inits[i]
+                  elif iddecl.children.len > 0 and iddecl.children[0].kind == nkType:
+                    iddecl.children[0]
+                  else: nil
+    if nameSrc != nil and vtype != nil and vtype.kind in {tkRecord, tkEnum} and vtype.name == "":
+      vtype.name = ctx.unitname & "_" & iddecl.str
+    # A6: `local X = @record{...}` / `local X = @enum(...){...}` bind a TYPE,
+    # not a variable -- the oracle emits no storage for X, only the typedef.
+    let isTypeBinding = (i < inits.len and inits[i].kind == nkType)
     vtypes.add vtype
     # §11.0c / oracle: the C backend has no representation for `any` as a
     # variable type.  Reject it here (with the oracle's exact message) instead
@@ -831,26 +943,31 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
     if vtype.kind == tkFunction and iddecl.children.len > 0:
       let ts = ctx.funcTypeStrOf.getOrDefault(iddecl.children[0])
       if ts.len > 0: ctx.funcTypeStrOf[iddecl] = ts
-    let sym = register(ctx, iddecl.str, skVar, vtype, iddecl)
+    let sym = register(ctx, iddecl.str, if isTypeBinding: skType else: skVar, vtype, iddecl)
     sym.codename = ctx.unitname & "_" & iddecl.str
     sym.used = true
-    sym.staticstorage = true
-    sym.vardecl = true
+    if not isTypeBinding:
+      sym.staticstorage = true
+      sym.vardecl = true
     sym.comptime = hasAnnotation(iddecl, "comptime")
     if sym.comptime: sym.isConst = true
     ctx.symOf[iddecl] = sym
     syms.add sym
     var a = ctx.getAttr(iddecl)
     a.codename = sym.codename
-    a.lvalue = true
     a.name = iddecl.str
-    a.staticstorage = true
     a.typ = vtype
     a.used = true
-    a.vardecl = true
+    a.isTypeBinding = isTypeBinding
+    if not isTypeBinding:
+      a.lvalue = true
+      a.staticstorage = true
+      a.vardecl = true
     if sym.comptime: a.comptime = true
   ctx.multiRetCall = nil
   for i, init in inits:
+    if init.kind == nkType:
+      continue   # type binding: no runtime initializer
     let pt = if i < vtypes.len: vtypes[i] else: nil
     if init.kind == nkInitList:
       discard analyzeInitList(ctx, init, pt)
@@ -984,6 +1101,62 @@ proc deduceAutoReturns(ctx: var AnalyzerContext, node: Node, ftype: Type,
                         else: "invalid return expression at index 2")
         ftype.returns[i] = BuiltinTypes["void"]
 
+proc collectReturns(node: Node, acc: var seq[Node]) =
+  ## Collect every `nkReturn` reachable in `node`, recursing into control-flow
+  ## blocks (if/elseif/else, while, repeat, for, do) but NOT into nested
+  ## `nkFuncDef` -- a nested function has its own return type.  This is the
+  ## multi-branch generalization of `findFirstReturn` (which only takes the
+  ## first textual return).
+  if node == nil: return
+  if node.kind == nkReturn:
+    acc.add node
+    return
+  if node.kind == nkFuncDef:
+    return
+  for c in node.children:
+    collectReturns(c, acc)
+
+proc promoteType(a, b: Type): Type =
+  ## The oracle's `Type:promote_type`: the resulting type when folding a's type
+  ## with b's type over a candidate set (see `unifyReturnTypes`).  Returns nil
+  ## when the two are incompatible -- the caller then emits the 'any' error.
+  if a == nil or b == nil: return nil
+  case a.kind:
+    of tkInteger, tkUinteger, tkByte, tkIsize, tkUsize,
+        tkInt8, tkInt16, tkInt32, tkInt64, tkInt128,
+        tkUint8, tkUint16, tkUint32, tkUint64, tkUint128,
+        tkCchar, tkCschar, tkCuchar, tkCshort, tkCushort, tkCint, tkCuint,
+        tkClong, tkCulong, tkClonglong, tkCulonglong, tkCptrdiff, tkCsize:
+      if a == b: return a
+      if b.isFloat: return b
+      if not b.isIntegral: return nil
+      if a.isSigned == b.isSigned:
+        return if b.size >= a.size: b else: a
+      else:
+        let maxbits = max(a.size, b.size) * 8
+        return PrimitiveTypes["int" & $maxbits]
+    of tkNumber, tkFloat32, tkFloat64, tkFloat128, tkCfloat, tkCdouble, tkClongdouble:
+      if a == b or b.isIntegral: return a
+      if not b.isFloat: return nil
+      return if b.size > a.size: b else: a
+    of tkPointer:
+      if b.isNilptr: return a
+      # else: fall through to the base case (identical only)
+    else: discard
+  # base: identical only
+  if a == b: a else: nil
+
+proc unifyReturnTypes(candidates: seq[Type]): Type =
+  ## Fold `promoteType` over the collected return-expression types (the oracle's
+  ## `find_common_type`).  Returns nil when the set is incompatible, in which
+  ## case the caller emits the "compiler deduced type 'any'" diagnostic.
+  if candidates.len == 0: return BuiltinTypes["void"]
+  var acc = candidates[0]
+  for i in 1 ..< candidates.len:
+    acc = promoteType(acc, candidates[i])
+    if acc == nil: return nil
+  return acc
+
 proc specializeCall(ctx: var AnalyzerContext, calleeSym: Symbol,
                     argTypes: seq[Type]): (string, Type, string) =
   ## Build (or reuse) the monomorphized specialization of `calleeSym` for the
@@ -1037,8 +1210,27 @@ proc specializeCall(ctx: var AnalyzerContext, calleeSym: Symbol,
 proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string = "") =
   let nameNode = node.children[0]
   let nameStr = nameNode.str
-  let codename = if specCodename != "": specCodename else: ctx.unitname & "_" & nameStr
-  let symName = if specCodename != "": specCodename else: nameStr
+  # A6: colon-method `Record:method(args)`. nameNode is an nkColonIndex whose
+  # children[0] is the record type name; inject an implicit `self: *Record`
+  # first parameter and tag the C function <Record>_<method>.
+  var isMethod = false
+  var recordType: Type = nil
+  var methodName = nameStr
+  if nameNode.kind == nkColonIndex:
+    let recNameNode = nameNode.children[0]
+    let rsym = ctx.lookup(recNameNode.str)
+    if rsym != nil and rsym.typ != nil and rsym.typ.kind == tkRecord:
+      recordType = rsym.typ
+      isMethod = true
+      methodName = nameNode.str
+  var selfDecl: Node = nil
+  if isMethod:
+    selfDecl = newIdDecl("self", nil)
+    node.children = @[nameNode, selfDecl] & node.children[1 ..< node.children.len]
+  let codename = if specCodename != "": specCodename
+                 elif isMethod: recordType.name & "_" & methodName
+                 else: ctx.unitname & "_" & nameStr
+  let symName = if specCodename != "": specCodename else: methodName
   var args: seq[Node] = @[]
   var returns: seq[Node] = @[]
   var i = 1
@@ -1051,7 +1243,9 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
   ftype.name = "function"; ftype.codename = "function"
   var aparts: seq[string] = @[]
   for arg in args:
-    let atype = if arg.children.len > 0: resolveTypeExpr(arg.children[0]) else: BuiltinTypes["any"]
+    let atype = if arg == selfDecl: pointerType(recordType)
+                elif arg.children.len > 0: resolveTypeExpr(arg.children[0])
+                else: nil
     let at = if atype != nil: atype else: BuiltinTypes["any"]
     # Oracle: a parameter whose (deduced) type is `any` is not supported on the
     # C backend -- this covers both `f(a: any)` and the untyped `f(a)`.
@@ -1067,7 +1261,9 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
       if rt.kind == tkAny:
         ctx.diags.add ctx.path & ": error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type"
       ftype.returns.add rt
-  if ftype.returns.len == 0: ftype.returns.add BuiltinTypes["void"]
+  # No explicit return annotation: the type is inferred from the first textual
+  # `return` in the body (the oracle does this; `function f() return 5 end`
+  # is int64).  The default `void` is applied below, after the body is analyzed.
   var a = ctx.getAttr(node)
   a.codename = codename
   a.comptime = true
@@ -1095,22 +1291,50 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
   sym.used = true
   ctx.symOf[nameNode] = sym
   ctx.symOf[node] = sym
+  # A6: register the method on the record type so DotIndex/CallMethod resolve.
+  if isMethod and recordType != nil:
+    recordType.methods[methodName] = MethodDesc(sym: sym, codename: codename, ftype: ftype)
   let saved = ctx.scope
   ctx.scope = newScope(saved, nameStr)
   for arg in args:
-    let atype = if arg.children.len > 0: resolveTypeExpr(arg.children[0]) else: BuiltinTypes["any"]
+    let atype = if arg == selfDecl: pointerType(recordType)
+                elif arg.children.len > 0: resolveTypeExpr(arg.children[0])
+                else: nil
+    let at = if atype != nil: atype else: BuiltinTypes["any"]
     var arga = ctx.getAttr(arg)
     arga.codename = arg.str
     arga.lvalue = true
     arga.name = arg.str
-    arga.typ = if atype != nil: atype else: BuiltinTypes["any"]
-    let asym = register(ctx, arg.str, skParam, if atype != nil: atype else: BuiltinTypes["any"], arg)
+    arga.typ = at
+    let asym = register(ctx, arg.str, skParam, at, arg)
     asym.codename = arg.str
     ctx.symOf[arg] = asym
     if arg.children.len > 0:
       discard analyzeTypeExpr(ctx, arg.children[0], false)
   analyzeBlock(ctx, body)
   ctx.scope = saved
+  # An untyped function (no `: T` on the return) has its return type deduced
+  # from the return expressions in its body, matching the oracle: collect every
+  # reachable return (all control-flow branches, but not nested functions),
+  # take the first value of each multi-value return, and unify the candidate
+  # set.  Bare `return` and multi-value returns whose first value has no
+  # attr contribute nothing; an empty set (or all-bare) is `void`; an
+  # incompatible set emits the "compiler deduced type 'any'" diagnostic.
+  if ftype.returns.len == 0:
+    var rets: seq[Node] = @[]
+    collectReturns(body, rets)
+    var candidates: seq[Type] = @[]
+    for ret in rets:
+      if ret.children.len > 0:
+        let a = ctx.attrOf.getOrDefault(ret.children[0])
+        if a != nil and a.typ != nil:
+          candidates.add a.typ
+    let unified = unifyReturnTypes(candidates)
+    if unified != nil:
+      ftype.returns.add unified
+    else:
+      ctx.diags.add ctx.path & ": error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type"
+      ftype.returns.add BuiltinTypes["void"]
   # D1: an `auto` return is fixed by the first textual return in the body.
   deduceAutoReturns(ctx, node, ftype, specCodename != "")
   var rparts: seq[string] = @[]
@@ -1145,6 +1369,18 @@ proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Ty
       a.vardecl = true
       a.used = usedType
       return t
+    # A1: named user types (@record/@enum) are registered as type symbols in
+    # scope; resolve them here so type expressions like `MASK` and `Rect`
+    # bind to the nominal Type rather than falling through to nil.
+    let sym = ctx.lookup(node.str)
+    if sym != nil and sym.typ != nil and sym.kind == skType:
+      var a = ctx.getAttr(node)
+      a.name = node.str
+      a.typ = BuiltinTypes["type"]
+      a.value = node.str
+      a.vardecl = true
+      a.used = usedType
+      return sym.typ
     return nil
   of nkPointerType:
     let sub = if node.children.len > 0: analyzeTypeExpr(ctx, node.children[0], usedType) else: nil
@@ -1253,8 +1489,72 @@ proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Ty
     a.typ = BuiltinTypes["type"]
     a.value = neluaTypeName(t)
     return t
+  of nkType:
+    let ty = analyzeNominalType(ctx, node.children[0], usedType)
+    if ty != nil:
+      var a = ctx.getAttr(node)
+      a.typ = BuiltinTypes["type"]
+      a.value = neluaTypeName(ty)
+      a.vardecl = usedType
+    return ty
   else:
     return nil
+
+proc analyzeNominalType*(ctx: var AnalyzerContext, node: Node, usedType = true): Type =
+  ## Build a nominal Type from a `@record`/`@enum` type-expression node.
+  ## Nominal types get a fresh typeid and C tag; they bypass structural
+  ## canonicalization so each definition site is distinct from its structural
+  ## twin and from every other nominal type.
+  if node == nil:
+    return nil
+  case node.kind
+  of nkRecordType:
+    var fields: seq[Field] = @[]
+    for c in node.children:
+      if c.kind == nkRecordField:
+        let ft = if c.children.len > 0: analyzeTypeExpr(ctx, c.children[0], usedType)
+                 else: BuiltinTypes["any"]
+        let ftt = if ft != nil: ft else: BuiltinTypes["any"]
+        fields.add Field(name: c.str, typ: ftt)
+    let t = nominalRecordType("", fields)
+    var a = ctx.getAttr(node)
+    a.typ = BuiltinTypes["type"]
+    a.value = neluaTypeName(t)
+    return t
+  of nkEnumType:
+    var primtype: Type = BuiltinTypes["integer"]
+    var ef: seq[EnumField] = @[]
+    var firstField = true
+    var current = 0
+    var i = 0
+    if node.children.len > 0 and node.children[0].kind != nkEnumField:
+      let pt = analyzeTypeExpr(ctx, node.children[0], usedType)
+      if pt != nil: primtype = pt
+      i = 1
+    while i < node.children.len:
+      let c = node.children[i]
+      if c.kind != nkEnumField:
+        inc i; continue
+      if firstField and c.children.len == 0:
+        ctx.diags.add ctx.path & ": error: first enum field requires an initial value"
+        return nil
+      if c.children.len > 0:
+        discard analyzeExpr(ctx, c.children[0])
+        let ival = ctx.foldIntValue(c.children[0])
+        current = ival
+        ef.add EnumField(name: c.str, value: current)
+      else:
+        inc current
+        ef.add EnumField(name: c.str, value: current)
+      firstField = false
+      inc i
+    let t = nominalEnumType("", primtype, ef)
+    var a = ctx.getAttr(node)
+    a.typ = BuiltinTypes["type"]
+    a.value = neluaTypeName(t)
+    return t
+  else:
+    return analyzeTypeExpr(ctx, node, usedType)
 
 proc analyzeIf(ctx: var AnalyzerContext, node: Node) =
   let hasElse = (node.children.len and 1) == 1
@@ -1274,15 +1574,28 @@ proc analyzeWhile(ctx: var AnalyzerContext, node: Node) =
   analyzeBlock(ctx, node.children[1])
   dec ctx.loopDepth
 
+proc parseNeluaInt(num: string): int =
+  ## Parse a Nelua integer literal (decimal or `0x` hex) to a Nim int.
+  if num.len >= 2 and num[0] == '0' and (num[1] == 'x' or num[1] == 'X'):
+    let hex = num[2 ..< num.len]
+    for c in hex:
+      let d = if c >= '0' and c <= '9': ord(c) - ord('0')
+             elif c >= 'a' and c <= 'f': ord(c) - ord('a') + 10
+             elif c >= 'A' and c <= 'F': ord(c) - ord('A') + 10
+             else: 0
+      result = result * 16 + d
+  else:
+    result = parseInt(num)
+
 proc foldIntValue(ctx: var AnalyzerContext, node: Node): int =
   if node.kind == nkNumber:
     let (num, _) = splitNumberSuffix(node.str)
-    result = parseInt(num)
+    result = parseNeluaInt(num)
   elif node.kind == nkBinaryOp:
     let a = ctx.attrOf.getOrDefault(node)
     if a != nil and a.comptime and a.value.len > 0:
       let (num, _) = splitNumberSuffix(a.value)
-      result = parseInt(num)
+      result = parseNeluaInt(num)
 
 proc analyzeForNum(ctx: var AnalyzerContext, node: Node) =
   let iddecl = node.children[0]
@@ -1342,6 +1655,13 @@ proc analyzeRepeat(ctx: var AnalyzerContext, node: Node) =
 
 proc analyzeAssign(ctx: var AnalyzerContext, node: Node) =
   let ntargets = ctx.assignTargets.getOrDefault(node, 1)
+  # Analyze the right-hand side first so that an untyped local target (`local y`
+  # with no annotation and no initializer) can inherit the type of its first
+  # assignment.  The oracle does exactly this flow-sensitive inference; without
+  # it `y` stays `nil` and the emitted C is `(void)(...)`.
+  var rtypes: seq[Type] = @[]
+  for i in ntargets ..< node.children.len:
+    rtypes.add analyzeExpr(ctx, node.children[i])
   for i in 0 ..< ntargets:
     let t = node.children[i]
     if t.kind == nkId:
@@ -1351,9 +1671,18 @@ proc analyzeAssign(ctx: var AnalyzerContext, node: Node) =
         ctx.symOf[t] = sym
         var ta = ctx.getAttr(t)
         ta.mutate = true
-    discard analyzeExpr(ctx, t)
-  for i in ntargets ..< node.children.len:
-    discard analyzeExpr(ctx, node.children[i])
+        if sym.kind == skVar and i < rtypes.len and rtypes[i] != nil and
+           not rtypes[i].isNiltype and not rtypes[i].isAny and
+           (sym.typ == nil or sym.typ.kind == tkNiltype):
+          sym.typ = rtypes[i]
+          ta.typ = rtypes[i]
+          let iddecl = sym.node
+          if iddecl != nil:
+            let da = ctx.getAttr(iddecl)
+            da.typ = rtypes[i]
+      discard analyzeExpr(ctx, t)
+    else:
+      discard analyzeExpr(ctx, t)
 
 proc analyzeReturn(ctx: var AnalyzerContext, node: Node) =
   for c in node.children:

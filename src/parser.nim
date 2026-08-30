@@ -138,6 +138,10 @@ proc parseType*(p: var Parser): Node =
       base = newUnionType(fields)
     of "enum":
       p.advance()
+      var primtype: Node = nil
+      if p.match(tkLParen):
+        primtype = p.parseType()
+        p.expect(tkRParen, "expected ')' after enum primitive type")
       p.expect(tkLBrace, "expected '{' after enum")
       var fields: seq[Node] = @[]
       while not p.check(tkRBrace):
@@ -148,7 +152,7 @@ proc parseType*(p: var Parser): Node =
         fields.add newEnumField(name, value)
         if not p.match(tkComma): break
       p.expect(tkRBrace, "expected '}' to close enum")
-      base = newEnumType(fields)
+      base = newEnumType(fields, primtype)
     of "array":
       p.advance()
       p.expect(tkLParen, "expected '(' after array")
@@ -323,6 +327,7 @@ proc parsePrimary*(p: var Parser): Node =
   of tkLBrace:
     return p.parseTable()
   of tkAt:
+    p.advance()
     let ty = p.parseType()
     if ty != nil:
       return newType(ty)
@@ -377,6 +382,10 @@ proc parsePostfix*(p: var Parser): Node =
       let key = p.parseExpr()
       p.expect(tkRBrack, "expected ']' after index")
       base = newKeyIndex(key, base)
+    elif p.check(tkLBrace):
+      # Record/enum constructor: `Rect{ x = 1, y = 2 }` -> Call(InitList, Rect)
+      let init = p.parseTable()
+      base = newCall(@[init], base)
     elif p.check(tkLParen):
       let caller = base
       var args: seq[Node] = @[]

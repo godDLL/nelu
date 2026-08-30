@@ -259,6 +259,8 @@ proc resolveTypeExpr*(node: Node): Type =
       let name = node.str
       if BuiltinTypes.hasKey(name):
         return BuiltinTypes[name]
+      if PrimitiveTypes.hasKey(name):
+        return PrimitiveTypes[name]
       return nil
     of nkRecordType:
       var fields: seq[Field] = @[]

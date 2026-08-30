@@ -238,14 +238,27 @@ proc tokenize*(source: string, path: string = ""): seq[Token] =
           offset: loc.offset, length: 2))
       i += 2; col += 2; continue
     if c == '<' and i + 1 < n and isIdentStart(source[i + 1]):
-      let (atext, aj) = lexAnnotation(source, i)
-      if aj > i + 1 and source[aj - 1] == '>':
-        tokens.add Token(kind: tkAnnotation, value: atext,
-          loc: SourceLoc(path: loc.path, line: line, col: col,
-            offset: loc.offset, length: aj - i))
-        i = aj
-        col += (aj - tokStart)
-        continue
+      # Oracle PEG: `annots <-| '<' @Annotation (',' @Annotation)* @'>'`
+      # only matches when the token after `<ident` (ignoring whitespace) is
+      # `>`, `,`, `(`, `{`, `'`, `"` or `#`; otherwise `<` is the less-than
+      # operator and the following `<ident do ...` is a bound expression, not
+      # an annotation. Without this guard the greedy lexAnnotation (which
+      # scans to the first `>`, spanning newlines) swallows comparison bodies
+      # like `for i=1_u32,<MT19937_N do ... >> ... end`.
+      var j = i + 1
+      while j < n and isIdentChar(source[j]): inc j
+      var k = j
+      while k < n and source[k] in {' ', '\t', '\n', '\r', '\f', '\v'}: inc k
+      let after = if k < n: source[k] else: '\0'
+      if after in {'>', ',', '(', '{', '\'', '"', '#'}:
+        let (atext, aj) = lexAnnotation(source, i)
+        if aj > i + 1 and source[aj - 1] == '>':
+          tokens.add Token(kind: tkAnnotation, value: atext,
+            loc: SourceLoc(path: loc.path, line: line, col: col,
+              offset: loc.offset, length: aj - i))
+          i = aj
+          col += (aj - tokStart)
+          continue
       tokens.add Token(kind: tkLt, value: "<",
         loc: SourceLoc(path: loc.path, line: line, col: col,
           offset: loc.offset, length: 1))

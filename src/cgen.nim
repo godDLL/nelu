@@ -88,6 +88,7 @@ void nelua_print_bool(int b);
 void nelua_print_nil(void);
 void nelua_print_sep(void);
 void nelua_print_newline(void);
+extern FILE* nl_out;
 nlstring nlstr(const char* s);
 nlstring nlstring_concat(nlstring a, nlstring b);
 void nlstring_free(nlstring* s);
@@ -134,6 +135,18 @@ static inline void nelua_assert_line(bool cond, nlstring msg) {
   if (!cond) {
     nelua_error_line(msg);
   }
+}
+
+/* Float32 print.  The oracle formats a `float` with %.7g (its runtime's
+   print_float) and a `double` with %.14g (print_double, defined in
+   src/runtime.c).  A float32 value shown at double precision gains digits that
+   are not in the oracle's output, so route `float` through this inline helper
+   rather than through nelua_print_double.  Self-contained (static) so a TU
+   that never prints a float carries no linkage symbol. */
+static inline void nelua_print_float(float v) {
+  char buf[64];
+  snprintf(buf, sizeof buf, "%.7g", (double)v);
+  fputs(buf, nl_out);
 }
 """
 
@@ -190,6 +203,7 @@ proc genUnaryOp(s: var Gen, node: Node): string
 proc genCall(s: var Gen, node: Node): string
 proc genCallMethod(s: var Gen, node: Node): string
 proc genDotIndex(s: var Gen, node: Node): string
+proc cDecl(t: Type, name: string): string
 proc genKeyIndex(s: var Gen, node: Node): string
 proc genInitList(s: var Gen, node: Node): string
 proc genLvalue(s: var Gen, node: Node): string
@@ -290,7 +304,7 @@ proc emitTypedef(s: var Gen, t: Type) =
     s.line "typedef struct " & tag & " {"
     s.push
     for f in t.fields:
-      s.line cType(f.typ) & " " & cIdent(f.name) & ";"
+      s.line cDecl(f.typ, cIdent(f.name)) & ";"
     s.pop
     s.line "} " & tag & ";"
   of tkUnion:
@@ -298,18 +312,17 @@ proc emitTypedef(s: var Gen, t: Type) =
     s.line "typedef union " & tag & " {"
     s.push
     for f in t.fields:
-      s.line cType(f.typ) & " " & cIdent(f.name) & ";"
+      s.line cDecl(f.typ, cIdent(f.name)) & ";"
     s.pop
     s.line "} " & tag & ";"
   of tkEnum:
+    # C1: nominal/bare `@enum` lowers to a plain typedef of the underlying
+    # primitive with NO C enum body -- the enum fields are compile-time
+    # constants folded by the analyzer (matches the oracle's
+    # `typedef uint32_t tmp_probe_tag_MASK;` shape).
     let tag = cTag(t)
-    s.line "typedef enum " & tag & " {"
-    s.push
-    for i, ef in t.enumFields:
-      let comma = if i < t.enumFields.len - 1: "," else: ""
-      s.line ef.name & " = " & $ef.value & comma
-    s.pop
-    s.line "} " & tag & ";"
+    let ut = if t.subtype != nil: t.subtype else: BuiltinTypes["integer"]
+    s.line "typedef " & cType(ut) & " " & tag & ";"
   of tkOptional:
     let sub = if t.subtype != nil: t.subtype else: BuiltinTypes["void"]
     let tag = "nlopt_" & cIdent(cType(sub))
@@ -338,6 +351,15 @@ proc fieldOf(t: Type, name: string): Type =
   for f in t.fields:
     if f.name == name: return f.typ
   return nil
+
+proc hasArrayField(t: Type): bool =
+  ## True if `t` (a record/union) declares any field whose type is an array.
+  ## Such a literal cannot be assigned as a whole in C, so genVarDecl lowers
+  ## it to a memcpy instead.
+  for f in fieldsOf(t):
+    if f.typ != nil and f.typ.kind == tkArray:
+      return true
+  return false
 
 # ---------------------------------------------------------------------------
 # Conversion / narrow-check lowering (M3_design §4)
@@ -402,6 +424,12 @@ proc genExpr(s: var Gen, node: Node): string =
     let cn = if a != nil and a.codename != "": a.codename else: cIdent(node.str)
     if a != nil and a.typ != nil and a.typ.kind == tkMetatype:
       return "/*type " & node.str & "*/"
+    # A comptime constant reference is folded to its literal value by the
+    # analyzer (see analyzeExpr nkId / analyzeVarDecl); inline it here so
+    # top-level `local N <comptime> = 624` needs no `static` storage and no
+    # forward-reference.  The oracle emits the value directly, e.g. `624U`.
+    if a != nil and a.comptime and a.value != "":
+      return a.value
     return cn
   of nkParen:
     if node.children.len > 0:
@@ -427,6 +455,10 @@ proc genExpr(s: var Gen, node: Node): string =
     return s.genExpr(node.children[0])
   of nkDoExpr:
     return "/*do-expr*/"
+  of nkType:
+    # `@record`/`@enum` in expression position has no runtime value (it is a
+    # type binding, emitted -- if at all -- as a typedef by emitTypedef).
+    return ""
   else:
     return "/*?" & $node.kind & "*/"
 
@@ -552,6 +584,18 @@ proc genCall(s: var Gen, node: Node): string =
     let at = s.ctx.attrOf.getOrDefault(arg).typ
     let pt = if calleeType != nil and i < calleeType.args.len: calleeType.args[i] else: at
     argstrs.add s.coerce(aes, at, pt)
+  # C4: record/enum constructor `Rect{ x = 1 }` -> compound literal
+  # `((struct <tag>){ .x = 1, .y = 2 })`.
+  let na = s.ctx.attrOf.getOrDefault(node)
+  if na != nil and na.isConstructor:
+    let ct = if calleeType != nil: calleeType else: na.calleeType
+    let tag = cTag(ct)
+    let initList = args[0]
+    var parts: seq[string] = @[]
+    for pair in initList.children:
+      if pair.kind == nkPair:
+        parts.add "." & cIdent(pair.str) & " = " & s.genExpr(pair.children[0]) & ","
+    return "((struct " & tag & "){ " & parts.join(" ") & " })"
   case caller.kind
   of nkId:
     let cn = if ca != nil and ca.codename != "": ca.codename else: cIdent(caller.str)
@@ -570,7 +614,12 @@ proc genCall(s: var Gen, node: Node): string =
         var helper = "nelua_print_nil"
         var passArg = false
         if at != nil:
-          case at.kind
+          var ht = at
+          # An enum value prints as its underlying integral type (the oracle
+          # prints `MASK.UPPER` -> `2147483648`, not `nil`).
+          if ht.kind == tkEnum:
+            ht = if ht.subtype != nil: ht.subtype else: BuiltinTypes["integer"]
+          case ht.kind
           of tkInteger, tkInt8, tkInt16, tkInt32, tkInt64, tkInt128,
              tkIsize, tkByte, tkCchar, tkCschar, tkCshort, tkCint,
              tkClong, tkClonglong, tkCptrdiff:
@@ -579,8 +628,12 @@ proc genCall(s: var Gen, node: Node): string =
              tkUsize, tkCuchar, tkCushort, tkCuint, tkCulong, tkCulonglong,
              tkCsize:
             helper = "nelua_print_uint64"; passArg = true
-          of tkNumber, tkFloat32, tkFloat64, tkFloat128,
-             tkCfloat, tkCdouble, tkClongdouble:
+          of tkFloat32, tkCfloat:
+            # A 32-bit float is printed with %.7g (the oracle's print_float);
+            # routing it through nelua_print_double (%.14g) exposes bits that
+            # are not in the oracle's output.
+            helper = "nelua_print_float"; passArg = true
+          of tkNumber, tkFloat64, tkFloat128, tkCdouble, tkClongdouble:
             helper = "nelua_print_double"; passArg = true
           of tkString, tkCstring:
             helper = "nelua_print_string"; passArg = true
@@ -618,7 +671,14 @@ proc genCallMethod(s: var Gen, node: Node): string =
   if calleeSym != nil and calleeSym.typ != nil and calleeSym.typ.args.len > 0:
     let p0 = calleeSym.typ.args[0]
     if p0 != nil and p0.kind == tkPointer:
-      allargs.add "(&" & recvStr & ")"
+      # The implicit `self` param is `*Record`.  When the receiver expression
+      # is already that pointer (a colon-method called on `self`, which is the
+      # method's own first param) it is passed unchanged; a value receiver
+      # (`r:area()` where `r` is a `Rect` value) is passed by address.
+      if ra != nil and ra.typ != nil and ra.typ == p0:
+        allargs.add recvStr
+      else:
+        allargs.add "(&" & recvStr & ")"
     else:
       allargs.add recvStr
   else:
@@ -635,6 +695,11 @@ proc genDotIndex(s: var Gen, node: Node): string =
   let base = node.children[0]
   let ba = s.ctx.attrOf.getOrDefault(base)
   let bt = if ba != nil: ba.typ else: nil
+  let a = s.ctx.attrOf.getOrDefault(node)
+  # A3: enum field access `MASK.UPPER` is a compile-time constant folded by
+  # the analyzer; emit the literal value instead of `base.field`.
+  if a != nil and a.comptime and a.value != "":
+    return a.value
   let baseStr = s.genExpr(base)
   let field = cIdent(node.str)
   if bt != nil and bt.kind == tkPointer and bt.subtype != nil and
@@ -654,6 +719,43 @@ proc genKeyIndex(s: var Gen, node: Node): string =
   let keyStr = s.genExpr(node.children[1])
   return baseStr & "[" & keyStr & "]"
 
+proc genInitListBraces(s: var Gen, node: Node, et: Type): string =
+  ## Render an init list as a bare brace-enclosed initializer `{ v0, v1, ... }`
+  ## (no type cast), for use as an array sub-initializer inside a record or
+  ## union compound literal, or as the element list of an array compound
+  ## literal. `et` is the element type this list initializes.
+  ##
+  ## Nested init lists (array-of-record, array-of-array) are the common case:
+  ## each element is itself an init list, and rendering it via `genExpr` used
+  ## to fall through to `/*initlist*/` because the analyzer does not set a type
+  ## attribute on those nested nodes.  Handle them here by recursing, and
+  ## render record elements with designated field initializers (`.f = ...`),
+  ## which C accepts inside nested braces without a cast.
+  var parts: seq[string] = @[]
+  for c in node.children:
+    if et != nil and et.kind in {tkRecord, tkUnion} and c.kind == nkPair:
+      let ft = fieldOf(et, c.str)
+      let child = c.children[0]
+      if ft != nil and ft.kind == tkArray and child.kind == nkInitList:
+        parts.add "." & cIdent(c.str) & " = " &
+          s.genInitListBraces(child, ft.subtype)
+      else:
+        let val = s.genExpr(child)
+        let vt = s.ctx.attrOf.getOrDefault(child)
+        parts.add "." & cIdent(c.str) & " = " &
+          s.coerce(val, if vt != nil: vt.typ else: nil, ft)
+    else:
+      let valc = if c.kind == nkPair: c.children[0] else: c
+      if valc.kind == nkInitList:
+        let elt = if et != nil and et.kind == tkArray: et.subtype else: et
+        parts.add s.genInitListBraces(valc, elt)
+      else:
+        let val = s.genExpr(valc)
+        let va = s.ctx.attrOf.getOrDefault(valc)
+        let vt = if va != nil: va.typ else: nil
+        parts.add s.coerce(val, vt, et)
+  return "{" & parts.join(", ") & "}"
+
 proc genInitList(s: var Gen, node: Node): string =
   let a = s.ctx.attrOf.getOrDefault(node)
   let ptype = if a != nil: a.typ else: nil
@@ -663,9 +765,17 @@ proc genInitList(s: var Gen, node: Node): string =
     for c in node.children:
       if c.kind == nkPair:
         let ft = fieldOf(ptype, c.str)
-        let val = s.genExpr(c.children[0])
-        let vt = s.ctx.attrOf.getOrDefault(c.children[0]).typ
-        parts.add "." & cIdent(c.str) & " = " & s.coerce(val, vt, ft)
+        if ft != nil and ft.kind == tkArray and c.children.len > 0 and
+           c.children[0].kind == nkInitList:
+          ## An array field inside a record compound literal must be given a
+          ## bare brace-enclosed initializer (`.v = { ... }`); a cast compound
+          ## literal (`.v = (uint32_t[N]){ ... }`) is ill-formed in C.
+          parts.add "." & cIdent(c.str) & " = " &
+            s.genInitListBraces(c.children[0], ft.subtype)
+        else:
+          let val = s.genExpr(c.children[0])
+          let vt = s.ctx.attrOf.getOrDefault(c.children[0]).typ
+          parts.add "." & cIdent(c.str) & " = " & s.coerce(val, vt, ft)
       else:
         parts.add s.genExpr(c)
     return "(struct " & tag & "){" & parts.join(", ") & "}"
@@ -679,22 +789,19 @@ proc genInitList(s: var Gen, node: Node): string =
     for c in node.children:
       if c.kind == nkPair:
         let ft = fieldOf(ptype, c.str)
-        let val = s.genExpr(c.children[0])
-        let vt = s.ctx.attrOf.getOrDefault(c.children[0]).typ
-        parts.add "." & cIdent(c.str) & " = " & s.coerce(val, vt, ft)
+        if ft != nil and ft.kind == tkArray and c.children.len > 0 and
+           c.children[0].kind == nkInitList:
+          parts.add "." & cIdent(c.str) & " = " &
+            s.genInitListBraces(c.children[0], ft.subtype)
+        else:
+          let val = s.genExpr(c.children[0])
+          let vt = s.ctx.attrOf.getOrDefault(c.children[0]).typ
+          parts.add "." & cIdent(c.str) & " = " & s.coerce(val, vt, ft)
       else:
         parts.add s.genExpr(c)
     return "(union " & tag & "){" & parts.join(", ") & "}"
   if ptype != nil and ptype.kind == tkArray:
-    let et = ptype.subtype
-    var parts: seq[string] = @[]
-    for c in node.children:
-      let valc = if c.kind == nkPair: c.children[0] else: c
-      let val = s.genExpr(valc)
-      let va = s.ctx.attrOf.getOrDefault(valc)
-      let vt = if va != nil: va.typ else: nil
-      parts.add s.coerce(val, vt, et)
-    return "(" & cType(ptype) & "){" & parts.join(", ") & "}"
+    return "(" & cType(ptype) & ")" & s.genInitListBraces(node, ptype.subtype)
   return "/*initlist*/"
 
 # ---------------------------------------------------------------------------
@@ -816,6 +923,10 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool) =
     for iddecl in iddecls:
       let a = s.ctx.attrOf.getOrDefault(iddecl)
       let vtype = if a != nil: a.typ else: nil
+      if vtype != nil:
+        s.collectType(vtype)
+      if a != nil and a.isTypeBinding:
+        continue
       if vtype == nil: continue
       let cn = if a != nil and a.codename != "": a.codename else: cIdent(iddecl.str)
       var qual = ""
@@ -836,23 +947,63 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool) =
       s.line tag & " " & tmp & " = " & s.genCall(callNode) & ";"
       for i, iddecl in iddecls:
         let a = s.ctx.attrOf.getOrDefault(iddecl)
+        if a != nil and a.comptime: continue
         let cn = if a != nil and a.codename != "": a.codename else: cIdent(iddecl.str)
         s.line cn & " = " & tmp & ".field" & $i & ";"
       return
+  # Function-local variables need a C declaration emitted here; top-level
+  # variables were already declared as `static` in the globals pass.  The
+  # `isGlobal` flag is set from `s.inFunc`, so it is true exactly for locals.
+  # A comptime local is folded away entirely -- it has no storage and every
+  # reference is inlined -- so neither a declaration nor an assignment emits.
+  if isGlobal:
+    for iddecl in iddecls:
+      let a = s.ctx.attrOf.getOrDefault(iddecl)
+      if a != nil and a.isTypeBinding:
+        if a.typ != nil: s.collectType(a.typ)
+        continue
+      if a != nil and a.comptime:
+        continue
+      let vtype = if a != nil: a.typ else: nil
+      if vtype == nil: continue
+      s.collectType(vtype)
+      let cn = if a != nil and a.codename != "": a.codename else: cIdent(iddecl.str)
+      s.line cDecl(vtype, cn) & ";"
   for i in 0 ..< min(iddecls.len, inits.len):
     let iddecl = iddecls[i]
     let init = inits[i]
     let a = s.ctx.attrOf.getOrDefault(iddecl)
+    if a != nil and a.isTypeBinding:
+      if a.typ != nil: s.collectType(a.typ)
+      continue
+    if a != nil and a.comptime:
+      continue
     let cn = if a != nil and a.codename != "": a.codename else: cIdent(iddecl.str)
     let vt = if a != nil: a.typ else: nil
     let it = s.ctx.attrOf.getOrDefault(init).typ
-    if vt != nil and vt.kind == tkArray and init.kind == nkInitList:
-      ## C does not allow assigning to an array variable, so an array
-      ## init-list is lowered to a memcpy from the compound literal (which
-      ## also zero-fills any trailing elements, matching C initializer
-      ## semantics).  See `genInitList` for the compound-literal rendering.
+    if vt != nil and init.kind == nkInitList and
+     (vt.kind == tkArray or
+      (vt.kind in {tkRecord, tkUnion} and hasArrayField(vt))):
+      ## A record/union literal whose fields include an array cannot be
+      ## assigned in C (`r = (struct T){ .v = (uint32_t[N]){...} }` is invalid:
+      ## an array subobject may not be initialized from a compound literal in
+      ## assignment position).  Lower the whole thing to a memcpy from the
+      ## compound literal, which is valid for both records and arrays.
       let cl = s.genExpr(init)
-      s.line "memcpy(" & cn & ", " & cl & ", sizeof(" & cn & "));"
+      let dest = if vt.kind == tkArray: cn else: "(&" & cn & ")"
+      let src = if vt.kind == tkArray: cl else: "(&" & cl & ")"
+      s.line "memcpy(" & dest & ", " & src & ", sizeof(" & cn & "));"
+    elif vt != nil and (vt.kind == tkArray or
+                        (vt.kind in {tkRecord, tkUnion} and hasArrayField(vt))):
+      ## An array-typed variable, or a record/union containing an array field,
+      ## cannot be assigned in C (`a = b` is ill-formed for arrays, and a struct
+      ## holding an array has no generated copy operator).  The source is an
+      ## array lvalue too (a variable, a record field, a `$copy`), so it decays
+      ## to a pointer and memcpy performs the elementwise copy.  A record-typed
+      ## source does not decay, so take its address explicitly.
+      let dest = if vt.kind == tkArray: cn else: "(&" & cn & ")"
+      let src = if vt.kind == tkArray: s.genExpr(init) else: "(&" & s.genExpr(init) & ")"
+      s.line "memcpy(" & dest & ", " & src & ", sizeof(" & cn & "));"
     else:
       s.line cn & " = " & s.coerce(s.genExpr(init), it, vt) & ";"
 

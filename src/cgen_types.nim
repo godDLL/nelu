@@ -148,7 +148,11 @@ proc cType*(t: Type): string =
     of tkUnion:
       "union " & cTag(t)
     of tkEnum:
-      "enum " & cTag(t)
+      # C1: `@enum` lowers to `typedef <underlying> <tag>;` (no C enum body),
+      # so the enum's C spelling is just the typedef name -- the enum fields
+      # are compile-time constants folded by the analyzer, never emitted as C
+      # enum constants.
+      cTag(t)
     of tkFunction:
       cFuncType(t)
     of tkOptional:
@@ -347,7 +351,7 @@ when isMainModule:
     EnumField(name: "Green", value: 1),
     EnumField(name: "Blue",  value: 2),
   ])
-  doAssert cType(en) == "enum nlrec" & $en.typeid, cType(en)
+  doAssert cType(en) == "nlrec" & $en.typeid, cType(en)
 
   # --- function / function pointer ---
   let fn = funcType(@[integer, integer], @[integer])
