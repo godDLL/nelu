@@ -60,7 +60,8 @@ type
     value*: int
 
   ConversionKind* = enum
-    ckNone, ckIdentity, ckImplicit, ckExplicit, ckNarrow
+    ckNone, ckIdentity, ckImplicit, ckExplicit, ckNarrow,
+    ckAnyStore, ckAnyLoad
   Conversion* = ref object
     kind*: ConversionKind
     check*: bool             ## emit runtime narrow check in debug builds
@@ -138,6 +139,11 @@ proc isIntegral*(t: Type): bool =
     tkCchar, tkCschar, tkCuchar, tkCshort, tkCushort, tkCint, tkCuint,
     tkClong, tkCulong, tkClonglong, tkCulonglong, tkCptrdiff, tkCsize}
 
+proc isUnsigned*(t: Type): bool =
+  t != nil and t.kind in {tkUinteger, tkUint8, tkUint16, tkUint32, tkUint64,
+    tkUint128, tkUsize, tkCuchar, tkCushort, tkCuint, tkCulong,
+    tkCulonglong, tkCsize}
+
 proc isFloat*(t: Type): bool =
   t != nil and t.kind in {tkNumber, tkFloat32, tkFloat64, tkFloat128,
     tkCfloat, tkCdouble, tkClongdouble}
@@ -145,6 +151,9 @@ proc isFloat*(t: Type): bool =
 proc isScalar*(t: Type): bool =
   t != nil and (t.isIntegral or t.isFloat or t.kind == tkBoolean or
     t.kind == tkNilptr or t.kind == tkPointer or t.kind == tkEnum)
+
+proc isBoolean*(t: Type): bool =
+  t != nil and t.kind == tkBoolean
 
 proc isStringy*(t: Type): bool =
   t != nil and (t.kind == tkString or t.kind == tkCstring)

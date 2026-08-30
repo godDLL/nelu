@@ -98,6 +98,14 @@ proc convert*(fromT, toT: Type, explicit: bool = false): Conversion =
   # record value to record field of the same type
   if fromT.isRecord and toT.isRecord and fromT == toT:
     return Conversion(kind: ckIdentity)
+  # T -> any: implicit tagged store (any value can hold any scalar/string/nil)
+  if toT.isAny and (fromT.isScalar or fromT.isStringy or
+                    fromT.isNiltype or fromT.isNilptr or
+                    fromT.isRecord or fromT.isTable):
+    return Conversion(kind: ckAnyStore, check: false)
+  # any -> T: explicit load with a runtime tag check
+  if fromT.isAny and (toT.isScalar or toT.isStringy):
+    return Conversion(kind: ckAnyLoad, check: true)
   return Conversion(kind: ckNone)
 
 # --- common type -------------------------------------------------------------

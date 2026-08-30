@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <math.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -25,6 +26,25 @@
 /* nlstring -- must match the typedef emitted by cgen.nim             */
 /* ------------------------------------------------------------------ */
 typedef struct { const char* data; size_t size; } nlstring;
+
+/* ------------------------------------------------------------------ */
+/* nlany -- tagged runtime `any`.  Must match the enum + struct       */
+/* emitted by cgen.nim; repeated here verbatim so this translation    */
+/* unit (compiled separately and linked) is self-contained.           */
+/* ------------------------------------------------------------------ */
+typedef enum {
+  NLANY_NIL = 0,
+  NLANY_BOOL, NLANY_INT, NLANY_UINT, NLANY_NUM,
+  NLANY_STRING, NLANY_POINTER, NLANY_TABLE, NLANY_FUNC, NLANY_TYPE
+} nlany_tag;
+
+typedef struct {
+  nlany_tag tag;
+  union {
+    uint8_t b; int64_t i; uint64_t u; double n;
+    nlstring s; void* p;
+  } as;
+} nlany;
 
 /* ------------------------------------------------------------------ */
 /* struct nltype -- runtime type descriptor.  cgen.nim only forward-   */
@@ -161,6 +181,71 @@ void nelua_print_newline(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* nlany -- tagged runtime `any`.  The struct itself is emitted in    */
+/* the cgen preamble; here only the construction / dispatch helpers.  */
+/* ------------------------------------------------------------------ */
+
+nlany nlany_from_nil(void) {
+  nlany r;
+  r.tag = NLANY_NIL;
+  r.as.i = 0;
+  return r;
+}
+
+nlany nlany_from_bool(uint8_t v) {
+  nlany r;
+  r.tag = NLANY_BOOL;
+  r.as.b = v;
+  return r;
+}
+
+nlany nlany_from_int(int64_t v) {
+  nlany r;
+  r.tag = NLANY_INT;
+  r.as.i = v;
+  return r;
+}
+
+nlany nlany_from_uint(uint64_t v) {
+  nlany r;
+  r.tag = NLANY_UINT;
+  r.as.u = v;
+  return r;
+}
+
+nlany nlany_from_num(double v) {
+  nlany r;
+  r.tag = NLANY_NUM;
+  r.as.n = v;
+  return r;
+}
+
+nlany nlany_from_string(nlstring v) {
+  nlany r;
+  r.tag = NLANY_STRING;
+  r.as.s = v;
+  return r;
+}
+
+nlany nlany_from_ptr(void* v) {
+  nlany r;
+  r.tag = (v == NULL) ? NLANY_NIL : NLANY_POINTER;
+  r.as.p = v;
+  return r;
+}
+
+void nelua_print_any(nlany v) {
+  switch (v.tag) {
+    case NLANY_NIL:    nelua_print_nil(); break;
+    case NLANY_BOOL:   nelua_print_bool(v.as.b); break;
+    case NLANY_INT:    nelua_print_int64(v.as.i); break;
+    case NLANY_UINT:   nelua_print_uint64(v.as.u); break;
+    case NLANY_NUM:    nelua_print_double(v.as.n); break;
+    case NLANY_STRING: nelua_print_string(v.as.s); break;
+    default:           nelua_print_nil(); break;
+  }
+}
+
 /* nlstr -- wrap a C string (not a copy) into an nlstring.            */
 /* ------------------------------------------------------------------ */
 nlstring nlstr(const char* s) {

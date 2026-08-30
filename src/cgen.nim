@@ -56,7 +56,19 @@ const RUNTIME_C = """
 
 typedef struct { const char* data; size_t size; } nlstring;
 typedef void* nilptr;
-typedef void* nlany;
+typedef enum {
+  NLANY_NIL = 0,
+  NLANY_BOOL, NLANY_INT, NLANY_UINT, NLANY_NUM,
+  NLANY_STRING, NLANY_POINTER, NLANY_TABLE, NLANY_FUNC, NLANY_TYPE
+} nlany_tag;
+
+typedef struct {
+  nlany_tag tag;
+  union {
+    uint8_t b; int64_t i; uint64_t u; double n;
+    nlstring s; void* p;
+  } as;
+} nlany;
 struct nltype;
 typedef struct nltype nltype;
 
@@ -101,6 +113,26 @@ extern const nltype nltype_of_int64;
 extern const nltype nltype_of_double;
 extern const nltype nltype_of_bool;
 extern const nltype nltype_of_string;
+
+/* `any` runtime helpers.  Definitions live in src/runtime.c; here only the
+   declarations so the emitted translation unit links.  The construction set
+   wraps a typed value into a tagged `nlany`; nelua_print_any dispatches print
+   by tag; the load/eq helpers are phase 2b plumbing, declared now so the
+   preamble stays stable when they are wired in. */
+nlany nlany_from_nil(void);
+nlany nlany_from_bool(uint8_t v);
+nlany nlany_from_int(int64_t v);
+nlany nlany_from_uint(uint64_t v);
+nlany nlany_from_num(double v);
+nlany nlany_from_string(nlstring v);
+nlany nlany_from_ptr(void* v);
+void nelua_print_any(nlany v);
+int64_t  nlany_load_int(nlany v);
+uint64_t nlany_load_uint(nlany v);
+double   nlany_load_num(nlany v);
+uint8_t  nlany_load_bool(nlany v);
+nlstring nlany_load_string(nlany v);
+bool nlany_eq(nlany a, nlany b);
 
 /* Exception / panic primitives.  Definitions are inline here (rather than in
    src/runtime.c) so every emitted translation unit is self-contained; they are
@@ -397,6 +429,35 @@ proc coerce(s: var Gen, expr: string, fromT: Type, toT: Type): string =
       return expr   # widening: C's own promotion applies
   of ckNarrow:
     return cCast(toT, expr)
+  of ckAnyStore:
+    # T -> any: wrap the typed expression in the matching tagged-store helper.
+    if fromT.isNiltype or fromT.isNilptr:
+      return "nlany_from_nil()"
+    if fromT.isBoolean:
+      return "nlany_from_bool(" & expr & ")"
+    if fromT.isStringy:
+      return "nlany_from_string(" & expr & ")"
+    if fromT.isIntegral:
+      return (if fromT.isUnsigned: "nlany_from_uint(" else: "nlany_from_int(") & expr & ")"
+    if fromT.isFloat:
+      return "nlany_from_num(" & expr & ")"
+    if fromT.isPointer or fromT.isFunction:
+      return "nlany_from_ptr(" & expr & ")"
+    # record / table value -> any: store its address (a record value has no
+    # single address until it is on the stack; the sources here are lvalues --
+    # a variable, a field, or a compound literal -- so address-of is valid).
+    return "nlany_from_ptr((void*)(&(" & expr & ")))"
+  of ckAnyLoad:
+    # any -> T: extract the payload with a runtime tag check.
+    if toT.isStringy:
+      return "nlany_load_string(" & expr & ")"
+    if toT.isBoolean:
+      return "nlany_load_bool(" & expr & ")"
+    if toT.isIntegral:
+      return (if toT.isUnsigned: "nlany_load_uint(" else: "nlany_load_int(") & expr & ")"
+    if toT.isFloat:
+      return "nlany_load_num(" & expr & ")"
+    return "nlany_load_ptr(" & expr & ")"   # phase 2b placeholder
 
 # ---------------------------------------------------------------------------
 # Expression lowering
@@ -646,6 +707,7 @@ proc genCall(s: var Gen, node: Node): string =
             helper = "nelua_print_string"; passArg = true
           of tkBoolean: helper = "nelua_print_bool"; passArg = true
           of tkNilptr, tkPointer: helper = "nelua_print_nil"; passArg = false
+          of tkAny: helper = "nelua_print_any"; passArg = true
           else: helper = "nelua_print_nil"; passArg = false
         let call = if passArg: helper & "(" & aes & ")" else: helper & "()"
         if i > 0: lines.add "nelua_print_sep(); " & call & ";"
@@ -948,7 +1010,10 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool) =
       if isGlobal: qual &= "static "
       if a != nil and a.isConst: qual &= "const "
       if a != nil and a.isVolatile: qual &= "volatile "
-      s.line qual & cDecl(vtype, cn) & ";"
+      if vtype.isAny:
+        s.line qual & cDecl(vtype, cn) & " = {0};"
+      else:
+        s.line qual & cDecl(vtype, cn) & ";"
     return
 
   # initializers, emitted as assignments
@@ -983,7 +1048,10 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool) =
       if vtype == nil: continue
       s.collectType(vtype)
       let cn = if a != nil and a.codename != "": a.codename else: cIdent(iddecl.str)
-      s.line cDecl(vtype, cn) & ";"
+      if vtype.isAny:
+        s.line cDecl(vtype, cn) & " = {0};"
+      else:
+        s.line cDecl(vtype, cn) & ";"
   for i in 0 ..< min(iddecls.len, inits.len):
     let iddecl = iddecls[i]
     let init = inits[i]

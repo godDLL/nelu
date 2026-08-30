@@ -935,16 +935,9 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
     # not a variable -- the oracle emits no storage for X, only the typedef.
     let isTypeBinding = (i < inits.len and inits[i].kind == nkType)
     vtypes.add vtype
-    # §11.0c / oracle: the C backend has no representation for `any` as a
-    # variable type.  Reject it here (with the oracle's exact message) instead
-    # of letting it reach codegen and emit broken C.  A table-literal initializer
-    # gets the oracle's distinct "initializer list" message.
-    if vtype != nil and vtype.kind == tkAny:
-      let initNode = if i < inits.len: inits[i] else: nil
-      if initNode != nil and initNode.kind == nkInitList:
-        ctx.diags.add ctx.path & ": error: type 'any' cannot be initialized using an initializer list"
-      else:
-        ctx.diags.add ctx.path & ": error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type"
+    let initNode = if i < inits.len: inits[i] else: nil
+    if initNode != nil and initNode.kind == nkInitList and vtype != nil and vtype.kind == tkAny:
+      ctx.diags.add ctx.path & ": error: type 'any' cannot be initialized using an initializer list"
     if vtype.kind == tkFunction and iddecl.children.len > 0:
       let ts = ctx.funcTypeStrOf.getOrDefault(iddecl.children[0])
       if ts.len > 0: ctx.funcTypeStrOf[iddecl] = ts
@@ -1266,19 +1259,11 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
                 elif arg.children.len > 0: analyzeTypeExpr(ctx, arg.children[0], false)
                 else: nil
     let at = if atype != nil: atype else: BuiltinTypes["any"]
-    # Oracle: a parameter whose (deduced) type is `any` is not supported on the
-    # C backend -- this covers both `f(a: any)` and the untyped `f(a)`.
-    if at != nil and at.kind == tkAny:
-      ctx.diags.add ctx.path & ": error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type"
     ftype.args.add at
     aparts.add arg.str & ": " & neluaTypeName(at)
   for r in returns:
     let rt = analyzeTypeExpr(ctx, r, false)
     if rt != nil:
-      # Oracle: an explicit `: any` return annotation is rejected; an untyped
-      # return (deduced from the body) is fine and lowers to `void` below.
-      if rt.kind == tkAny:
-        ctx.diags.add ctx.path & ": error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type"
       ftype.returns.add rt
   # No explicit return annotation: the type is inferred from the first textual
   # `return` in the body (the oracle does this; `function f() return 5 end`
