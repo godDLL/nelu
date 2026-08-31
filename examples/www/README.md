@@ -616,16 +616,17 @@ without the SDK. They are source for *snippet extraction*, not corpus entries.
 
 These candidates are **not** in the library (no copy under
 `examples/www/`), but are documented here so a future sweep does not
-re-add them blindly. All five are FAIL(us): the oracle compiles and runs
-them cleanly, our compiler does not. All verdicts re-verified this pass,
-agreeing with the sweep.
+re-add them blindly. Four are FAIL(us): the oracle compiles and runs them
+cleanly, our compiler does not. `gap_repeat` is the exception -- it now
+MATCHes (see below) and is kept here only as a historical note. All
+verdicts re-verified this pass, agreeing with the sweep.
 
 | candidate | oracle stdout | our failure | root cause |
 |-----------|---------------|-------------|------------|
 | `gap_func_local` | `5` | C compile error: `x` undeclared | `local` inside a function body is not emitted in the C output |
 | `gap_string_eq` | `true` | C compile error: invalid `==` on `nlstring` | runtime `string` `==` fails to typecheck in codegen |
 | `gap_tdiv` | `3` | parse error: unexpected token | `///` truncation-division token is not lexed |
-| `gap_repeat` | `3` | SIGSEGV (exit 139) in our compiler | `repeat ... until` segfaults the compiler |
+| `gap_repeat` | `3` | now MATCH (both print `3`, exit 0) | was `repeat ... until` segfault; fixed by stepped_for |
 | `repo_record_shapes` | naive example => ... | parse error: expected type after `@` | `@enum`/`@record`/`@pointer` not parsed (queued milestone) |
 
 Details:
@@ -639,15 +640,315 @@ Details:
   oracle prints `true`.
 - **`gap_tdiv`** — `7 /// 2`. Our lexer hits `///` as an unexpected token
   at column 24 and aborts the parse. The oracle prints `3`.
-- **`gap_repeat`** — `repeat ... until k >= 3`. Our compiler dies with
-  `SIGSEGV: Illegal storage access` before producing any output. The
-  oracle prints `3`.
+- **`gap_repeat`** — `repeat ... until k >= 3`. **No longer rejected: this
+  now MATCHes** -- both compilers print `3`, exit 0. It was documented here
+  because our compiler used to SIGSEGV on `repeat ... until`; the
+  `stepped_for` fix in `src/analyzer.nim` (`analyzeRepeat` now analyzes the
+  `until` condition, `node.children[1]`) closed it. Kept as a historical
+  note only.
 - **`repo_record_shapes`** — the naive `@enum`/`@record` inheritance
   example from upstream `examples/record_inheretance.nelua`. Our parser
   rejects `@enum(integer)` with `expected type after ‘@’`. Records and
   enums are a queued milestone, so nothing record-shaped can land until
   then. Oracle output:
   `naive example =>\n      rectangle area is\t4.0\n         circle area is\t3.14\n   circle shape area is\t4.0\nrectangle shape area is\t3.14`.
+
+## Newly mined (this sweep)
+
+Mined from `/home/user/Code/zxplayer/` (nelua/queue.nelua, nelua/config.nelua,
+nelua/player.nelua, nelua/types.nelua, nelua/library.nelua, nelua/radio.nelua)
+and `/home/user/Code/Raylib.nelua/rayeasings.nelua`. Every probe is standalone:
+no `require`, no external C library, no SDK. Verdicts re-verified by this pass
+through both compilers with `-b -o <out>`.
+
+**16 entries: 11 MATCH, 3 DIFF, 2 FAIL(us).**
+
+Running order: MATCHes first (regression floor), then DIFFs, then FAIL(us).
+
+### MATCH programs
+
+### `queue_rng`
+```lua
+local rng_state: int64 = 1
+local function rng_seed(s: int64)
+  rng_state = s
+end
+local function rng_next(max: integer): integer
+  rng_state = (rng_state * 1103515245 + 12345) % 2147483648
+  local r = rng_state % max
+  if r < 0 then r = r + max end
+  return r + 1
+end
+rng_seed(42)
+for i = 1, 5 do
+  print(rng_next(100))
+end
+```
+Extracted from `zxplayer nelua/queue.nelua`. Covers: `int64` type, large
+integer multiply, `%` modulo, negative-mod correction, and a closure over a
+file-local variable.
+
+- oracle: exit 0, stdout `28\t65\t54\t7\t36`
+- ours: exit 0, stdout `28\t65\t54\t7\t36`
+- **MATCH**
+
+### `preproc_if`
+```lua
+## if ZXPLAY_RELEASE then
+  print('release')
+## else
+  print('dev')
+## end
+```
+Extracted from `zxplayer nelua/config.nelua`. Covers: the `## if / ## else /
+## end` preprocessor conditional with an undefined compile-time symbol.
+
+- oracle: exit 0, stdout `dev`
+- ours: exit 0, stdout `dev`
+- **MATCH**
+
+### `global_decl`
+```lua
+global counter: integer = 0
+global Point = @record{ x: integer, y: integer }
+counter = counter + 1
+counter = counter + 1
+print(counter)
+local p = Point{ x = 3, y = 4 }
+print(p.x, p.y)
+```
+Extracted from `zxplayer nelua/queue.nelua` and `nelua/types.nelua`. Covers:
+the `global` declaration form at file scope, both a mutable variable and a
+record type.
+
+- oracle: exit 0, stdout `2\n3\t4`
+- ours: exit 0, stdout `2\n3\t4`
+- **MATCH**
+
+### `repeat_until`
+```lua
+local k = 0
+repeat
+  k = k + 1
+  print('r', k)
+until k >= 3
+```
+Extracted from `zxplayer nelua/library.nelua`. Covers: `repeat ... until`
+(body runs at least once, stops when the condition is true).
+
+- oracle: exit 0, stdout `r\t1\nr\t2\nr\t3`
+- ours: exit 0, stdout `r\t1\nr\t2\nr\t3`
+- **MATCH**
+
+### `char_literal`
+```lua
+local c = 'a'
+print(c, #c)
+```
+Extracted from `zxplayer nelua/radio.nelua`. Covers: character literals.
+
+- oracle: exit 0, stdout `a\t1`
+- ours: exit 0, stdout `a\t1`
+- **MATCH**
+
+### `void_return`
+```lua
+local function noop(): void
+  print('in')
+  return
+end
+noop()
+print('after')
+```
+Extracted from `zxplayer nelua/player.nelua`. Covers: the `void` return type
+and a bare `return` in a void function.
+
+- oracle: exit 0, stdout `in\nafter`
+- ours: exit 0, stdout `in\nafter`
+- **MATCH**
+
+### `record_methods`
+```lua
+local Point = @record{ x: integer, y: integer }
+function Point:sum(): integer
+  return self.x + self.y
+end
+function Point:neg()
+  self.x = -self.x
+  self.y = -self.y
+end
+local p = Point{ x = 3, y = 4 }
+print(p:sum())
+p:neg()
+print(p.x, p.y)
+```
+Extracted from `zxplayer nelua/queue.nelua` and `Raylib.nelua/rayeasings.nelua`.
+Covers: a `@record` with multiple colon methods, one returning a value and one
+mutating `self` through a unary operation. This is the MATCHing case for
+record methods with self mutation; the binary-operation variant is
+`recmethod_mutate` below.
+
+- oracle: exit 0, stdout `7\n-3\t-4`
+- ours: exit 0, stdout `7\n-3\t-4`
+- **MATCH**
+
+### `num_floor`
+```lua
+local a: number = 7.0 // 2.0
+local b: number = -7.0 // 2.0
+print(a, b)
+```
+Extracted from `zxplayer nelua/player.nelua`. Covers: floor division `//` on
+`number` (double), positive and negative. Complements the integer `floor_div`
+probe; `//` on `number` is correct in ours.
+
+- oracle: exit 0, stdout `3.0\t-4.0`
+- ours: exit 0, stdout `3.0\t-4.0`
+- **MATCH**
+
+### `check_fail`
+```lua
+check(false, 'should fail')
+print('after')
+```
+Extracted from `zxplayer nelua/radio.nelua`. Covers: what a failing `check`
+does at runtime (prints the message, aborts).
+
+- oracle: exit 134, stdout ``
+- ours: exit 134, stdout ``
+- **MATCH**
+
+### `byte_alias`
+```lua
+global Bytes = @byte
+local b: Bytes = 65
+print(b)
+```
+Extracted from `zxplayer nelua/types.nelua`. Covers: the `@byte` type alias.
+
+- oracle: exit 0, stdout `65`
+- ours: exit 0, stdout `65`
+- **MATCH**
+
+### `isize_usize`
+```lua
+local a: isize = -5
+local b: usize = 7
+print(a, b)
+```
+Extracted from `zxplayer nelua/queue.nelua` and `nelua/radio.nelua`. Covers:
+`isize` and `usize` types.
+
+- oracle: exit 0, stdout `-5\t7`
+- ours: exit 0, stdout `-5\t7`
+- **MATCH**
+
+## DIFF programs (our compiler wrong; oracle right)
+
+### `float32_easing`
+```lua
+local function quadOut(t: float32, b: float32, c: float32, d: float32): float32 <inline>
+  return -c * t * (t - 2) + b
+end
+print(quadOut(0.0, 0.0, 100.0, 1.0))
+print(quadOut(0.5, 0.0, 100.0, 1.0))
+print(quadOut(1.0, 0.0, 100.0, 1.0))
+```
+Extracted from `Raylib.nelua/rayeasings.nelua` (`rle.quadOut`). Covers:
+`float32` arithmetic, the `<inline>` attribute, and float32 print formatting.
+
+- oracle: exit 0, stdout `0.0\n75.0\n100.0`
+- ours: exit 0, stdout `0\n75\n100`
+- **DIFF — oracle is right**
+
+What you see: the values are correct (0, 75, 100) but our formatter prints
+`float32` with no decimal point, as if it were an integer. The `number`
+(double) formatter is fine (see `floats`), so the gap is specific to the
+32-bit float type. Fix target: float32 rendering in the print/runtime path.
+
+### `uint8_wrap`
+```lua
+local a: uint8 = 200
+local b: uint8 = 100
+print(a + b)
+```
+Extracted from `zxplayer nelua/queue.nelua`. Covers: `uint8` overflow wrapping.
+
+- oracle: exit 0, stdout `44`
+- ours: exit 0, stdout `300`
+- **DIFF — oracle is right**
+
+What you see: `200 + 100 = 300`, which wraps mod 256 to `44` for a `uint8`.
+Our compiler emits the un-wrapped sum `300`, i.e. it promotes `uint8`
+arithmetic to a wider type instead of wrapping. Fix target: `uint8` (and
+probably the other 8-bit integer types) arithmetic codegen.
+
+### `splice_embed`
+```lua
+## local x = 7
+global v: integer = #[x]#
+print(v)
+```
+Extracted from `zxplayer nelua/config.nelua` (the embedded
+`radio_json_default`). Covers: the `#[ ... ]#` splice form.
+
+- oracle: exit 0, stdout `7`
+- ours: exit 0, stdout `0`
+- **DIFF — oracle is right**
+
+What you see: the splice runs (our compiler does not reject it) but the
+computed value does not survive into the global; `v` is emitted as `0`. The
+splice runner does not share compile-time Lua variables across splice
+boundaries. Fix target: `#[...]#` splice evaluation/scoping (queued splice
+milestone).
+
+## FAIL(us) — kept regression material
+
+### `recmethod_mutate`
+```lua
+local Point = @record{ x: integer, y: integer }
+function Point:scale(s: integer)
+  self.x = self.x * s
+  self.y = self.y * s
+end
+local p = Point{ x = 3, y = 4 }
+p:scale(2)
+print(p.x, p.y)
+local q = Point{ x = 1, y = 1 }
+q:scale(10)
+print(q.x, q.y)
+```
+Extracted from `Raylib.nelua/rayeasings.nelua` and `zxplayer nelua/queue.nelua`.
+Covers: a colon method that mutates a `self` field through a *binary*
+operation on the RHS.
+
+- oracle: exit 0, stdout `6\t8\n10\t10`
+- ours: **compiler SIGSEGV** (exit -11)
+- **FAIL — oracle is right**
+
+What you see: our compiler dies with `SIGSEGV: Illegal storage access`
+during analysis whenever a colon method assigns `self.<field>` from a
+binary operation. Contrast `record_methods`, whose mutating method uses a
+unary RHS (`self.x = -self.x`) and MATCHes; the trigger is specifically a
+binary op on the RHS of a self-field assignment. Fix target: codegen for
+self-field mutation with a computed RHS in `src/`.
+
+### `cstring_type`
+```lua
+local name: cstring = 'hello'
+print(#name, name)
+```
+Extracted from `zxplayer nelua/player.nelua`. Covers: the `cstring` type.
+
+- oracle: exit 0, stdout `5\thello`
+- ours: **C compile fails** (cc exit 1)
+- **FAIL — oracle is right**
+
+What you see: the emitted C is
+`examples_www_cstring_type_name = (const char*)(nlstr("hello"));` and gcc
+rejects it with `error: cannot convert to a pointer type`. A `cstring`
+variable is being assigned through the string literal wrapper instead of as
+a plain `const char*`. Fix target: `cstring` variable codegen.
 
 ## Deliberately not wired into any gate
 
