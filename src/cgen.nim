@@ -1049,7 +1049,8 @@ proc cFuncDecl(retType: Type, name: string, paramStr: string): string =
           else: cType(retType)
   return ret & " " & name & "(" & paramStr & ")"
 
-proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool) =
+proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool,
+                alreadyDeclared: bool = false) =
   # A `global` declaration is only valid at the module top scope; the oracle's
   # analyzer rejects it inside any function body (analyzer.lua:2217).  Ours
   # does not check it yet, so enforce it here rather than emit broken C for a
@@ -1099,12 +1100,15 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool) =
         let cn = if a != nil and a.codename != "": a.codename else: cIdent(iddecl.str)
         s.line cn & " = " & tmp & ".field" & $i & ";"
       return
-  # Function-local variables need a C declaration emitted here; top-level
-  # variables were already declared as `static` in the globals pass.  The
-  # `isGlobal` flag is set from `s.inFunc`, so it is true exactly for locals.
-  # A comptime local is folded away entirely -- it has no storage and every
-  # reference is inlined -- so neither a declaration nor an assignment emits.
-  if isGlobal:
+  # Function-body locals and block-scoped locals at unit scope need a C
+  # declaration emitted here; top-level variables were already declared as
+  # `static` in the globals pass (genC step 3b) and their initialisers run here
+  # at step 6, so they are passed `alreadyDeclared=true` to avoid a duplicate
+  # `int64_t tmp_x;`.  The `isGlobal` flag is set from `s.inFunc`, so it is true
+  # exactly for function-body locals.  A comptime local is folded away entirely
+  # -- it has no storage and every reference is inlined -- so neither a
+  # declaration nor an assignment emits.
+  if isGlobal or not alreadyDeclared:
     for iddecl in iddecls:
       let a = s.ctx.attrOf.getOrDefault(iddecl)
       if a != nil and a.isTypeBinding:
@@ -1616,7 +1620,12 @@ proc genC*(source: string, path: string, release = false, nochecks = false,
     s.pushDefer(dkFunc)
     for c in r.root.children:
       if c.kind == nkVarDecl:
-        s.genVarDecl(c, emitInits=true, isGlobal=false)
+        # Step 3b already emitted the `static` declaration for every
+        # module-level VarDecl; here we only run its initializer.  Pass
+        # alreadyDeclared=true so the init branch does not re-declare it (a
+        # block-scoped local nested in this scope is NOT a direct child and
+        # still reaches genStmt with alreadyDeclared=false).
+        s.genVarDecl(c, emitInits=true, isGlobal=false, alreadyDeclared=true)
       elif c.kind != nkFuncDef:
         s.genStmt(c)
     let defers = s.deferStack[^1][1]

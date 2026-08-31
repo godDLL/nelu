@@ -1081,7 +1081,11 @@ proc dump*(n: Node, indent = 0): string =
   of nkNil:         s.add "nkNil"
   of nkNilptr:      s.add "nkNilptr"
   of nkVarargs:     s.add "nkVarargs"
-  of nkPair:        s.add "nkPair " & quoteStr(n.str)
+  of nkPair:
+    if n.str.len > 0:
+      s.add "nkPair " & quoteStr(n.str)
+    else:
+      s.add "nkPair"
   of nkInitList:    s.add "nkInitList"
   of nkDotIndex:    s.add "nkDotIndex " & quoteStr(n.str)
   of nkColonIndex:  s.add "nkColonIndex " & quoteStr(n.str)
