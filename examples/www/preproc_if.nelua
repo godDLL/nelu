@@ -1,0 +1,8 @@
+-- preproc_if.nelua -- extracted from zxplayer nelua/config.nelua.
+-- A compile-time `## if / ## else / ## end` preprocessor conditional with
+-- an undefined compile-time symbol. Isolates: the nelua preprocessor.
+## if ZXPLAY_RELEASE then
+  print('release')
+## else
+  print('dev')
+## end

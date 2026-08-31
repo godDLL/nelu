@@ -1,0 +1,9 @@
+-- repeat_until.nelua -- extracted from zxplayer nelua/library.nelua
+-- (the JSON skip-value loop shape). A repeat/until loop whose body runs
+-- at least once and stops when the condition is true. Isolates:
+-- repeat ... until.
+local k = 0
+repeat
+  k = k + 1
+  print('r', k)
+until k >= 3

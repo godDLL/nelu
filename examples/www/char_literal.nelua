@@ -1,0 +1,5 @@
+-- char_literal.nelua -- extracted from zxplayer nelua/radio.nelua
+-- (the byte-walking JSON parsers compare single characters). A single
+-- character literal and its length. Isolates: char literals 'a'.
+local c = 'a'
+print(c, #c)

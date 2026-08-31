@@ -1,0 +1,7 @@
+-- num_floor.nelua -- extracted from zxplayer nelua/player.nelua
+-- (seek clamping arithmetic). Floor division `//` on `number` values,
+-- positive and negative. Complements the integer floor_div probe.
+-- Isolates: `//` on number (double).
+local a: number = 7.0 // 2.0
+local b: number = -7.0 // 2.0
+print(a, b)

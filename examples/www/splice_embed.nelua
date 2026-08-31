@@ -1,0 +1,7 @@
+-- splice_embed.nelua -- extracted from zxplayer nelua/config.nelua
+-- (the embedded radio_json_default). A `#[ ... ]#` splice that runs
+-- compile-time Lua and embeds a computed integer into a global.
+-- Isolates: the `#[...]#` splice form.
+## local x = 7
+global v: integer = #[x]#
+print(v)

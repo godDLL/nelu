@@ -1,0 +1,6 @@
+-- isize_usize.nelua -- extracted from zxplayer nelua/queue.nelua
+-- (the comma-search `isize` indices) and nelua/radio.nelua. A signed
+-- isize and an unsigned usize. Isolates: isize / usize types.
+local a: isize = -5
+local b: usize = 7
+print(a, b)

@@ -1,0 +1,5 @@
+-- check_fail.nelua -- extracted from zxplayer nelua/radio.nelua
+-- (the tag-matching asserts). What a failing `check` does at runtime:
+-- it prints the message and aborts. Isolates: check(false, msg).
+check(false, 'should fail')
+print('after')
