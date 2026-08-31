@@ -640,7 +640,7 @@ Details:
   oracle prints `true`.
 - **`gap_tdiv`** — `7 /// 2`. Our lexer hits `///` as an unexpected token
   at column 24 and aborts the parse. The oracle prints `3`.
-- **`gap_repeat`** — `repeat ... until k >= 3`. **No longer rejected: this
+- **`gap_repeat`** - `repeat ... until k >= 3`. **No longer rejected: this
   now MATCHes** -- both compilers print `3`, exit 0. It was documented here
   because our compiler used to SIGSEGV on `repeat ... until`; the
   `stepped_for` fix in `src/analyzer.nim` (`analyzeRepeat` now analyzes the
