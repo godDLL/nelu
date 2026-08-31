@@ -753,6 +753,201 @@ proc registerAster*(L: PLuaState) =
   L.lua_setglobal("aster")
   L.lua_pushcfunction(cInjectStatement); L.lua_setglobal("inject_statement")
 
+# ---------------------------------------------------------------------------
+# Type / Symbol wrappers for the splice environment (§2 / Step 5).
+#
+# The reference exposes each scope Symbol and Type as a Lua value whose
+# `__index` metamethod maps field names to the Nim object's attributes.  Our
+# clean-room build pushes Types the same way: a table carrying the `Type` ref
+# as a `__nelua_type` lightuserdata, with `cTypeIndex` as its `__index`.  This
+# is what makes `#[atype.is_oneindexing and 1 or 0]#`,
+# `#[values.type.subtype.is_sequence and 1 or 0]#` and
+# `#[concept(function(x) return x.type.is_span end)]#` readable.
+#
+# `luaValueToNode` recognises a wrapper table by its `__nelua_type` field and
+# re-derives the `nkType(@nkId(name))` node it would have built from the bare
+# lightuserdata, so wrapping the primitive type-name globals is transparent.
+
+proc getWrapperType(L: PLuaState, idx: int): Type =
+  ## Read the `__nelua_type` lightuserdata off a wrapper table at `idx`.
+  let base = L.lua_absidx(idx)
+  L.lua_getfield(base, "__nelua_type")
+  let p = L.lua_touserdata(-1)
+  L.lua_pop(1)
+  if p != nil:
+    result = cast[Type](p)
+
+
+proc pushTypeWrapper(L: PLuaState, t: Type)
+
+proc pushBool(L: PLuaState, b: bool) =
+  L.lua_pushboolean(if b: 1 else: 0)
+
+proc cTypeIndex(L: PLuaState): int {.cdecl.} =
+  ## `Type.__index(self, key)` -- map a field name to its value.
+  let t = getWrapperType(L, 1)
+  if t == nil:
+    discard L.luaL_error("nelua: attempt to index a non-type value")
+    return 0
+  let keyPtr = L.lua_tolstring(2, nil)
+  let key = if keyPtr != nil: $keyPtr else: ""
+  case key
+  of "name":
+    pushStr(L, t.name)
+  of "codename":
+    pushStr(L, if t.codename.len > 0: t.codename else: codename(t))
+  of "nickname":
+    if t.nickname.len > 0: pushStr(L, t.nickname)
+    else: L.lua_pushlightuserdata(nil)
+  of "id":
+    if t.typeid != 0: L.lua_pushnumber(cdouble(t.typeid))
+    else: L.lua_pushlightuserdata(nil)
+  of "subtype":
+    if t.subtype != nil: pushTypeWrapper(L, t.subtype)
+    else: L.lua_pushlightuserdata(nil)
+  of "is_type":         pushBool(L, t.is_type)
+  of "is_signed":      pushBool(L, t.isSigned)
+  of "is_oneindexing": pushBool(L, t.is_oneindexing)
+  of "is_sequence":    pushBool(L, t.is_sequence)
+  of "is_span":        pushBool(L, t.is_span)
+  of "is_vector":      pushBool(L, t.is_vector)
+  of "is_list":        pushBool(L, t.is_list)
+  of "is_hashmap":     pushBool(L, t.is_hashmap)
+  of "is_contiguous":  pushBool(L, t.is_contiguous)
+  of "is_container":   pushBool(L, t.is_container)
+  of "is_scalar":      pushBool(L, t.is_scalar)
+  of "is_arithmetic":  pushBool(L, t.is_arithmetic)
+  of "is_float":       pushBool(L, t.is_float)
+  of "is_integral":    pushBool(L, t.is_integral)
+  of "is_stringy":     pushBool(L, t.is_stringy)
+  of "is_boolean":     pushBool(L, t.is_boolean)
+  of "is_string":      pushBool(L, t.is_string)
+  of "is_cstring":     pushBool(L, t.is_cstring)
+  of "is_record":      pushBool(L, t.is_record)
+  of "is_union":       pushBool(L, t.is_union)
+  of "is_enum":        pushBool(L, t.is_enum)
+  of "is_function":    pushBool(L, t.is_function)
+  of "is_procedure":   pushBool(L, t.is_procedure)
+  of "is_pointer":     pushBool(L, t.is_pointer)
+  of "is_nilptr":      pushBool(L, t.is_nilptr)
+  of "is_array":       pushBool(L, t.is_array)
+  of "is_optional":    pushBool(L, t.is_optional)
+  of "is_variant":     pushBool(L, t.is_variant)
+  of "is_table":       pushBool(L, t.is_table)
+  of "is_concept":     pushBool(L, t.is_concept)
+  of "is_generic":     pushBool(L, t.is_generic)
+  of "is_comptime":    pushBool(L, t.is_comptime)
+  of "is_polymorphic": pushBool(L, t.is_polymorphic)
+  of "is_nilable":     pushBool(L, t.is_nilable)
+  of "is_unpointable": pushBool(L, t.is_unpointable)
+  of "is_nameable":    pushBool(L, t.is_nameable)
+  of "is_nolvalue":    pushBool(L, t.is_nolvalue)
+  of "is_nodecl":      pushBool(L, t.is_nodecl)
+  of "is_overload":    pushBool(L, t.is_overload)
+  of "is_facultative": pushBool(L, t.is_facultative)
+  of "is_composite":   pushBool(L, t.is_composite)
+  of "is_aggregate":   pushBool(L, t.is_aggregate)
+  of "is_empty":       pushBool(L, t.is_empty)
+  of "is_multipleargs":pushBool(L, t.is_multipleargs)
+  of "is_falseable":   pushBool(L, t.is_falseable)
+  of "is_auto":        pushBool(L, t.is_auto)
+  of "is_any":         pushBool(L, t.is_any)
+  of "is_varargs":     pushBool(L, t.is_varargs)
+  of "is_varanys":     pushBool(L, t.is_varanys)
+  of "is_void":        pushBool(L, t.is_void)
+  of "is_niltype":     pushBool(L, t.is_niltype)
+  else:
+    L.lua_pushlightuserdata(nil)
+  return 1
+
+
+proc pushTypeWrapper(L: PLuaState, t: Type) =
+  ## Push `t` as a Type wrapper table (with `cTypeIndex` `__index`).
+  L.lua_createtable(0, 4)
+  if t != nil:
+    L.lua_pushlightuserdata(cast[pointer](t))
+    L.lua_setfield(-2, "__nelua_type")
+  L.lua_createtable(0, 1)
+  L.lua_pushcfunction(cTypeIndex); L.lua_setfield(-2, "__index")
+  L.lua_setmetatable(-2)
+
+proc cConcept(L: PLuaState): int {.cdecl.} =
+  ## `concept(func)` -- build a ConceptType carrying `func` (§6 / Step 6).
+  ## The reference calls `func` during analysis whenever a type tries to match
+  ## the concept; our clean-room build has no scope-aware splice evaluator
+  ## (Stage 4 Steps 1-4), so `func` is captured but not yet invoked.  The
+  ## ConceptType is still constructed and spliced, which is what
+  ## `#[concept(function(x) return x.type.is_span end)]#` needs.
+  if lua_gettop(L) < 1 or lua_type(L, 1) != LUA_TFUNCTION:
+    discard L.luaL_error("concept: expected a function argument")
+    return 0
+  lua_pop(L, 1)                     # capture point (matching is out of scope)
+  let t = conceptType("concept", 0)
+  pushTypeWrapper(L, t)
+  return 1
+
+proc cGeneric(L: PLuaState): int {.cdecl.} =
+  ## `generic(func)` -- build a GenericType carrying `func` (§6 / Step 6).
+  if lua_gettop(L) < 1 or lua_type(L, 1) != LUA_TFUNCTION:
+    discard L.luaL_error("generic: expected a function argument")
+    return 0
+  lua_pop(L, 1)
+  inc TypeCounter
+  var t = Type(kind: tkGeneric, name: "generic", funcRef: 0, typeid: TypeCounter)
+  computeShaper(t)
+  pushTypeWrapper(L, t)
+  return 1
+
+proc cGeneralize(L: PLuaState): int {.cdecl.} =
+  ## `generalize(func)` -- the reference wraps `func` in `memoize(hygienize())`
+  ## before passing it to `generic`.  Our build has neither memoize nor the
+  ## hygienic-closure machinery, so this is `generic(func)`.
+  return cGeneric(L)
+
+proc cStaticError(L: PLuaState): int {.cdecl.} =
+  ## `static_error(msg, ...)` -- raise a compile-time error (§6 / Step 6).
+  let top = lua_gettop(L)
+  let msgPtr = if top >= 1: lua_tolstring(L, 1, nil) else: nil
+  var args: seq[string] = @[]
+  for i in 2 .. top:
+    let s = lua_tolstring(L, i, nil)
+    args.add if s != nil: $s else: "nil"
+  let msg = if msgPtr != nil: $msgPtr else: ""
+  let full = "static_error: " & formatPPMessage(msg, args)
+  lua_pushstring(L, full.cstring)
+  discard lua_error(L)
+  return 0
+
+proc injectDirective(L: PLuaState, name: string): int =
+  ## Build a `Directive` node from the call's string arguments and splice it
+  ## into the current `##` inject position (§6 / Step 6: cinclude/cdefine/
+  ## cemit/cflags are `pp_directives` in the reference).
+  if gInjectStack.len == 0:
+    discard L.luaL_error(name & ": not inside a ## block")
+    return 0
+  let pos = gInjectCurrent
+  if pos >= gInjectStack[^1].len:
+    return 0
+  var kids: seq[Node] = @[]
+  let top = lua_gettop(L)
+  for i in 1 .. top:
+    let s = lua_tolstring(L, i, nil)
+    if s != nil:
+      kids.add newString($s)
+  let node = newDirective(name, kids)
+  gNodeScratch.add node
+  gInjectStack[^1][pos].add node
+  return 0
+
+proc cCinclude(L: PLuaState): int {.cdecl.} =
+  return injectDirective(L, "cinclude")
+proc cCdefine(L: PLuaState): int {.cdecl.} =
+  return injectDirective(L, "cdefine")
+proc cCemit(L: PLuaState): int {.cdecl.} =
+  return injectDirective(L, "cemit")
+proc cCflags(L: PLuaState): int {.cdecl.} =
+  return injectDirective(L, "cflags")
+
 proc registerPreprocessorBuiltins*(L: PLuaState) =
   ## Register the Phase-B preprocessor builtins into the shared Lua state.
   ## Idempotent (guarded by `gBuiltinsRegistered`, reset by
@@ -768,16 +963,30 @@ proc registerPreprocessorBuiltins*(L: PLuaState) =
   L.lua_pushcfunction(cStaticAssert); L.lua_setglobal("static_assert")
   L.lua_createtable(0, 0); L.lua_setglobal("ppregistry")
   registerAster(L)
+  # --- Step 6: concept / generic / generalize / static_error / cinclude /
+  ## cdefine / cemit / cflags builtins (the reference's pp_methods /
+  ## pp_directives).  `concept`/`generic`/`generalize` construct comptime
+  ## types; `static_error` raises; the four C directives splice a Directive
+  ## node at the current `##` inject position.
+  L.lua_pushcfunction(cConcept); L.lua_setglobal("concept")
+  L.lua_pushcfunction(cGeneric); L.lua_setglobal("generic")
+  L.lua_pushcfunction(cGeneralize); L.lua_setglobal("generalize")
+  L.lua_pushcfunction(cStaticError); L.lua_setglobal("static_error")
+  L.lua_pushcfunction(cCinclude); L.lua_setglobal("cinclude")
+  L.lua_pushcfunction(cCdefine); L.lua_setglobal("cdefine")
+  L.lua_pushcfunction(cCemit); L.lua_setglobal("cemit")
+  L.lua_pushcfunction(cCflags); L.lua_setglobal("cflags")
   # --- splice-environment globals (`#[expr]#`) ---
   # The reference's splice environment exposes `primtypes` (every primitive
   # Type), `typedefs`, and the nelua type-name identifiers.  We seed the same
   # surface into the shared Lua state so `#[math.huge]#` and `#[integer]#`
-  # resolve.  Each Type is carried as lightuserdata (the `Type` ref IS a
-  # pointer; the objects live in the module-global `BuiltinTypes` table, so
-  # they are GC-rooted for the whole compilation).
+  # resolve.  Each Type is pushed as a Type-wrapper table (with `cTypeIndex`
+  # `__index`) so attribute splices like `#[atype.is_oneindexing and 1 or 0]#`
+  # work; `luaValueToNode` recognises the wrapper and re-derives the same
+  # `nkType(@nkId(name))` node the bare lightuserdata used to produce.
   L.lua_createtable(0, BuiltinTypes.len)
   for nm, ty in BuiltinTypes:
-    L.lua_pushlightuserdata(cast[pointer](ty))
+    pushTypeWrapper(L, ty)
     L.lua_setfield(-2, nm)
   L.lua_setglobal("primtypes")
   L.lua_createtable(0, 1)
@@ -789,7 +998,7 @@ proc registerPreprocessorBuiltins*(L: PLuaState) =
   # the type-query function) so those keep their Lua meaning.
   for nm, ty in BuiltinTypes:
     if nm == "string" or nm == "nil" or nm == "type": continue
-    L.lua_pushlightuserdata(cast[pointer](ty))
+    pushTypeWrapper(L, ty)
     L.lua_setglobal(nm)
 
 proc luaTableToNode*(L: PLuaState, idx: int): Node   # forward, see below
@@ -799,8 +1008,9 @@ proc luaValueToNode*(L: PLuaState, idx: int): Node =
   ##
   ##   nil -> nkNil, boolean -> nkBoolean, string -> nkString,
   ##   number -> nkNumber (decimal text; `math.huge` -> "inf"),
-  ##   a nelua `Type` (lightuserdata) -> `nkType(@nkId(name))` so
-  ##     `analyzeVarDecl`'s `isTypeBinding` branch handles it,
+  ##   a nelua `Type` (lightuserdata OR a Type-wrapper table) ->
+  ##     `nkType(@nkId(name))` so `analyzeVarDecl`'s `isTypeBinding`
+  ##     branch handles it,
   ##   table -> nkInitList, function -> `cannot convert ... function`.
   let tt = lua_type(L, idx)
   case tt
@@ -826,6 +1036,19 @@ proc luaValueToNode*(L: PLuaState, idx: int): Node =
         return newType(newId(nm))
     return newNil()
   of LUA_TTABLE:
+    # A Type wrapper table carries a `__nelua_type` lightuserdata field;
+    # recognise it before falling through to the InitList path.
+    let base = L.lua_absidx(idx)
+    L.lua_getfield(base, "__nelua_type")
+    if L.lua_type(-1) == LUA_TLIGHTUSERDATA:
+      let p = L.lua_touserdata(-1)
+      L.lua_pop(1)
+      if p != nil:
+        let ty = cast[Type](p)
+        if ty != nil:
+          let nm = if ty.name.len > 0: ty.name else: "any"
+          return newType(newId(nm))
+    L.lua_pop(1)
     return luaTableToNode(L, idx)
   of LUA_TFUNCTION:
     raise PreprocessError(loc: newSourceLoc("", "", 0),
@@ -1052,6 +1275,14 @@ proc handleDirective*(d: Node, target: var seq[Node],
       discard
     of "include":
       spliceInclude(d, target, ctx)
+    of "cdefine", "cinclude", "cemit", "cflags":
+      ## §6 / Step 6 Phase-B C directives.  They are injected by the matching
+      ## preprocessor builtins (`cdefine`/`cinclude`/`cemit`/`cflags`, registered
+      ## in `registerPreprocessorBuiltins`) from inside `##` Lua blocks.  The
+      ## directive node is consumed here; the actual C-text emission is a `cgen`
+      ## concern (it has no hook for user C at present), so the node is dropped
+      ## silently rather than producing a spurious "unknown directive" diag.
+      discard
     else:
       ctx.diags.add "unknown directive: " & d.str
 

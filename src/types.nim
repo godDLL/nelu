@@ -43,7 +43,64 @@ type
     isSigned*: bool
     typeid*: int
     note*: string             ## optional human note (e.g. "unsupported")
+    funcRef*: int             ## Lua registry ref for a concept/generic function (0 = none)
     methods*: Table[string, MethodDesc]  ## colon-methods defined on this type
+    ## §8 shaper booleans -- the hand-picked subset the stdlib and the splice
+    ## probes read.  Derived ones are filled by `computeShaper` at type
+    ## construction; the container family (is_span/is_sequence/...) is left
+    ## false unless a lib definition sets it (our clean-room type system does
+    ## not recognise lib types, which matches the oracle for non-lib types).
+    is_oneindexing*: bool
+    is_sequence*: bool
+    is_span*: bool
+    is_vector*: bool
+    is_list*: bool
+    is_hashmap*: bool
+    is_contiguous*: bool
+    is_container*: bool
+    is_scalar*: bool
+    is_arithmetic*: bool
+    is_float*: bool
+    is_integral*: bool
+    is_stringy*: bool
+    is_boolean*: bool
+    is_string*: bool
+    is_cstring*: bool
+    is_record*: bool
+    is_union*: bool
+    is_enum*: bool
+    is_function*: bool
+    is_procedure*: bool
+    is_pointer*: bool
+    is_nilptr*: bool
+    is_array*: bool
+    is_optional*: bool
+    is_variant*: bool
+    is_table*: bool
+    is_concept*: bool
+    is_generic*: bool
+    is_comptime*: bool
+    is_polymorphic*: bool
+    is_nilable*: bool
+    is_unpointable*: bool
+    is_nameable*: bool
+    is_nolvalue*: bool
+    is_nodecl*: bool
+    is_overload*: bool
+    is_facultative*: bool
+    is_composite*: bool
+    is_aggregate*: bool
+    is_empty*: bool
+    is_multipleargs*: bool
+    is_falseable*: bool
+    is_auto*: bool
+    is_any*: bool
+    is_varargs*: bool
+    is_varanys*: bool
+    is_void*: bool
+    is_niltype*: bool
+    is_type*: bool
+    nickname*: string         ## Nelua nickname for named types; "" for primitives
 
   MethodDesc* = object
     sym*: Symbol              ## the defining function symbol
@@ -497,12 +554,75 @@ proc typeKey(t: Type, depth = 0): string =
     else:
       codename(t)
 
+proc computeShaper*(t: Type) =
+  ## Fill the derived §8 shaper booleans from `t.kind`.  Idempotent; safe to
+  ## call on cached (canonical) types.  The container family stays false unless
+  ## a lib definition sets it explicitly (our type system does not recognise
+  ## lib types, matching the oracle for non-lib types).
+  let k = t.kind
+  t.is_auto      = k == tkAuto
+  t.is_any       = k == tkAny
+  t.is_varargs   = k == tkVarargs
+  t.is_varanys   = k == tkVaranys
+  t.is_void      = k == tkVoid
+  t.is_niltype   = k == tkNiltype
+  t.is_boolean   = k == tkBoolean
+  t.is_string    = k == tkString
+  t.is_cstring   = k == tkCstring
+  t.is_record    = k == tkRecord
+  t.is_union     = k == tkUnion
+  t.is_enum      = k == tkEnum
+  t.is_function  = k == tkFunction
+  t.is_procedure = k == tkFunction
+  t.is_pointer   = k == tkPointer
+  t.is_nilptr    = k == tkNilptr
+  t.is_array     = k == tkArray
+  t.is_optional  = k == tkOptional
+  t.is_variant   = k == tkVariant
+  t.is_table     = k == tkTable
+  t.is_concept   = false
+  t.is_generic   = k == tkGeneric
+  t.is_type      = k == tkMetatype
+  t.is_scalar    = k in {tkInteger, tkUinteger, tkNumber, tkByte, tkIsize,
+                          tkUsize, tkInt8, tkInt16, tkInt32, tkInt64, tkInt128,
+                          tkUint8, tkUint16, tkUint32, tkUint64, tkUint128,
+                          tkFloat32, tkFloat64, tkFloat128, tkBoolean, tkNilptr,
+                          tkPointer, tkEnum, tkCchar, tkCschar, tkCuchar,
+                          tkCshort, tkCushort, tkCint, tkCuint, tkClong, tkCulong,
+                          tkClonglong, tkCulonglong, tkCptrdiff, tkCsize,
+                          tkCfloat, tkCdouble, tkClongdouble, tkCstring, tkString}
+  t.is_integral  = k in {tkInteger, tkUinteger, tkByte, tkIsize, tkUsize,
+                          tkInt8, tkInt16, tkInt32, tkInt64, tkInt128,
+                          tkUint8, tkUint16, tkUint32, tkUint64, tkUint128,
+                          tkCchar, tkCschar, tkCuchar, tkCshort, tkCushort,
+                          tkCint, tkCuint, tkClong, tkCulong, tkClonglong,
+                          tkCulonglong, tkCptrdiff, tkCsize, tkEnum}
+  t.is_float     = k in {tkNumber, tkFloat32, tkFloat64, tkFloat128,
+                          tkCfloat, tkCdouble, tkClongdouble}
+  t.is_arithmetic = t.is_scalar
+  t.is_stringy   = k in {tkString, tkCstring}
+  t.is_falseable = t.is_scalar
+  t.is_composite = k in {tkRecord, tkUnion}
+  t.is_aggregate = k in {tkRecord, tkUnion, tkArray}
+  t.is_empty     = (k in {tkRecord, tkUnion}) and t.fields.len == 0
+  t.is_multipleargs = k == tkVarargs
+  t.is_nilable   = k in {tkOptional, tkNilptr, tkNiltype, tkGeneric}
+  t.is_comptime  = k in {tkGeneric, tkMetatype, tkTypeof}
+  t.is_polymorphic = k in {tkGeneric}
+  t.is_unpointable = k in {tkGeneric, tkMetatype, tkTypeof}
+  t.is_nameable  = k in {tkRecord, tkEnum, tkGeneric}
+  t.is_nolvalue  = k in {tkGeneric, tkMetatype}
+  t.is_nodecl    = k in {tkGeneric}
+  if t.name.len > 0 and t.is_nameable:
+    t.nickname = t.name
+
 proc canonicalize(t: Type): Type =
   if t == nil:
     return nil
   case t.kind:
     of tkPointer, tkArray, tkRecord, tkUnion, tkEnum, tkFunction,
        tkOptional, tkVariant, tkGeneric, tkTypeof:
+      computeShaper(t)
       let key = typeKey(t)
       if key in TypeCache:
         result = TypeCache[key]
@@ -543,6 +663,17 @@ proc variantType*(alts: seq[Type]): Type =
 proc genericType*(name: string, args: seq[Type] = @[]): Type =
   canonicalize(Type(kind: tkGeneric, name: name, args: args))
 
+proc conceptType*(name: string, funcRef: int = 0): Type =
+  ## A `concept` (§6 / Step 6).  Concepts are comptime types: they carry a Lua
+  ## function (`funcRef`, a `luaL_ref` handle owned by the shared preprocessor
+  ## state) and are used only in type positions -- they never emit storage.
+  inc TypeCounter
+  var t = Type(kind: tkGeneric, name: name, funcRef: funcRef, typeid: TypeCounter)
+  t.methods = initTable[string, MethodDesc]()
+  computeShaper(t)
+  t.is_concept = true
+  t
+
 # --- nominal constructors (§6) ----------------------------------------------
 # `@record`/`@enum` are NOMINAL: each definition site yields a fresh Type with
 # its own typeid and C tag, distinct from any structural twin. These bypass the
@@ -552,12 +683,14 @@ proc nominalRecordType*(name: string, fields: seq[Field] = @[]): Type =
   inc TypeCounter
   var t = Type(kind: tkRecord, name: name, fields: fields, typeid: TypeCounter)
   t.methods = initTable[string, MethodDesc]()
+  computeShaper(t)
   t
 
 proc nominalEnumType*(name: string, underlying: Type, enumFields: seq[EnumField] = @[]): Type =
   inc TypeCounter
   var t = Type(kind: tkEnum, name: name, subtype: underlying, enumFields: enumFields,
                typeid: TypeCounter)
+  computeShaper(t)
   t
 
 # --- builtin bootstrap -------------------------------------------------------
@@ -566,6 +699,7 @@ var BuiltinTypes*: Table[string, Type]
 
 proc makePrimitive(name, codename: string, kind: TypeKind, signed = false): Type =
   result = Type(kind: kind, name: name, codename: codename, isSigned: signed)
+  computeShaper(result)
 
 proc initBuiltinTypes() =
   BuiltinTypes = initTable[string, Type]()

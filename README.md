@@ -64,39 +64,30 @@ the bundled `lib/`.
 
 | Milestone | Scope | State |
 |-----------|-------|-------|
-| M1 | lexer + parser + AST | committed |
-| M2 | type system, scope, symbols | committed |
+| M1 | lexer + parser + AST | committed; gate floor `plan/cmp.py` 39 MATCH / 1 DIFF / 0 CRASH (case [25]; [31] fixed by the parser.nim `proc dump` nkPair change) |
+| M2 | type system, scope, symbols | committed; `plan/regress.py` M2 14/14 MATCH |
 | M3 | preprocessor | committed |
 | M4 | analyzer | committed |
 | M5 | C runtime | committed (dead code - see `language-review.md`) |
 | M6 | codegen | committed |
-| M7 | end-to-end compile + run | committed; the --print-ast driver no longer runs genC,
-  so the three emitter SIGSEGVs (a.b:c(1), anonymous function, if/elseif) no
-  longer abort AST dumps |
+| M7 | end-to-end compile + run | committed; the --print-ast driver no longer runs genC, so the three emitter SIGSEGVs (a.b:c(1), anonymous function, if/elseif) no longer abort AST dumps |
 | M8 | stdlib compilation | committed |
-| M9 | bootstrap | stretch |
-| M10 | beyond-features sprints | landed this cycle: any phase 2 (214102c), closures /
-  upvalue scoping (75f315e), pointer print spelling (75f315e), type-as-value,
-  nilptr-to-pointer, lshift/escapes/floor_div, M1 gate green. Designed & queued:
-  generators, scope_shadow, stepped_for, tetrix_rotation, record-value-to-pointer,
-  splice Stage 4. See NOTE_backlog.md "Ready to launch". |
+| M9 | bootstrap | committed |
+| M10 | beyond-features sprints | committed; latest `82cd86b` (tetrix_rotation any-coercion codegen, quote-aware gate tokenizer). This cycle landed: tetrix_rotation, scope_shadow + stepped_for, locals-in-functions (unit-scope block locals), lshift/escapes/floor_div, type-as-value, nilptr-to-pointer, closures/upvalue scoping, pointer print spelling, any phase 2. See NOTE_backlog.md. |
+
+Uncommitted in the working tree (deliberately kept separate from `82cd86b`):
+- `src/analyzer.nim` (+42) -- scope_shadow + stepped_for fix: nested `do` scope, block-scoped shadow folding, `until` condition analysis, negative-step loop direction. Verified: `scope_shadow.nelua` and `stepped_for.nelua` MATCH the oracle byte-for-byte.
+- `src/cgen.nim` -- locals-in-functions declaration drop, extended to unit-scope block locals: `genVarDecl` gains an `alreadyDeclared` flag so step 6 does not re-emit the `static` declaration step 3b already emitted for module-level VarDecls; block-scoped locals at unit scope fold to comptime (see the analyzer change) and so need no C variable of their own. Landed by the cgen agent; `tmp/probe_unitblock.nelua` now MATCHes the oracle byte-for-byte.
 
 Active work (live queue in `NOTE_backlog.md`):
-- **Module system** - phase 1a committed 02e162f; phase 1b (analyzer
-  scope-wiring + cgen inline dep emission) done, gate-verified, not yet committed.
-- **Bounded examples parser gaps** - in flight (literal suffixes, <comptime>,
-  [N]T, print tab separator, defensiveness).
-- **any type** - phase 1 done & integrated; phase 2 (tagged runtime any)
-  landed & committed 214102c.
-- **Closures / upvalues** - landed & committed 75f315e. Function-local
-  variable capture is rejected at analysis with the oracle's message; closure
-  statics are declared before the function bodies that read them.
-- **Pointer printing** - landed & committed 75f315e. Non-null pointers print
-  0x + lowercase hex (natural width), null prints (null), matching the oracle.
-- **Exceptions** - DONE, integrated & committed.
-- **Pattern matching** - DONE, integrated; 34/34 oracle probes match.
-- **Queued (ready to launch):** scope_shadow + stepped_for, tetrix_rotation,
-  record-value-to-pointer conversion, cmp.py tokenizer robustness.
+- **Locals-in-functions, extended to unit-scope block locals** - DONE (`src/cgen.nim`, uncommitted); `tmp/probe_unitblock.nelua` MATCHes the oracle.
+- **Splice Stage 4 steps 5-6** - in flight (`src/types.nim`, `src/preprocessor.nim`): Type boolean attributes, concept()/generalize() builtins.
+- **cmp.py [31] Pair dump gap** - DONE: characterised in `plan/pair-dump-gap-design.md`, fix landed in `src/parser.nim` (`proc dump` nkPair branch); cmp.py now 39 MATCH / 1 DIFF.
+- **scope_shadow + stepped_for** - DONE (uncommitted `src/analyzer.nim`); both www targets MATCH.
+- **tetrix_rotation** - DONE & committed `82cd86b`; www target MATCH.
+- **Closures / upvalues** - landed & committed 75f315e. 5 of 15 probes MATCH the oracle; function-local capture is rejected at analysis with the oracle's exact message.
+- **Pointer printing** - landed & committed 75f315e.
+- **Exceptions / pattern matching / any phase 2** - DONE, integrated & committed.
 
 ---
 
@@ -155,24 +146,30 @@ tasks or the gate scripts. Current owners (check `git status` - it shows
 in-flight edits):
 
 | Owner | Files |
-| Owner | Files |
 |-------|-------|
-| bounded-gaps (running) | `parser.nim`, `lexer.nim`, `analyzer.nim`, `cgen.nim` |
-| exceptions (done, integrated) | exceptions feature files (see its design doc) |
-| `any` (done, integrated) | `cgen_types.nim`, `analyzer.nim` (any-rejection blocks) |
-| module phase 1b (mine) | `analyzer.nim`, `cgen.nim` |
+| scope_shadow + stepped_for (DONE, uncommitted) | `src/analyzer.nim` |
+| locals-in-functions -> unit-scope block locals (DONE, landed by cgen agent, uncommitted) | `src/cgen.nim` |
+| splice Stage 4 steps 5-6 (running) | `src/types.nim`, `src/preprocessor.nim` |
+| cmp.py [31] Pair dump gap (DONE, fix in `src/parser.nim`) | `plan/pair-dump-gap-design.md` |
 | gate scripts (mine) | `plan/cmp.py`, `plan/regress.py`, `plan/examples_parity.py` |
+| exceptions (done, integrated) | exceptions feature files (see its design doc) |
+| `any` (done, integrated) | `src/cgen_types.nim`, `src/analyzer.nim` (any-rejection blocks) |
 | type-as-value (done, integrated) | `src/analyzer.nim` |
 | nilptr-to-pointer (done, integrated) | `src/sema.nim` |
 | lshift/escapes/floor_div (done, integrated) | `src/cgen.nim`, `src/lexer.nim`, `src/runtime.c` |
-| M1 gate (mine) | `src/main.nim`, `plan/regress.py`, `plan/cmp.py` |
+| closures/upvalues + pointer print (done, integrated) | `src/cgen.nim`, `src/analyzer.nim`, `src/runtime.c` |
+| M1 gate + --print-ast driver (mine) | `src/main.nim`, `plan/regress.py`, `plan/cmp.py` |
 
-**Concurrency: never launch more than 2 agents at once.** Files edited by
-multiple agents race - queue the rest and re-check ownership before launching.
-`analyzer.nim` is currently edited by bounded-gaps, module phase 1b, `any`, and
-type-as-value; `cgen.nim` by bounded-gaps, module phase 1b, `any`, and
-lshift/escapes/floor_div.  Two impl agents editing the same file race -- check
-ownership before launching.
+**Concurrency: never launch more than 2 agents at once** (user cap: up to 4
+design/research, 2 impl). Files edited by multiple agents race - queue the
+rest and re-check ownership before launching. Right now `src/analyzer.nim` is
+owned by the scope_shadow/stepped_for agent (uncommitted); it was previously
+touched by `any`, type-as-value, closures/upvalues, module phase 1b and
+bounded-gaps (all committed). `src/cgen.nim` is owned by the locals-in-functions
+agent (uncommitted); it was previously touched by `any`, tetrix_rotation,
+lshift/escapes/floor_div, closures/upvalues, module phase 1b and bounded-gaps
+(all committed). Two impl agents editing the same file race -- check ownership
+before launching.
 
 ---
 
