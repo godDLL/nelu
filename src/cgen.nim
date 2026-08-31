@@ -543,7 +543,13 @@ proc genExpr(s: var Gen, node: Node): string =
     # analyzer (see analyzeExpr nkId / analyzeVarDecl); inline it here so
     # top-level `local N <comptime> = 624` needs no `static` storage and no
     # forward-reference.  The oracle emits the value directly, e.g. `624U`.
-    if a != nil and a.comptime and a.value != "":
+    # A function symbol reference is also flagged comptime, but its `value` is
+    # the nelua type annotation (e.g. "g: function(): int64") -- dump metadata,
+    # not a foldable C literal.  Skip the fold for those so a function value
+    # used as a value (RHS of an assignment, a call argument) lowers to its
+    # mangled codename instead of leaking annotation text into the C output.
+    if a != nil and a.comptime and a.value != "" and
+       (a.typ == nil or a.typ.kind != tkFunction):
       return a.value
     return cn
   of nkParen:

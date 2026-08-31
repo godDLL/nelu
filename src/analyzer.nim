@@ -526,10 +526,15 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
       # Indirect call through a function-typed value (a param/variable/closure
       # holding a function pointer).  The callee has no `skFunc` symbol, so it
       # falls through to the generic branch below unless we bind its type here.
+      # Bind its codename too: codegen emits `<codename>(args)` for the caller,
+      # and without it a function-typed local/param call lowers to the bare
+      # nelua name (e.g. `h()` instead of `<unit>_h()`), which C rejects as an
+      # implicit declaration.
       calleeType = sym.typ
       ctx.symOf[caller] = sym
       sym.used = true
       ca.typ = calleeType
+      ca.codename = sym.codename
       ca.used = true
     elif sym != nil and sym.kind == skFunc:
       calleeSym = sym
