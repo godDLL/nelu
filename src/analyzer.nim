@@ -994,6 +994,19 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
     if vtype.kind == tkFunction and iddecl.children.len > 0:
       let ts = ctx.funcTypeStrOf.getOrDefault(iddecl.children[0])
       if ts.len > 0: ctx.funcTypeStrOf[iddecl] = ts
+    # Block-scoped shadow folding.  The C generator only emits storage for
+    # top-level and function-body locals, so a local declared inside a `do`
+    # block (or any other block at unit scope) cannot be given its own C
+    # variable -- it would collapse onto the outer name and corrupt the outer
+    # value once the block pops.  When such a local has a literal initializer
+    # and shadows an outer binding, fold it to its value instead: observably
+    # identical, and the only way to preserve the outer value with the current
+    # code generator.  `finalize` un-folds any that turn out to be reassigned.
+    let shadowsOuter = ctx.scope != ctx.globals and
+                       not ctx.scope.symbols.hasKey(iddecl.str) and
+                       lookup(ctx, iddecl.str) != nil and
+                       initNode != nil and
+                       initNode.kind in {nkNumber, nkString, nkBoolean, nkNil}
     let sym = register(ctx, iddecl.str, if isTypeBinding: skType else: skVar, vtype, iddecl)
     sym.codename = ctx.unitname & "_" & iddecl.str
     sym.used = true
@@ -1002,6 +1015,9 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
       sym.vardecl = true
     sym.comptime = hasAnnotation(iddecl, "comptime")
     if sym.comptime: sym.isConst = true
+    if shadowsOuter and not sym.comptime:
+      sym.comptime = true
+      sym.isConst = true
     ctx.symOf[iddecl] = sym
     syms.add sym
     var a = ctx.getAttr(iddecl)
@@ -1743,6 +1759,18 @@ proc analyzeForNum(ctx: var AnalyzerContext, node: Node) =
   a.used = true
   if node.str != "":
     ctx.getDump(node).compop = node.str
+  elif hasStep:
+    # A negative step flips the loop direction: the bound test becomes `>=`.
+    # The parser only records `lt` for the `<N` exclusive form, so the
+    # descending case has to be derived here from the step's sign.
+    let sa = ctx.attrOf.getOrDefault(step)
+    if sa != nil and sa.comptime and sa.value.len > 0:
+      try:
+        ctx.getDump(node).compop = if parseFloat(sa.value) < 0.0: "ge" else: "le"
+      except ValueError:
+        ctx.getDump(node).compop = "le"
+    else:
+      ctx.getDump(node).compop = "le"
   else:
     ctx.getDump(node).compop = "le"
   ctx.getDump(node).fixedend = isComptime(endv, ctx)
@@ -1769,11 +1797,15 @@ proc analyzeDefer(ctx: var AnalyzerContext, node: Node) =
   analyzeBlock(ctx, node.children[0])
 
 proc analyzeDo(ctx: var AnalyzerContext, node: Node) =
+  let saved = ctx.scope
+  ctx.scope = newScope(saved, "do")
   analyzeBlock(ctx, node.children[0])
+  ctx.scope = saved
 
 proc analyzeRepeat(ctx: var AnalyzerContext, node: Node) =
   inc ctx.loopDepth
   analyzeBlock(ctx, node.children[0])
+  discard analyzeExpr(ctx, node.children[1])
   dec ctx.loopDepth
 
 proc analyzeAssign(ctx: var AnalyzerContext, node: Node) =
@@ -1889,6 +1921,16 @@ proc finalize*(ctx: var AnalyzerContext) =
       if sym.kind == skVar or sym.kind == skFunc:
         a.used = sym.used
       if sym.mutate: a.mutate = true
+      # Un-fold a block-scoped shadow that turned out to be reassigned.  Folding
+      # it would route its assignment through the outer name (they share a
+      # codename), corrupting the outer value; revert to the ordinary behaviour.
+      # Such a local cannot be given its own C variable regardless, so this is
+      # the least-bad outcome for an unsupported case.
+      if sym.comptime and sym.mutate and sym.scope != nil and sym.scope != ctx.globals:
+        sym.comptime = false
+        sym.value = ""
+        a.comptime = false
+        a.value = ""
     elif node.kind == nkId:
       var a = ctx.getAttr(node)
       if sym.mutate: a.mutate = true
