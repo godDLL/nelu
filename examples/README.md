@@ -1,10 +1,10 @@
-# examples/ — corpus provenance
+# examples/ - corpus provenance
 
 This directory holds the Nelua programs we compile and run as our test
 corpus. It is two tiers deep, and the tiers have different origins. Recording
 that here so no future sweep misattributes a file.
 
-## Tier 1: `examples/*.nelua` — upstream's, used by us too
+## Tier 1: `examples/*.nelua` - upstream's, used by us too
 
 The top-level programs (`brainfuck`, `condots`, `fibonacci`, `gameoflife`,
 `helloworld`, `matmul`, `mersenne`, `overview`, `record_inheretance`,
@@ -20,7 +20,7 @@ behaviour, and the DIFFs they produce are triaged in
 Treat them as read-only reference for *semantics* (they show what the language
 should do) and as a live test target for *parity* (they show where we diverge).
 
-## Tier 2: `examples/www/` — ours, mined from the web
+## Tier 2: `examples/www/` - ours, mined from the web
 
 `examples/www/` is **our own extension**. Every program there was written by
 or mined for this clean-room reimplementation; none of it is upstream's.
@@ -38,9 +38,9 @@ into `examples/www/`; throwaway probes stay in `tmp/`.
 
 ## Why the split matters
 
-- Upstream programs are the *oracle's own* — diffing against them measures how
+- Upstream programs are the *oracle's own* - diffing against them measures how
   close we are to 0.2.0-dev, and they are the honest floor.
-- `www/` programs are *ours* — they are written to isolate one construct at a
+- `www/` programs are *ours* - they are written to isolate one construct at a
   time, so a DIFF pins a single root cause instead of a tangle of features.
 
 Both tiers feed the same gates. Neither is decorative.
