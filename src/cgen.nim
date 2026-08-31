@@ -461,6 +461,52 @@ proc coerce(s: var Gen, expr: string, fromT: Type, toT: Type): string =
       return "nlany_load_num(" & expr & ")"
     return "nlany_load_ptr(" & expr & ")"   # phase 2b placeholder
 
+proc realType(s: var Gen, node: Node): Type =
+  ## Resolve the concrete (C-level) type of `node`, walking index/field
+  ## accesses down to their element/field type.
+  ##
+  ## The analyzer types a nested array index `x[i][j]` (e.g. on a
+  ## `[4][4]byte`) as `any`, but the C expression is still the element value.
+  ## Codegen that needs the real type -- notably the `any` print arm, which
+  ## must wrap the value in a tagged-store helper before passing it to
+  ## `nelua_print_any` -- re-derives it here.  A genuine `any` value (already
+  ## `nlany` in C) resolves to `any` and coerces to itself unchanged.
+  if node == nil: return nil
+  case node.kind:
+  of nkId:
+    let a = s.ctx.attrOf.getOrDefault(node)
+    if a != nil and a.typ != nil: return a.typ
+    let sym = s.ctx.symOf.getOrDefault(node)
+    if sym != nil and sym.typ != nil: return sym.typ
+    return nil
+  of nkDotIndex:
+    let a = s.ctx.attrOf.getOrDefault(node)
+    if a != nil and a.typ != nil: return a.typ
+    return nil
+  of nkKeyIndex, nkColonIndex:
+    # newKeyIndex/newColonIndex store (key, base) -> children[0]=key,
+    # children[1]=base.
+    if node.children.len < 2: return BuiltinTypes["any"]
+    let bt = s.realType(node.children[1])
+    if bt != nil and bt.kind == tkPointer and bt.subtype != nil and
+       bt.subtype.kind == tkArray and bt.subtype.subtype != nil:
+      return bt.subtype.subtype
+    if bt != nil and bt.kind == tkArray and bt.subtype != nil:
+      return bt.subtype
+    return BuiltinTypes["any"]
+  of nkParen:
+    if node.children.len > 0: return s.realType(node.children[0])
+    return nil
+  of nkCall, nkCallMethod:
+    let a = s.ctx.attrOf.getOrDefault(node)
+    if a != nil and a.typ != nil and a.typ.kind != tkVoid:
+      return a.typ
+    return BuiltinTypes["any"]
+  else:
+    let a = s.ctx.attrOf.getOrDefault(node)
+    if a != nil: return a.typ
+    return nil
+
 # ---------------------------------------------------------------------------
 # Expression lowering
 # ---------------------------------------------------------------------------
@@ -695,6 +741,7 @@ proc genCall(s: var Gen, node: Node): string =
         let at = s.ctx.attrOf.getOrDefault(arg).typ
         var helper = "nelua_print_nil"
         var passArg = false
+        var argStr = aes
         if at != nil:
           var ht = at
           # An enum value prints as its underlying integral type (the oracle
@@ -721,9 +768,16 @@ proc genCall(s: var Gen, node: Node): string =
             helper = "nelua_print_string"; passArg = true
           of tkBoolean: helper = "nelua_print_bool"; passArg = true
           of tkNilptr, tkPointer: helper = "nelua_print_ptr"; passArg = true
-          of tkAny: helper = "nelua_print_any"; passArg = true
+          of tkAny:
+            # nelua_print_any takes an `nlany`.  The analyzer sometimes leaves an
+            # index/field access typed as `any` even though its C type is the
+            # element/field type (e.g. `x[i][j]` on a `[4][4]byte`); wrap the
+            # real typed value in the matching tagged-store helper.  A genuine
+            # `any` value (already `nlany`) coerces to itself and is unchanged.
+            helper = "nelua_print_any"; passArg = true
+            argStr = s.coerce(aes, s.realType(arg), BuiltinTypes["any"])
           else: helper = "nelua_print_nil"; passArg = false
-        let call = if passArg: helper & "(" & aes & ")" else: helper & "()"
+        let call = if passArg: helper & "(" & argStr & ")" else: helper & "()"
         if i > 0: lines.add "nelua_print_sep(); " & call & ";"
         else: lines.add call & ";"
       if lines.len == 0:

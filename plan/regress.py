@@ -84,10 +84,22 @@ def build_our():
 # ---- M1 tokenizers (mirrored from tmp/cmp.py) ------------------------------
 
 def toks_mine(s):
+    # Our dump is the nk-prefixed flat form: `nk<kind> "scalar"` per node, with
+    # braces on their own lines.  The oracle escapes control chars in string
+    # scalars (a real newline becomes the two chars \n); ours preserves them
+    # verbatim.  splitlines() therefore tears a multi-line string scalar into
+    # two fragments and we lose the second.  Scan quote-aware: when a quoted
+    # scalar is not closed on its own line, accumulate subsequent lines until
+    # the closing quote, and escape the real newlines we had to bridge so the
+    # scalar matches the oracle's escaped form.
     out = []
-    for line in s.splitlines():
-        line = line.strip().rstrip(",")
+    lines = s.splitlines()
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i].strip().rstrip(",")
         if not line or not line.startswith("nk"):
+            i += 1
             continue
         body = line[2:].strip()
         parts = body.split(None, 1)
@@ -102,10 +114,23 @@ def toks_mine(s):
             elif ":" in rest and not rest.startswith('"'):
                 scalar = rest.split(":")[0]
             elif rest.startswith('"'):
-                scalar = rest.split(":")[0].strip('"')
+                q = rest.find('"', 1)
+                if q == -1:
+                    buf = rest
+                    i += 1
+                    while i < n:
+                        buf += "\n" + lines[i].strip().rstrip(",")
+                        q = buf.find('"', 1)
+                        if q != -1:
+                            break
+                        i += 1
+                    scalar = buf[1:q].replace("\n", "\\n") if q != -1 else buf[1:].strip('"')
+                else:
+                    scalar = rest[1:q]
             else:
                 scalar = rest
         out.append((kind, scalar))
+        i += 1
     return out
 
 

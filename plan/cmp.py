@@ -14,20 +14,43 @@ def _fresh(prefix):
     return f"/tmp/{prefix}_{COUNTER[0]}.nelua"
 
 def toks_mine(s):
+    # Our dump is the nk-prefixed flat form: `nk<kind> "scalar"` per node, with
+    # braces on their own lines.  The oracle escapes control chars in string
+    # scalars (a real newline becomes the two chars \n); ours preserves them
+    # verbatim.  splitlines() therefore tears a multi-line string scalar into
+    # two fragments and we lose the second.  Scan quote-aware: when a quoted
+    # scalar is not closed on its own line, accumulate subsequent lines until
+    # the closing quote, and escape the real newlines we had to bridge so the
+    # scalar matches the oracle's escaped form.
     out=[]
-    for line in s.splitlines():
-        line=line.strip().rstrip(',')
-        if not line or not line.startswith('nk'): continue
-        body=line[2:].strip()
+    lines=s.splitlines()
+    i=0; n=len(lines)
+    while i<n:
+        raw=lines[i].strip().rstrip(',')
+        if not raw or not raw.startswith('nk'):
+            i+=1; continue
+        body=raw[2:].strip()
         parts=body.split(None,1); kind=parts[0]; rest=parts[1] if len(parts)>1 else ''
         scalar=None
         if rest:
             if rest==':true': scalar='true'
             elif rest=='false': scalar='false'
             elif ':' in rest and not rest.startswith('"'): scalar=rest.split(':')[0]
-            elif rest.startswith('"'): scalar=rest.split(':')[0].strip('"')
+            elif rest.startswith('"'):
+                q=rest.find('"',1)
+                if q==-1:
+                    buf=rest; i+=1
+                    while i<n:
+                        buf+='\n'+lines[i].strip().rstrip(',')
+                        q=buf.find('"',1)
+                        if q!=-1: break
+                        i+=1
+                    scalar=buf[1:q].replace('\n','\\n') if q!=-1 else buf[1:].strip('"')
+                else:
+                    scalar=rest[1:q]
             else: scalar=rest
         out.append((kind,scalar))
+        i+=1
     return out
 
 def toks_oracle(s):
