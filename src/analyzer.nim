@@ -461,6 +461,7 @@ proc specializeCall(ctx: var AnalyzerContext, calleeSym: Symbol,
 
 proc analyzeNominalType*(ctx: var AnalyzerContext, node: Node, usedType = true): Type
 proc analyzeInitList(ctx: var AnalyzerContext, node: Node, parentType: Type = nil): Type
+proc analyzeDotIndex(ctx: var AnalyzerContext, node: Node): Type
 proc foldIntValue(ctx: var AnalyzerContext, node: Node): int
 proc typeValueKey(node: Node, ct: Type): string
 proc resolveTypeValue(ctx: var AnalyzerContext, key: string): Type
@@ -539,12 +540,62 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
     elif sym != nil and sym.kind == skFunc:
       calleeSym = sym
       calleeType = sym.typ
+    elif sym != nil and sym.typ != nil and sym.typ.kind == tkRecord and
+         sym.typ.methods.hasKey("__call"):
+      # M3: calling a record value `r(...)` dispatches through its `__call`
+      # metamethod.  The callee is a data value (a local/param of record type,
+      # not an skFunc symbol), so it fell through to the generic branch above.
+      # Bind the caller attr to the record type so codegen's M3 branch fires
+      # genMetaCall instead of emitting `<var>(args)` (which C rejects -- a
+      # struct is not a function).  This is the fourth metamethod-dispatch
+      # path; M1/M2/M4 dispatch on the ARGUMENT or the base of an index/unary
+      # op, where the attr IS populated by analyzeExpr.  A record-value callee
+      # is never passed through analyzeExpr, so its attr was left empty.
+      let md = sym.typ.methods["__call"]
+      ca.typ = sym.typ
+      ca.name = nm
+      ca.lvalue = true
+      ca.used = true
+      ctx.symOf[caller] = sym
+      sym.used = true
+      calleeType = md.ftype
+      if md.ftype != nil and md.ftype.returns.len >= 1:
+        a.typ = md.ftype.returns[0]
+      else:
+        a.typ = BuiltinTypes["void"]
     else:
       # unknown: build a generic function type
       calleeType = Type(kind: tkFunction, name: "function", codename: "function")
       calleeType.name = "function"; calleeType.codename = "function"
       for i, at in argTypes:
         calleeType.args.add if at != nil: at else: BuiltinTypes["any"]
+      calleeType.returns.add BuiltinTypes["void"]
+  elif caller.kind == nkDotIndex:
+    # Static method call `Type.method(args)` (e.g. `Rect.area(r)`) or an
+    # indirect call through a function-typed field `obj.field(args)`.  Analyze
+    # the DotIndex to populate the caller attr (analyzeDotIndex resolves the
+    # method on the base type's method table and flags isMethodCall), then bind
+    # calleeType the same way an nkId callee is bound.  Without this branch
+    # calleeType stays nil and the `calleeType.returns` deref below SIGSEGVs.
+    discard analyzeDotIndex(ctx, caller)
+    if ca.isMethodCall and ca.calleeSym != nil:
+      # Fold the method reference into a comptime value (its C codename) so the
+      # codegen's DotIndex caller branch emits `<codename>(args)` -- a static
+      # method is not a function-pointer field access.
+      let m = ca.calleeSym
+      ca.value = m.codename
+      ca.comptime = true
+      calleeType = ca.typ
+    elif ca.typ != nil and ca.typ.kind == tkFunction:
+      # Indirect call through a function-typed field `obj.field(args)`.
+      calleeType = ca.typ
+    else:
+      # Calling something that is neither a method nor a function-typed value.
+      # Emit a diagnostic instead of leaving calleeType nil, which would
+      # SIGSEGV the `calleeType.returns` deref below.
+      ctx.diags.add ctx.path & ": error: cannot call non-function '" &
+        caller.str & "'"
+      calleeType = Type(kind: tkFunction, name: "function", codename: "function")
       calleeType.returns.add BuiltinTypes["void"]
   # caller Id attr
   if calleeSym != nil and calleeSym.kind == skBuiltin:
@@ -634,13 +685,13 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
   else:
     d.calleeSymStr = caller.str & ": " & ftypeStr
     d.calleeTypeStr = ftypeStr
-    if calleeType.returns.len >= 1:
+    if calleeType != nil and calleeType.returns.len >= 1:
       a.typ = calleeType.returns[0]
     else:
       a.typ = BuiltinTypes["void"]
   if node == ctx.multiRetCall:
     d.usemultirets = true
-    ctx.callRetTypes[node] = calleeType.returns
+    ctx.callRetTypes[node] = if calleeType != nil: calleeType.returns else: @[]
   return a.typ
 
 proc analyzeBinaryOp(ctx: var AnalyzerContext, node: Node): Type =
