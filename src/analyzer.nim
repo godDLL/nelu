@@ -690,9 +690,15 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
       a.typ = calleeType.returns[0]
     else:
       a.typ = BuiltinTypes["void"]
+  if calleeType != nil:
+    # Record the callee's return types for EVERY call, not only the one that
+    # is the initializer of a multi-decl VarDecl.  Codegen's multi-return
+    # paths (genVarDecl and genAssign's `m, n = f()` case) both look this up;
+    # before this an assignment `m, n = f()` to pre-declared locals saw an
+    # empty seq and lowered to a single `m = f()` (a C type error).
+    ctx.callRetTypes[node] = calleeType.returns
   if node == ctx.multiRetCall:
     d.usemultirets = true
-    ctx.callRetTypes[node] = if calleeType != nil: calleeType.returns else: @[]
   return a.typ
 
 proc analyzeBinaryOp(ctx: var AnalyzerContext, node: Node): Type =
@@ -2382,7 +2388,11 @@ proc dumpAnaled(ctx: AnalyzerContext, node: Node): string =
 proc countAssignTargets(ctx: var AnalyzerContext, node: Node) =
   if node == nil: return
   if node.kind == nkAssign:
-    ctx.assignTargets[node] = 1
+    # `node.intVal` (set by `newAssign` at parse time) is the number of
+    # leading children that are left-hand-side targets; the rest are RHS
+    # values.  Without it every multi-assignment lowered as a single-target
+    # assignment, dropping all but the first target.
+    ctx.assignTargets[node] = node.intVal
   for c in node.children:
     countAssignTargets(ctx, c)
 
@@ -2461,9 +2471,11 @@ proc resolveModule*(name: string, config: Config, requiringPath: string): string
   if config.paths.len == 0:
     candidates.add getCurrentDir() / segments.join("/") & ".nelua"
     candidates.add getCurrentDir() / segments.join("/") / "init.nelua"
-    candidates.add LibPath / segments.join("/") & ".nelua"
-    candidates.add LibPath / segments.join("/") / "init.nelua"
-  candidates.add getCurrentDir() / "lib" / segments.join("/") & ".nelua"
+    # OUR project `lib/` is this compiler's stdlib -- the mirror of the oracle's
+    # own system-lib default.  It is the terminal default; we do NOT default to
+    # the oracle's system lib (`LibPath`), which our compiler cannot compile.
+    candidates.add getCurrentDir() / "lib" / segments.join("/") & ".nelua"
+    candidates.add getCurrentDir() / "lib" / segments.join("/") / "init.nelua"
   let reqDir = requiringPath.splitFile().dir
   if reqDir.len > 0:
     candidates.add reqDir / segments.join("/") & ".nelua"

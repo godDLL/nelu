@@ -5,8 +5,9 @@ The fs (stands for filesystem) module is used to manage files and directories.
 ]]
 
 local lfs = require 'lfs'
-local except = require 'nelua.utils.except'
 local stringer = require 'nelua.utils.stringer'
+local memoize = require 'nelua.utils.memoize'
+local platform = require 'nelua.utils.platform'
 local fs = {}
 
 -- Platform dependent variables.
@@ -32,7 +33,10 @@ function fs.readfile(filename, is_bin)
   return res
 end
 
--- Write a string to a file.
+--[[
+Write string `str` into file `filename`.
+Returns true on success, otherwise nil plus and error message.
+]]
 function fs.writefile(filename, str, is_bin)
   local mode = is_bin and 'b' or ''
   local f,err = io.open(filename,'w'..mode)
@@ -79,7 +83,7 @@ function fs.basename(p)
 end
 
 -- Is this an absolute path?
-function fs.isabs(p)
+function fs.isabspath(p)
   if p:find('^/') then return true end
   if fs.winstyle and p:find('^\\') or p:find('^.:') then return true end
   return false
@@ -92,6 +96,8 @@ If the second (or later) path is absolute then we return the last absolute path
 Empty elements (except the last) will be ignored.
 ]]
 function fs.join(p1, p2, ...)
+  p1 = p1 or ''
+  p2 = p2 or ''
   if select('#',...) > 0 then
     local p = fs.join(p1,p2)
     local args = {...}
@@ -100,7 +106,8 @@ function fs.join(p1, p2, ...)
     end
     return p
   end
-  if fs.isabs(p2) then return p2 end
+  if p2 == '' then return p1 end
+  if fs.isabspath(p2) then return p2 end
   local endpos = #p1
   local endc = p1:sub(endpos,endpos)
   if endc ~= fs.sep and endc ~= fs.othersep and endc ~= "" then
@@ -163,21 +170,23 @@ end
 
 -- Return an absolute path.
 function fs.abspath(p, pwd)
-  local use_pwd = pwd ~= nil
+  if pwd and not fs.isabspath(pwd) then pwd = fs.abspath(pwd) end
   p = p:gsub('[\\/]$','')
-  if not fs.isabs(p) then
+  if not fs.isabspath(p) then
     pwd = pwd or lfs.currentdir()
     p = fs.join(pwd,p)
-  elseif fs.winstyle and not use_pwd and
-         p:find '^.[^:\\]' then --luacov:disable
-    pwd = pwd or lfs.currentdir()
-    p = pwd:sub(1,2)..p -- attach current drive to path like '\\fred.txt'
+  elseif fs.winstyle then --luacov:disable
+    if p:find '^.[^:\\]' then
+      pwd = pwd or lfs.currentdir()
+      p = pwd:sub(1,2)..p -- attach current drive to path like '\\fred.txt'
+    end
   end --luacov:enable
   return fs.normpath(p)
 end
 
 -- Return relative path from current directory or optional start point.
 function fs.relpath(p, start)
+  --luacov:disable
   start = start or lfs.currentdir()
   p = fs.abspath(p, start)
   local compare
@@ -203,6 +212,7 @@ function fs.relpath(p, start)
     for i = k,#pl do rell[#rell+1] = pl[i] end
   end
   return table.concat(rell,fs.sep)
+  --luacov:enable
 end
 
 -- Replace a starting '~' with the user's home directory.
@@ -221,7 +231,6 @@ function fs.tmpname()
   local ok, res = pcall(os.tmpname)
   --luacov:disable
   if not ok then -- failed to create the temporary file on Linux
-    -- probably on lights and /tmp does not exist,
     -- try to use mktemp on $TMPDIR (cross platform way)
     local file = assert(io.popen('mktemp "${TMPDIR:-/tmp}/lua_XXXXXX"'))
     res = file:read('l')
@@ -253,8 +262,13 @@ function fs.getmodtime(p)
   return lfs.attributes(p, 'modification')
 end
 
+-- Return size of the file.
+function fs.getsize(p)
+  return lfs.attributes(p, 'size')
+end
+
 -- Follow file symbolic links.
-function fs.followlink(p) --luacov:disable
+function fs.readlink(p) --luacov:disable
   local fileat = lfs.symlinkattributes(p)
   while fileat and fileat.target do
     local target = fileat.target
@@ -270,11 +284,12 @@ end --luacov:enable
 
 -- Returns the absolute real path of `p` (following links).
 function fs.realpath(p) --luacov:disable
-  return fs.followlink(fs.abspath(p))
+  return fs.readlink(fs.abspath(p))
 end --luacov:enable
 
 -- Create a directory path.
 function fs.makepath(path)
+  if path == '' then return true end
   if fs.winstyle then --luacov:disable
     path:gsub('/', fs.sep)
   end --luacov:enable
@@ -288,49 +303,27 @@ function fs.makepath(path)
     local dirpat = fs.winstyle and '(.+)\\[^\\]+$' or '(.+)/[^/]+$'
     local subpath = path:match(dirpat)
     local ok, err = fs.makepath(subpath)
-    if not ok then return nil, err end
-    return lfs.mkdir(path)
-  else --luacov:enable
+    if not ok then return nil, path..': '..err end
+    ok, err = lfs.mkdir(path)
+    if not ok then return nil, path..': '..err end
     return true
+  end --luacov:enable
+  return true
+end
+
+--[[
+Write string `content` into file `filename`, creating necessary directories as needed.
+Returns true on success, otherwise nil plus and error message.
+]]
+function fs.makefile(filename, content)
+  local outdir = fs.dirname(filename)
+  if #outdir > 0 then
+    local ok, err = fs.makepath(outdir)
+    if not ok then
+      return nil, 'failed to make path for file: '..err
+    end
   end
-end
-
---[[
-Ensure directory exists for a file.
-Raises an exception in case of an error.
-]]
-function fs.eensurefilepath(file)
-  local outdir = fs.dirname(file)
-  local ok, err = fs.makepath(outdir)
-  except.assertraisef(ok, 'failed to create path for file "%s": %s', file, err)
-end
-
---[[
-Return the contents of a file as a string.
-Raises an exception in case of an error.
-]]
-function fs.ereadfile(file)
-  local content, err = fs.readfile(file)
-  return except.assertraisef(content, 'failed to read file "%s": %s', file, err)
-end
-
---[[
-Write a string to a file.
-Raises an exception in case of an error.
-]]
-function fs.ewritefile(file, content)
-  local ok, err = fs.writefile(file, content)
-  except.assertraisef(ok, 'failed to create file "%s": %s', file, err)
-end
-
--- Choose file path inside a cache directory for an input file path.
-function fs.normcachepath(infile, cachedir)
-  local path = infile:gsub('%.[^./\\]+$','')
-  path = fs.relpath(path)
-  path = path:gsub('%.%.[/\\]+', '')
-  path = fs.join(cachedir, path)
-  path = fs.normpath(path)
-  return path
+  return fs.writefile(filename, content)
 end
 
 -- Prefix a path with the user config path.
@@ -341,90 +334,6 @@ end
 -- Prefix a path with the cache path.
 function fs.getusercachepath(path)
   return fs.expanduser(fs.join('~', '.cache', path))
-end
-
-local modcache = {}
-
--- Helper for `fs.findmodulefile`, found modules are cached.
-local function findmodulefile(name, pathstr)
-  local key = name..';;;'..pathstr
-  local cached = modcache[key]
-  if cached then
-    return table.unpack(cached)
-  end
-  name = name:gsub('%.', fs.sep)
-  local triedpaths = {}
-  local modpath
-  for trypath in pathstr:gmatch('[^;]+') do
-    trypath = trypath:gsub('%?', name)
-    trypath = fs.abspath(trypath)
-    if fs.isfile(trypath) then
-      modpath = trypath
-      break
-    end
-    triedpaths[#triedpaths+1] = trypath
-  end
-  modcache[key] = {modpath, triedpaths}
-  return modpath, triedpaths
-end
-
---[[
-Search for a module using a path string or relative path.
-The path string must be a string like './?.nelua;./?/init.nelua'.
-]]
-function fs.findmodulefile(name, pathstr, relpath)
-  local fullpath
-  if relpath then
-    if fs.isabs(name) then -- absolute path
-      fullpath = fs.abspath(name)
-    elseif name:find('^%.%.?[/\\]') then -- relative with '../'
-      fullpath = fs.abspath(fs.join(relpath, name))
-    elseif name:find('^%.+') then -- relative with '.'
-      local dots, rest = name:match('^(%.+)(.*)')
-      rest = rest:gsub('%.', fs.sep)
-      if #dots == 1 then
-        fullpath = fs.abspath(fs.join(relpath, rest))
-      else
-        fullpath = fs.abspath(fs.join(relpath, string.rep('..'..fs.sep, #dots-1), rest))
-      end
-    end
-  end
-  local triedpaths
-  local modpath
-  if fullpath then -- full path of the file is known
-    local paths
-    if not fullpath:find('%.%w+$') then
-      paths = {
-        fullpath..'.nelua',
-        fs.join(fullpath,'init.nelua')
-      }
-    else
-      paths = {fullpath}
-    end
-    triedpaths = {}
-    for _,trypath in ipairs(paths) do
-      if fs.isfile(trypath) then
-        modpath = fs.abspath(trypath)
-        break
-      end
-      triedpaths[#triedpaths+1] = trypath
-    end
-  else -- search for a file in pathstr
-    if name:find('^~') then -- revert the path search order
-      name = name:sub(2)
-      local rpath = {}
-      for trypath in pathstr:gmatch('[^;]+') do
-        table.insert(rpath, 1, trypath)
-      end
-      pathstr = table.concat(rpath,';')
-    end
-    modpath, triedpaths = findmodulefile(name, pathstr)
-  end
-  local err
-  if not modpath then
-    err = "\tno file '" .. table.concat(triedpaths, "'\n\tno file '") .. "'"
-  end
-  return modpath, err, triedpaths
 end
 
 -- Search for a file inside the system's PATH variable.
@@ -484,10 +393,36 @@ function fs.tmpfile()
   return f, name
 end
 
--- Return the relative path for the calling script.
-function fs.scriptname(level)
+--[[
+Returns the path for the calling script at level `level`.
+If `dirlevel` is present, then return directory of the script at that level.
+]]
+function fs.scriptname(level, dirlevel)
   level = level or 2
-  return debug.getinfo(level, 'S').source:sub(2)
+  local info = debug.getinfo(level, 'S')
+  local path
+  if info and info.source then
+    path = info.source:match('^@([^\n\r]+)')
+    if path then
+      path = path:gsub(':@%w+$', '') -- remove :@ppcode (used by the preprocessor)
+    end
+  end
+  if path and dirlevel then
+    path = fs.dirname(fs.abspath(path), dirlevel)
+  end
+  return path
+end
+
+-- Returns the current directory for the calling script.
+function fs.scriptdir(dirlevel)
+  dirlevel = dirlevel and dirlevel or 1
+  local path = fs.scriptname(3, dirlevel)
+  return path
+end
+
+-- Returns the current working directory.
+function fs.curdir()
+  return fs.abspath('.')
 end
 
 -- Iterate entries of a directory that matches the given pattern.
@@ -499,6 +434,132 @@ function fs.dirmatch(path, patt)
     until not entry or entry:match(patt)
     return entry
   end, state
+end
+
+--[[
+Translate a relative 'require' made into a relative path.
+If `name` is not a relative require path, then returns `nil`.
+If the `name` does not contain a file extension then `ext` is appended.
+]]
+function fs.reqrelpath(name, ext)
+  local path
+  if fs.isabspath(name) then -- absolute path
+    path = name
+  elseif name:find('^%.%.?[/\\]') then -- relative with '../'
+    path = name
+  elseif name:find('^%.+') then -- relative with '.'
+    local dots, rest = name:match('^(%.+)(.*)')
+    rest = rest:gsub('%.', fs.sep)
+    if #dots == 1 then
+      path = rest
+    else
+      path = fs.join(string.rep('..'..fs.sep, #dots-1), rest)
+    end
+    if path and ext and not path:find('%.([%w_-]+)$') then
+      path = path..'.'..ext
+    end
+  end
+  return path
+end
+
+-- Helper for `fs.findmodule`, found modules are cached.
+local function findmodule(name, pathstr)
+  name = name:gsub('%.', fs.sep)
+  local triedpaths = {}
+  local modpath
+  for trypath in pathstr:gmatch('[^;]+') do
+    trypath = trypath:gsub('%?', name)
+    trypath = fs.abspath(trypath)
+    if fs.isfile(trypath) then
+      modpath = trypath
+      break
+    end
+    triedpaths[#triedpaths+1] = trypath
+  end
+  return modpath, triedpaths
+end
+findmodule = memoize(findmodule)
+
+--[[
+Search for a module using a path string or relative path.
+The path string must be a string like './?.nelua;./?/init.nelua'.
+]]
+function fs.findmodule(name, searchpath, relpath, ext)
+  local triedpaths, modpath
+  local reqpath = fs.reqrelpath(name, ext)
+  if reqpath  then -- relative require path
+    reqpath = fs.abspath(reqpath, relpath)
+    if fs.isfile(reqpath) then
+      modpath = reqpath
+    else
+      triedpaths = {reqpath}
+    end
+  else -- search for a file in searchpath
+    if name:find('^~') then -- revert the path search order
+      name = name:sub(2)
+      local rpath = {}
+      for trypath in searchpath:gmatch('[^;]+') do
+        table.insert(rpath, 1, trypath)
+      end
+      searchpath = table.concat(rpath,';')
+    end
+    modpath, triedpaths = findmodule(name, searchpath)
+  end
+  local err
+  if not modpath then
+    err = "\tno file '" .. table.concat(triedpaths, "'\n\tno file '") .. "'"
+  end
+  return modpath, err, triedpaths
+end
+
+--[[
+Make packages search path.
+When `ext` is 'nelua', it returns the NELUA_PATH system environment variable if present,
+otherwise make a default one from `libpath` and `ext`.
+]]
+function fs.makesearchpath(libpath, ext)
+  local path = os.getenv(ext:upper()..'_PATH')
+  if path then return path end
+  path = fs.join('.','?.'..ext)..';'..
+         fs.join('.','?','init.'..ext)..';'..
+         fs.join(libpath,'?.'..ext)..';'..
+         fs.join(libpath,'?','init.'..ext)
+  return path
+end
+
+-- Find where is the Nelua's lib directory.
+function fs.findnelualib()
+  local lualibpath = fs.dirname(fs.realpath(fs.scriptname()), 3)
+  local libpath = fs.join(fs.dirname(lualibpath), 'lib')
+  if fs.isdir(libpath) then
+    return libpath, lualibpath
+  end
+end
+
+--[[
+Find an available C compiler in the system.
+First reads the CC system environment variable,
+then try to search in the user binary directory.
+]]
+function fs.findcc()
+  local envcc = os.getenv('CC')
+  if envcc and fs.findbinfile(envcc) then return envcc end
+  local search_ccs
+  if platform.is_msys then --luacov:disable
+    search_ccs = {platform.msystem_chost..'-gcc'}
+  elseif platform.is_cygwin then
+    search_ccs = {'x86_64-w64-mingw32-gcc', 'i686-w64-mingw32-gcc'}
+  else
+    search_ccs = {}
+  end --luacov:enable
+  table.insert(search_ccs, 'gcc')
+  table.insert(search_ccs, 'clang')
+  for _,cc in ipairs(search_ccs) do
+    if fs.findbinfile(cc) then
+      return cc
+    end
+  end
+  return nil
 end
 
 return fs

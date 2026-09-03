@@ -84,7 +84,7 @@ end
 -- Efficient clz (compute leading zeros) from C, used to compute the bin.
 local function clz(x: uint32): uint32 <inline,nosideeffect>
 ##[==[ cemit([[
-#ifdef __GNUC__
+#if defined(__GNUC__) && (__GNUC__ >= 4)
   x = __builtin_clz(x);
 #else
   static const int MultiplyDeBruijnBitPosition[32] = {
@@ -443,7 +443,7 @@ end
   The allocated memory is not initialized.
   If `size` is zero or the operation fails, then returns `nilptr`.
   ]]
-  function HeapAllocatorT:alloc(size: usize): pointer
+  function HeapAllocatorT:alloc(size: usize, flags: facultative(usize)): pointer
     if unlikely(not self.initialized) then self:init() end
     local p: pointer = self.heap:alloc(size)
     return p
@@ -481,7 +481,7 @@ end
 
   require 'allocators.allocator'
 
-  ## implement_allocator_interface(HeapAllocatorT)
+  ## Allocator_implement_interface(HeapAllocatorT)
 
   ## return HeapAllocatorT
 ## end
@@ -492,3 +492,5 @@ Generic used to instantiate a heap allocator type in the form of `HeapAllocator(
 Argument `SIZE` is the size of the heap in bytes.
 ]]
 global HeapAllocator: type = #[generalize(make_HeapAllocatorT)]#
+
+return HeapAllocator

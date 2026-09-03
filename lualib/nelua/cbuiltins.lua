@@ -8,6 +8,7 @@ local pegger = require 'nelua.utils.pegger'
 local cdefs = require 'nelua.cdefs'
 local CEmitter = require 'nelua.cemitter'
 local typedefs = require 'nelua.typedefs'
+local ccompiler = require 'nelua.ccompiler'
 local primtypes = typedefs.primtypes
 
 -- The cbuiltins table.
@@ -59,15 +60,14 @@ end
 
 -- Used by `<cexport>`.
 function cbuiltins.NELUA_CEXPORT(context)
-  context:ensure_builtin('NELUA_EXTERN')
   context:define_builtin_macro('NELUA_CEXPORT', [[
 /* Macro used to export C functions. */
 #ifdef _WIN32
-  #define NELUA_CEXPORT NELUA_EXTERN __declspec(dllexport)
+  #define NELUA_CEXPORT __declspec(dllexport)
 #elif defined(__GNUC__)
-  #define NELUA_CEXPORT NELUA_EXTERN __attribute__((visibility("default")))
+  #define NELUA_CEXPORT __attribute__((visibility("default")))
 #else
-  #define NELUA_CEXPORT NELUA_EXTERN
+  #define NELUA_CEXPORT
 #endif
 ]], 'directives')
 end
@@ -149,8 +149,7 @@ function cbuiltins.NELUA_ATOMIC(context)
   #include <stdatomic.h>
   #define NELUA_ATOMIC _Atomic
 #else
-  #define NELUA_ATOMIC(a) a
-  #error "Atomic is unsupported."
+  #define NELUA_ATOMIC(a) volatile a
 #endif
 ]], 'directives')
 end
@@ -163,13 +162,12 @@ function cbuiltins.NELUA_THREAD_LOCAL(context)
   #define NELUA_THREAD_LOCAL _Thread_local
 #elif __cplusplus >= 201103L
   #define NELUA_THREAD_LOCAL thread_local
-#elif defined(__GNUC__)
-  #define NELUA_THREAD_LOCAL __thread
 #elif defined(_MSC_VER)
   #define NELUA_THREAD_LOCAL __declspec(thread)
+#elif defined(__GNUC__) || defined(__clang__)
+  #define NELUA_THREAD_LOCAL __thread
 #else
   #define NELUA_THREAD_LOCAL
-  #error "Thread local is unsupported."
 #endif
 ]], 'directives')
 end
@@ -250,6 +248,29 @@ function cbuiltins.NELUA_ALIGNOF(context)
 ]], 'directives')
 end
 
+-- Used to do type punning without issues on GCC when strict aliasing is enabled.
+function cbuiltins.NELUA_MAYALIAS(context)
+  context:define_builtin_macro('NELUA_MAYALIAS', [[
+/* Macro used sign that a type punning cast may alias (related to strict aliasing). */
+#ifdef __GNUC__
+  #define NELUA_MAYALIAS __attribute__((may_alias))
+#else
+  #define NELUA_MAYALIAS
+#endif
+]], 'directives')
+end
+
+-- Used to take reference of literals (rvalues).
+function cbuiltins.NELUA_LITERAL_REF(context)
+  if ccompiler.get_cc_info().is_cpp then --luacov:disable
+    context:get_visiting_node():raisef('taking reference of a compound literal is not allowed in the C++ backend')
+  end --luacov:enable
+  context:define_builtin_macro('NELUA_LITERAL_REF', [[
+/* Macro used to take reference of literals. */
+#define NELUA_LITERAL_REF(T, x) (&((struct{T v;}){x}.v))
+]], 'directives')
+end
+
 --[[
 Called before aborting when sanitizing.
 Its purpose is to generate traceback before aborting.
@@ -262,12 +283,24 @@ function cbuiltins.NELUA_UBSAN_UNREACHABLE(context)
   #if __has_feature(undefined_behavior_sanitizer)
     #define NELUA_UBSAN_UNREACHABLE __builtin_unreachable
   #endif
-#elif defined(__GNUC__) && defined(__gnu_linux__)
+#elif defined(__gnu_linux__) && defined(__GNUC__) && __GNUC__ >= 5
   NELUA_EXTERN void __ubsan_handle_builtin_unreachable(void*) __attribute__((weak));
   #define NELUA_UBSAN_UNREACHABLE() {if(&__ubsan_handle_builtin_unreachable) __builtin_unreachable();}
 #endif
 #ifndef NELUA_UBSAN_UNREACHABLE
   #define NELUA_UBSAN_UNREACHABLE()
+#endif
+]], 'directives')
+end
+
+-- Used by `fallthrough` statement.
+function cbuiltins.NELUA_FALLTHROUGH(context)
+  context:define_builtin_macro('NELUA_FALLTHROUGH', [[
+/* Macro used to silence fallthrough warnings. */
+#if defined(__GNUC__) && __GNUC__ >= 7
+  #define NELUA_FALLTHROUGH() __attribute__((fallthrough))
+#else
+  #define NELUA_FALLTHROUGH() ((void)0)
 #endif
 ]], 'directives')
 end
@@ -278,6 +311,12 @@ function cbuiltins.nlniltype(context)
     "typedef struct nlniltype {"..
     (typedefs.emptysize == 0 and '' or 'char x;')..
     "} nlniltype;")
+end
+
+-- Used by `type` type at runtime.
+function cbuiltins.nltype(context)
+  context:ensure_builtin('nlniltype')
+  context:define_builtin_decl('nltype', "typedef struct nlniltype nltype;")
 end
 
 -- Used by `nil` at runtime.
@@ -337,41 +376,77 @@ end
 -- Used to abort the application.
 function cbuiltins.nelua_abort(context)
   local abortcall
-  if context.pragmas.noabort then
+  if context.pragmas.abort == 'exit' then
     context:ensure_builtin('exit')
-    abortcall = 'exit(-1)'
+    abortcall = '  exit(-1);'
+  elseif context.pragmas.abort == 'trap' then
+    abortcall = [[
+#if defined(__clang__) || defined(__GNUC__)
+  __builtin_trap();
+#else
+  *((volatile int*)0x0) = 0;
+#endif]]
+  elseif context.pragmas.abort == 'hooked' then
+    return 'nelua_abort'
   else
     context:ensure_builtin('abort')
-    abortcall = 'abort()'
+    abortcall = '  abort();'
   end
-  context:ensure_builtins('fflush', 'stderr', 'NELUA_UBSAN_UNREACHABLE')
+  context:ensure_builtins('NELUA_UBSAN_UNREACHABLE')
   context:define_function_builtin('nelua_abort',
     'NELUA_NORETURN', primtypes.void, {}, {[[{
-  fflush(stderr);
   NELUA_UBSAN_UNREACHABLE();
-  ]],abortcall,[[;
+]],abortcall,"\n}"})
+end
+
+-- Used to write to stdout.
+function cbuiltins.nelua_write_stderr(context)
+  if context.pragmas.writestderr == 'none' then
+    context:define_function_builtin('nelua_write_stderr',
+      'NELUA_INLINE', primtypes.void,
+      {{primtypes.cstring, 'msg'}, {primtypes.usize, 'len'}, {primtypes.boolean, 'flush'}},
+    [[{
+  /* NO OP */
+}]])
+  elseif context.pragmas.writestderr == 'hooked' then
+    return 'nelua_write_stderr'
+  else
+    local out = context.pragmas.writestderr == 'stdout' and 'stdout' or 'stderr'
+    context:ensure_builtins('fwrite', 'fflush', out)
+    context:define_function_builtin('nelua_write_stderr',
+      'NELUA_INLINE', primtypes.void,
+      {{'const char*', 'msg'}, {primtypes.usize, 'len'}, {primtypes.boolean, 'flush'}}, {
+    [[{
+  if(len > 0 && msg) {
+    fwrite(msg, 1, len, ]],out,[[);
+  }
+  if(flush) {
+    fwrite("\n", 1, 1, ]],out,[[);
+    fflush(]],out,[[);
+  }
 }]]})
+  end
 end
 
 -- Used with check functions.
 function cbuiltins.nelua_panic_cstring(context)
-  context:ensure_builtins('fputs', 'fputc', 'nelua_abort')
+  context:ensure_builtins('nelua_write_stderr', 'nelua_abort', 'strlen', 'true')
   context:define_function_builtin('nelua_panic_cstring',
     'NELUA_NORETURN', primtypes.void, {{'const char*', 's'}}, [[{
-  fputs(s, stderr);
-  fputc('\n', stderr);
+  if(s) {
+    nelua_write_stderr(s, strlen(s), true);
+  }
   nelua_abort();
 }]])
 end
 
 -- Used by `panic` builtin.
 function cbuiltins.nelua_panic_string(context)
-  context:ensure_builtins('fwrite', 'fputc', 'nelua_abort')
+  context:ensure_builtins('nelua_write_stderr', 'nelua_abort', 'true')
   context:define_function_builtin('nelua_panic_string',
     'NELUA_NORETURN', primtypes.void, {{primtypes.string, 's'}}, [[{
   if(s.size > 0) {
-    fwrite(s.data, 1, s.size, stderr);
-    fputc('\n', stderr);
+    nelua_write_stderr((const char*)s.data, s.size, true);
   }
   nelua_abort();
 }]])
@@ -379,14 +454,12 @@ end
 
 -- Used by `warn` builtin.
 function cbuiltins.nelua_warn(context)
-  context:ensure_builtins('fputs', 'fwrite', 'fputc', 'fflush')
+  context:ensure_builtins('nelua_write_stderr', 'false', 'true')
   context:define_function_builtin('nelua_warn',
     '', primtypes.void, {{primtypes.string, 's'}}, [[{
   if(s.size > 0) {
-    fputs("warning: ", stderr);
-    fwrite(s.data, 1, s.size, stderr);
-    fputc('\n', stderr);
-    fflush(stderr);
+    nelua_write_stderr("warning: ", 9, false);
+    nelua_write_stderr((const char*)s.data, s.size, true);
   }
 }]])
 end
@@ -590,11 +663,12 @@ function cbuiltins.nelua_idiv_(context, type, checked)
   if context.usedbuiltins[name] then return name end
   assert(type.is_signed)
   local stype, utype = type:signed_type(), type:unsigned_type()
-  context:ensure_builtins('NELUA_UNLIKELY', 'nelua_panic_cstring')
+  context:ensure_builtins('NELUA_UNLIKELY')
   local emitter = CEmitter(context)
   emitter:add_ln('{') emitter:inc_indent()
   emitter:add_indent_ln('if(NELUA_UNLIKELY(b == -1)) return 0U - (', utype ,')a;')
-  if not checked then
+  if checked then
+    context:ensure_builtins('nelua_panic_cstring')
     emitter:add_indent_ln('if(NELUA_UNLIKELY(b == 0)) nelua_panic_cstring("division by zero");')
   end
   emitter:add_indent_ln(stype,' q = a / b;')
@@ -610,11 +684,12 @@ function cbuiltins.nelua_imod_(context, type, checked)
   local name = (checked and  'nelua_assert_imod_' or 'nelua_imod_')..type.codename
   if context.usedbuiltins[name] then return name end
   assert(type.is_signed)
-  context:ensure_builtins('NELUA_UNLIKELY', 'nelua_panic_cstring')
+  context:ensure_builtins('NELUA_UNLIKELY')
   local emitter = CEmitter(context)
   emitter:add_ln('{') emitter:inc_indent()
   emitter:add_indent_ln('if(NELUA_UNLIKELY(b == -1)) return 0;')
   if checked then
+    context:ensure_builtins('nelua_panic_cstring')
     emitter:add_indent_ln('if(NELUA_UNLIKELY(b == 0)) nelua_panic_cstring("division by zero");')
   end
   emitter:add_indent_ln(type,' r = a % b;')
@@ -727,8 +802,57 @@ function cbuiltins.calls.panic(context)
 end
 
 -- Implementation of `error` builtin.
-function cbuiltins.calls.error(context)
-  return context:ensure_builtin('nelua_panic_string')
+function cbuiltins.calls.error(context, node)
+  local nargs = #node[1]
+  local emitter = CEmitter(context)
+  context:ensure_builtins('nelua_write_stderr', 'nelua_abort')
+  local errormsg = 'error!'
+  local wherenode = nargs > 0 and node[1][1] or node
+  local fullerrormsg = errormsg
+  if not context.pragmas.noerrorloc then
+    fullerrormsg = wherenode:format_message('runtime error', errormsg)
+  end
+  emitter:add_ln('{')
+  local funcargs
+  if nargs == 1 then
+    funcargs = {{primtypes.string, 'msg'}}
+    local pos = fullerrormsg:find(errormsg)
+    local msg1, msg2 = fullerrormsg:sub(1, pos-1), fullerrormsg:sub(pos + #errormsg)
+    local emsg1, emsg2 = pegger.double_quote_c_string(msg1), pegger.double_quote_c_string(msg2)
+    if #msg1 > 0 and #msg2 > 0 then
+      emitter:add([[
+  nelua_write_stderr(]],emsg1,[[, ]],#msg1,[[, false);
+  nelua_write_stderr((const char*)msg.data, msg.size, false);
+  nelua_write_stderr(]],emsg2,[[, ]],#msg2,[[, true);
+  nelua_abort();
+]])
+    else
+      emitter:add([[
+  if(msg.size > 0) {
+    nelua_write_stderr((const char*)msg.data, msg.size, true);
+  }
+  nelua_abort();
+]])
+    end
+  else -- nargs == 0
+    funcargs = {}
+    local msg = pegger.double_quote_c_string(fullerrormsg)
+    emitter:add([[
+  nelua_write_stderr(]],msg,[[, ]],#fullerrormsg,[[, true);
+  nelua_abort();
+]])
+  end
+  emitter:add('}')
+  local funcname
+  if not context.pragmas.noerrorloc then
+    funcname = context.rootscope:generate_name('nelua_error_line')
+  elseif nargs == 1 then
+    funcname = 'nelua_error_string'
+  elseif nargs == 0 then
+    funcname = 'nelua_error'
+  end
+  context:define_function_builtin(funcname, 'NELUA_NORETURN', primtypes.void, funcargs, emitter:generate())
+  return funcname
 end
 
 -- Implementation of `warn` builtin.
@@ -740,42 +864,53 @@ end
 function cbuiltins.calls.assert(context, node)
   local builtintype = node.attr.builtintype
   local argattrs = builtintype.argattrs
-  local funcname = context.rootscope:generate_name('nelua_assert_line')
   local emitter = CEmitter(context)
-  context:ensure_builtins('fwrite', 'stderr', 'NELUA_UNLIKELY', 'nelua_abort')
+  context:ensure_builtins('NELUA_UNLIKELY', 'nelua_write_stderr', 'nelua_abort', 'false', 'true')
   local nargs = #argattrs
   local qualifier = ''
   local assertmsg = 'assertion failed!'
   local condtype = nargs > 0 and argattrs[1].type or primtypes.void
   local rettype = builtintype.rettypes[1] or primtypes.void
   local wherenode = nargs > 0 and node[1][1] or node
-  local where = wherenode:format_message('runtime error', assertmsg)
+  local fullassertmsg = assertmsg
+  if not context.pragmas.noerrorloc then
+    fullassertmsg = wherenode:format_message('runtime error', assertmsg)
+  end
   emitter:add_ln('{')
   if nargs == 2 then
-    local pos = where:find(assertmsg)
-    local msg1, msg2 = where:sub(1, pos-1), where:sub(pos + #assertmsg)
+    local pos = fullassertmsg:find(assertmsg)
+    local msg1, msg2 = fullassertmsg:sub(1, pos-1), fullassertmsg:sub(pos + #assertmsg)
     local emsg1, emsg2 = pegger.double_quote_c_string(msg1), pegger.double_quote_c_string(msg2)
-    emitter:add([[
+    if #msg1 > 0 and #msg2 > 0 then
+      emitter:add([[
   if(NELUA_UNLIKELY(!]]) emitter:add_val2boolean('cond', condtype) emitter:add([[)) {
-    fwrite(]],emsg1,[[, 1, ]],#msg1,[[, stderr);
-    fwrite(msg.data, msg.size, 1, stderr);
-    fwrite(]],emsg2,[[, 1, ]],#msg2,[[, stderr);
+    nelua_write_stderr(]],emsg1,[[, ]],#msg1,[[, false);
+    nelua_write_stderr((const char*)msg.data, msg.size, false);
+    nelua_write_stderr(]],emsg2,[[, ]],#msg2,[[, true);
     nelua_abort();
   }
 ]])
+    else
+      emitter:add([[
+  if(NELUA_UNLIKELY(!]]) emitter:add_val2boolean('cond', condtype) emitter:add([[)) {
+    nelua_write_stderr((const char*)msg.data, msg.size, true);
+    nelua_abort();
+  }
+]])
+    end
   elseif nargs == 1 then
-    local msg = pegger.double_quote_c_string(where)
+    local msg = pegger.double_quote_c_string(fullassertmsg)
     emitter:add([[
   if(NELUA_UNLIKELY(!]]) emitter:add_val2boolean('cond', condtype) emitter:add([[)) {
-    fwrite(]],msg,[[, 1, ]],#where,[[, stderr);
+    nelua_write_stderr(]],msg,[[,  ]],#fullassertmsg,[[, true);
     nelua_abort();
   }
 ]])
   else -- nargs == 0
-    local msg = pegger.double_quote_c_string(where)
+    local msg = pegger.double_quote_c_string(fullassertmsg)
     qualifier = 'NELUA_NORETURN'
     emitter:add([[
-  fwrite(]],msg,[[, 1, ]],#where,[[, stderr);
+  nelua_write_stderr(]],msg,[[, ]],#fullassertmsg,[[, true);
   nelua_abort();
 ]])
   end
@@ -783,6 +918,19 @@ function cbuiltins.calls.assert(context, node)
     emitter:add_ln('  return cond;')
   end
   emitter:add('}')
+  local funcname
+  if not context.pragmas.noerrorloc then
+    funcname = 'nelua_assert_line'
+    funcname = context.rootscope:generate_name(funcname)
+  else
+    if nargs == 2 then
+      funcname = 'nelua_assert_msg_'..rettype.codename
+    elseif nargs == 1 then
+      funcname = 'nelua_assert_'..rettype.codename
+    elseif nargs == 0 then
+      funcname = 'nelua_assert'
+    end
+  end
   context:define_function_builtin(funcname, qualifier, rettype, argattrs, emitter:generate())
   return funcname
 end
@@ -794,27 +942,65 @@ function cbuiltins.calls.check(context, node)
 end
 
 -- Implementation of `require` builtin.
-function cbuiltins.calls.require(context, node, emitter)
+function cbuiltins.calls.require(context, node)
   local attr = node.attr
+  local funcname = attr.funcname
   if attr.alreadyrequired then
+    local cachedfuncname = funcname..'_cached'
+    if context.definitions[cachedfuncname] then
+      return cachedfuncname
+    end
     return
   end
-  local ast = attr.loadedast
-  assert(not attr.runtime_require and ast)
-  local bracepos = emitter:get_pos()
-  emitter:add_indent_ln("{ /* require '", attr.requirename, "' */")
-  local lastpos = emitter:get_pos()
-  context:push_forked_state{inrequire = true}
   context:push_scope(context.rootscope)
+  local funcscope = context:push_forked_scope(node)
+  context:push_forked_state{funcscope=funcscope}
   context:push_forked_pragmas(attr.pragmas)
-  emitter:add(ast)
+  local implemitter = CEmitter(context)
+  implemitter:add(attr.loadedast)
+  local implcode = implemitter:generate()
+  local empty = #implcode == 0 or implcode:find('^[%s;]+return NELUA_NIL;\n$')
+  local rettypename = context:funcrettypename(attr.functype)
   context:pop_pragmas()
-  context:pop_scope()
   context:pop_state()
-  if emitter:get_pos() == lastpos then
-    emitter:rollback(bracepos)
-  else
-    emitter:add_indent_ln('}')
+  context:pop_scope()
+  context:pop_scope()
+  if not empty then -- has code inside
+    local args = {{primtypes.niltype, 'modname'}}
+    context:define_function_builtin(funcname, '', rettypename, args, '{\n'..implcode..'}')
+    --  proxy require with cached result
+    if attr.multiplerequire then
+      local cachedfuncname = funcname..'_cached'
+      local decemitter = CEmitter(context)
+      decemitter:add(rettypename, ' ', cachedfuncname, '(', primtypes.niltype, ' modname)')
+      local heading = decemitter:generate()
+      local proxyemitter = CEmitter(context)
+      proxyemitter:add_indent_ln(heading, ' {')
+      proxyemitter:inc_indent()
+      proxyemitter:add_indent_ln('static ', primtypes.boolean, ' loaded = ', false, ';')
+      if rettypename ~= 'void' then
+        proxyemitter:add_indent_ln('static ', rettypename, ' cache;')
+      end
+      proxyemitter:add_indent_ln('if(!loaded) {')
+      proxyemitter:inc_indent()
+      if rettypename ~= 'void' then
+        proxyemitter:add_indent_ln('cache = ', funcname, '(NELUA_NIL);')
+      else
+        proxyemitter:add_indent_ln(funcname, '(NELUA_NIL);')
+      end
+      proxyemitter:add_indent_ln('loaded = ', true, ';')
+      proxyemitter:dec_indent()
+      proxyemitter:add_indent_ln('}')
+      if rettypename ~= 'void' then
+        proxyemitter:add_indent_ln('return cache;')
+      end
+      proxyemitter:dec_indent()
+      proxyemitter:add_indent_ln('}')
+      context:add_declaration('static '..heading..';\n', cachedfuncname)
+      context:add_definition(proxyemitter:generate(), cachedfuncname)
+      return cachedfuncname
+    end
+    return funcname
   end
 end
 
@@ -865,8 +1051,8 @@ function cbuiltins.calls.print(context, node)
   for i,argtype in ipairs(argtypes) do
     defemitter:add_indent()
     if i > 1 then
-      context:ensure_builtins('fwrite', 'stdout')
-      defemitter:add_ln("fputc('\\t', stdout);")
+      context:ensure_builtins('fputs', 'stdout')
+      defemitter:add_ln('fputs("\t", stdout);')
       defemitter:add_indent()
     end
     if argtype.is_string then
@@ -895,6 +1081,7 @@ function cbuiltins.calls.print(context, node)
       context:ensure_builtins('fputs', 'fprintf', 'stdout', 'NULL')
       if argtype.is_function then
         defemitter:add_ln('fputs("function: ", stdout);')
+        defemitter:add_indent()
       end
       defemitter:add_ln('if(a',i,' != NULL) {')
         defemitter:inc_indent()
@@ -956,8 +1143,8 @@ function cbuiltins.calls.print(context, node)
       node:raisef('in print: cannot handle type "%s"', argtype)
     end --luacov:enable
   end
-  context:ensure_builtins('fputc', 'fflush', 'stdout')
-  defemitter:add_indent_ln([[fputc('\n', stdout);]])
+  context:ensure_builtins('fputs', 'fflush', 'stdout')
+  defemitter:add_indent_ln([[fputs("\n", stdout);]])
   defemitter:add_indent_ln('fflush(stdout);')
   defemitter:add_ln('}')
   context:add_definition(defemitter:generate(), funcname)
@@ -1336,8 +1523,14 @@ end
 
 -- Implementation of reference operator (`&`).
 function cbuiltins.operators.ref(_, _, emitter, argattr, argname)
-  assert(argattr.lvalue)
-  emitter:add('(&', argname, ')')
+  if not argattr.lvalue and argattr.type.is_aggregate then -- taking reference of a literal
+    emitter:add_builtin('NELUA_LITERAL_REF')
+    emitter:add('(', argattr.type, ', (', argname, '))')
+  else
+    -- we expect an lvalue
+    assert(argattr.lvalue)
+    emitter:add('(&', argname, ')')
+  end
 end
 
 -- Implementation of dereference operator (`$`).
@@ -1359,7 +1552,7 @@ function cbuiltins.operators.len(_, node, emitter, argattr, argname)
   elseif type.is_type then
     emitter:add('sizeof(', argattr.value, ')')
   else --luacov:disable
-    node:raisef('not implemented')
+    node:raisef("length operator for type '%s' is not implemented", type)
   end --luacov:enable
 end
 

@@ -168,6 +168,7 @@ function bn.todecsci(v, decimaldigits, forcefract)
       else
         s = string.format('%.'..decimaldigits..'g', v)
       end
+      s = s:gsub('([Ee][+-])0+', '%1') -- '1e-08' -> '1e-8'
       forcefract = true
     end
   end
@@ -194,6 +195,14 @@ end
 -- Check if the input is infinite.
 function bn.isinfinite(x)
   return math.type(x) == 'float' and math.abs(x) == math.huge
+end
+
+-- Check if the input is an integral or a float that can be converted to an integral.
+function bn.canbeintegral(x)
+  if x and math.type(x) == 'float' and x >= math.mininteger and x <= math.maxinteger and math.floor(x) == x then
+    return x
+  end
+  return bn.isintegral(x)
 end
 
 -- Convert a bn number to a lua integer/number without loss of precision.

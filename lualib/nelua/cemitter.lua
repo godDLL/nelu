@@ -11,6 +11,7 @@ local pegger = require 'nelua.utils.pegger'
 local bn = require 'nelua.utils.bn'
 local Emitter = require 'nelua.emitter'
 local typedefs = require 'nelua.typedefs'
+local console = require 'nelua.utils.console'
 local primtypes = typedefs.primtypes
 
 -- The C emitter class.
@@ -38,11 +39,11 @@ If `typed` is `true` then a type cast will precede its literal.
 ]]
 function CEmitter:add_zeroed_type_literal(type, typed)
   local s
-  if type.is_float128 and not self.context.pragmas.nofloatsuffix then
+  if type.is_float128 and not self.context.pragmas.nocfloatsuffix then
     s = '0.0q'
-  elseif type.is_clongdouble and not self.context.pragmas.nofloatsuffix then
+  elseif type.is_clongdouble and not self.context.pragmas.nocfloatsuffix then
     s = '0.0l'
-  elseif type.is_cfloat and not self.context.pragmas.nofloatsuffix then
+  elseif type.is_cfloat and not self.context.pragmas.nocfloatsuffix then
     s = '0.0f'
   elseif type.is_float then
     s = '0.0'
@@ -60,10 +61,13 @@ function CEmitter:add_zeroed_type_literal(type, typed)
     if typed then
       self:add('(', type, ')')
     end
-    if type.is_empty and typedefs.emptysize == 0 then
-      s = '{}'
-    else -- should initialize almost anything in C
-      s = '{0}'
+    s = '{0}' -- should initialize almost anything in C
+    if typedefs.emptysize == 0 then
+      if type.is_empty then -- empty record/array
+        s = '{}'
+      elseif type.is_record and type.fields[1].type.is_empty then -- first field is an empty record
+        s = '{{}}'
+      end
     end
   end
   self:add_text(s)
@@ -141,10 +145,18 @@ In case `check` is true then checks for underflow/overflow is performed.
 function CEmitter:add_typed_val(type, val, valtype, check)
   if check and not self.context.pragmas.nochecks and type.is_integral and valtype.is_scalar and
     not type:is_type_inrange(valtype) then
-    self:add_builtin('nelua_assert_narrow_', type, valtype) self:add('(', val, ')')
+    if traits.is_astnode(val) and bn.canbeintegral(val.attr.value) and type:is_inrange(val.attr.value) then
+      self:add_scalar_literal(val.attr.value, type, val.attr.base)
+    else
+      self:add_builtin('nelua_assert_narrow_', type, valtype) self:add('(', val, ')')
+      if self.context.pragmas.warnnarrow then
+        local node = traits.is_astnode(val) and val or self.context:get_visiting_node()
+        console.logerr(node:format_message('warning', "implicit narrow casting from `%s` to type `%s`", valtype, type))
+      end
+    end
   else
     local innertype = type.is_pointer and type.subtype or type
-    local surround = innertype.is_aggregate
+    local surround = innertype.is_aggregate or type.is_function
     if surround then self:add_text('(') end
     self:add('(', type, ')')
     if type.is_integral and valtype.is_pointer and type.size ~= valtype.size then
@@ -185,18 +197,33 @@ function CEmitter:add_converted_val(type, val, valtype, force, untypedinit)
       self:add_cstring2string(val, valtype)
     elseif valattr.comptime and type.is_scalar and valtype.is_scalar and
            (type.is_float or valtype.is_integral) then -- comptime scalar -> scalar
-      self:add_scalar_literal(valattr.value, type, valattr.base, true)
-    elseif type.is_pointer and valtype.is_aggregate and valtype == type.subtype then -- auto ref
-      self:add('(&', val, ')')
+      self:add_scalar_literal(valattr.value, type, valattr.base)
+    elseif type.is_pointer and valtype.is_aggregate then -- auto ref
+      local cast = valtype ~= type.subtype
+      if cast then
+        self:add('((', type, ')')
+      end
+      if valattr.promotelvalue then
+        self:add_builtin('NELUA_LITERAL_REF')
+        self:add('(', valtype, ', (', val, '))')
+      else
+        self:add('(&', val, ')')
+      end
+      if cast then
+        self:add(')')
+      end
     elseif type.is_aggregate and valtype.is_pointer and valtype.subtype == type then -- auto deref
       self:add_deref(val, valtype)
+    elseif valtype.is_void and type.is_niltype then
+      self:add('(',val,',')
+      self:add_nil_literal()
+      self:add(')')
     else -- cast
       local checked = not (force or untypedinit)
       self:add_typed_val(type, val, valtype, checked)
     end
   else
-    local typed = force and not untypedinit
-    self:add_zeroed_type_literal(type, typed)
+    self:add_zeroed_type_literal(type, not untypedinit)
   end
 end
 
@@ -228,7 +255,7 @@ function CEmitter:add_short_string_literal(val, ascstring, untypedinit)
     quotedliterals[val] = quoted_value
   end
   if ascstring then
-    self:add(quoted_value)
+    self:add('(char*)',quoted_value)
   else
     if not untypedinit then
       self:add_text('(')
@@ -345,11 +372,11 @@ function CEmitter:add_scalar_literal(num, numtype, base)
     end
   end
   -- add suffixes
-  if numtype.is_float128 and not self.context.pragmas.nofloatsuffix then
+  if numtype.is_float128 and not self.context.pragmas.nocfloatsuffix then
     self:add_text('q')
-  elseif numtype.is_clongdouble and not self.context.pragmas.nofloatsuffix then
+  elseif numtype.is_clongdouble and not self.context.pragmas.nocfloatsuffix then
     self:add_text('l')
-  elseif numtype.is_cfloat and not self.context.pragmas.nofloatsuffix then
+  elseif numtype.is_cfloat and not self.context.pragmas.nocfloatsuffix then
     self:add_text('f')
   elseif numtype.is_unsigned then
     self:add_text('U')
@@ -416,7 +443,7 @@ function CEmitter:add_literal(valattr, untypedinit)
   elseif valtype.is_array then
     self:add_array_literal(value, valtype, untypedinit)
   else --luacov:disable
-    errorer.errorf('not implemented: `CEmitter:add_literal` for valtype `%s`', valtype)
+    errorer.errorf('`CEmitter:add_literal` for valtype `%s` is not implemented', valtype)
   end --luacov:enable
 end
 
@@ -435,19 +462,27 @@ function CEmitter:add_qualified_declaration(attr, type, name)
   if attr.cinclude then
     context:ensure_include(attr.cinclude)
   end
+  local asmregister = false
   -- storage specifiers
   if attr.aligned then
     self:add(context:ensure_builtin('NELUA_ALIGNAS'), '(', attr.aligned, ') ')
   end
-  if attr.cimport and attr.codename ~= 'nelua_main' then
+  if attr.cimport and attr.codename ~= 'nelua_main' and
+                      attr.codename ~= 'nelua_argc' and
+                      attr.codename ~= 'nelua_argv' then
     self:add(context:ensure_builtin('NELUA_CIMPORT'), ' ')
   elseif attr.cexport then
     self:add(context:ensure_builtin('NELUA_CEXPORT'), ' ')
   elseif attr.static or
-    (attr.staticstorage and not attr.entrypoint and not attr.nostatic and not pragmas.nostatic) then
+    (attr.staticstorage and not attr.entrypoint and not attr.nocstatic and not pragmas.nocstatic) then
     self:add('static ')
   elseif attr.register then
-    self:add(context:ensure_builtin('NELUA_REGISTER'), ' ')
+    if attr.register == true then
+      self:add(context:ensure_builtin('NELUA_REGISTER'), ' ')
+    else
+      self:add('register ')
+      asmregister = true
+    end
   end
   -- function specifiers
   if attr.inline and not pragmas.nocinlines then
@@ -468,7 +503,7 @@ function CEmitter:add_qualified_declaration(attr, type, name)
       self:add('const ')
     end
   end
-  if attr.volatile then
+  if attr.volatile or pragmas.volatile then
     self:add('volatile ')
   end
   if attr.cqualifier then
@@ -479,6 +514,9 @@ function CEmitter:add_qualified_declaration(attr, type, name)
   else
     self:add(type, ' ')
   end
+  if attr.cpostqualifier then
+    self:add(attr.cpostqualifier, ' ')
+  end
   -- late type qualifiers
   if attr.restrict then
     self:add('__restrict ')
@@ -487,6 +525,9 @@ function CEmitter:add_qualified_declaration(attr, type, name)
     self:add(string.format('__attribute__((%s)) ', attr.cattribute))
   end
   self:add(name)
+  if asmregister then
+    self:add(' asm("', attr.register, '")')
+  end
 end
 
 return CEmitter

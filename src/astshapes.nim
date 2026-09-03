@@ -74,6 +74,9 @@ type
     str*: string      ## name / code / value / operator / scope / varargs-kind
     litType*: string  ## Number.literaltype, String.literaltype
     boolVal*: bool    ## Boolean.value
+    intVal*: int      ## Assign.targetCount: how many leading children are
+                      ## left-hand-side targets (the rest are RHS values).
+                      ## Zero/unused for every other shape.
     ## Flat child list; layout per shape (see layoutFor).
     children*: seq[Node]
     ## Analysis flags (Appendix A): set during analysis, read by codegen.
@@ -85,7 +88,7 @@ type
 
   ## Which scalar/flag fields a shape actually carries.
   NodeField* = enum
-    nfStr, nfLitType, nfBoolVal, nfChildren, nfFunction, nfCall,
+    nfStr, nfLitType, nfBoolVal, nfIntVal, nfChildren, nfFunction, nfCall,
     nfUnpackable, nfIndex, nfOperator
 
 proc layoutFor*(k: NodeKind): seq[NodeField] =
@@ -136,6 +139,6 @@ proc layoutFor*(k: NodeKind): seq[NodeField] =
   of nkBreak, nkContinue: @[]
   of nkLabel, nkGoto: @[nfStr]
   of nkVarDecl:       @[nfStr, nfChildren, nfUnpackable]
-  of nkAssign:        @[nfChildren, nfUnpackable]
+  of nkAssign:        @[nfChildren, nfUnpackable, nfIntVal]
   of nkFuncDef:       @[nfStr, nfChildren, nfFunction]
   of nkDirective:     @[nfStr]

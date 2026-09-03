@@ -17,6 +17,7 @@ local console = require 'nelua.utils.console'
 local tabler = require'nelua.utils.tabler'
 local shaper = require 'nelua.utils.shaper'
 local Attr = require 'nelua.attr'
+local lpegrex = require 'nelua.thirdparty.lpegrex'
 local config = require 'nelua.configer'.get()
 
 -- AST node class.
@@ -92,6 +93,11 @@ function ASTNode._create(mt, ...)
   }, mt)
 end
 
+-- Creates unique id counter of AST nodes.
+function ASTNode.reset_uid_counter()
+  uid = 0
+end
+
 -- Allows calling ASTNode to create a new node.
 getmetatable(ASTNode).__call = ASTNode._create
 
@@ -146,6 +152,8 @@ function ASTNode.clone(node)
     if type(v) == 'table' then
       if v._astnode then -- node
         v = clone_node(v)
+      elseif v.n then -- table or arguments
+        v = tabler.copy(v)
       else -- list of nodes
         v = clone_nodes(v)
       end
@@ -190,12 +198,62 @@ Replaces current node values and metatable with the ones from node `node`.
 Used to replace a node with a different node while reusing the original node reference.
 ]]
 function ASTNode:transform(node)
-  setmetatable(self, getmetatable(node))
+  local mt = getmetatable(node)
+  setmetatable(self, mt)
+  if not mt then -- transforming into a list, must clear all fields
+    for k in pairs(self) do
+      self[k] = nil
+    end
+  end
   for i=1,math.max(#self, #node) do
     self[i] = node[i]
   end
   self.attr = node.attr
   self.pattr = node.pattr
+  return self
+end
+
+--[[
+Copies source origin from `node`, so error messages with this node
+will print source origin.
+Origin is determined by `src`, `pos`, `endpos` fields.
+]]
+function ASTNode:copy_origin(node)
+  self.src = node.src
+  self.pos = node.pos
+  self.endpos = node.endpos
+  return self
+end
+
+--[[
+Returns a table with source location information for this node.
+The following fields may be present:
+* `srccode`, complete source code for the file where the node is defined.
+* `srcname`, name of the source, usually a file name.
+* `pos`, node's position inside `srccode` (inclusive).
+* `endpos`, node's end position inside `srccode` (exclusive).
+* `line`, node's line content (the first line where the node begins).
+* `lineno`, node's line number.
+* `linestart`, position where the node's line begins.
+* `lineend`, position where the node's line ends.
+* `colno`, node's column line number.
+* `len`, length (it's `endpos - pos`)
+]]
+function ASTNode:location()
+  local src, pos, endpos = self.src, self.pos, self.endpos
+  local loc = {
+    srccode=src and src.content,
+    srcname=src and src.name,
+    pos=pos,
+    endpos=endpos
+  }
+  if src and pos then
+    loc.lineno, loc.colno, loc.line, loc.linestart, loc.lineend = lpegrex.calcline(src.content, pos)
+  end
+  if pos and endpos then
+    loc.len = endpos-pos
+  end
+  return loc
 end
 
 --[[
@@ -206,7 +264,7 @@ Where `category` is the category name to prefix the message (e.g 'warning', 'err
 function ASTNode:format_message(category, message, ...)
   message = stringer.pformat(message, ...)
   if self and self.src and self.pos then
-    return errorer.get_pretty_source_pos_errmsg(self.src, self.pos, self.endpos, message, category)
+    return errorer.get_pretty_source_pos_errmsg(self:location(), message, category)
   end
   return category .. ': ' .. message .. '\n'
 end
@@ -412,6 +470,17 @@ function ASTNode:recursive_has_attr(attrname)
   return false
 end
 
+-- Finds first child with where `fieldname` evaluates to true.
+function ASTNode:find_child_with_field(fieldname)
+  for i=1,#self do
+    local subnode = self[i]
+    if type(subnode) == 'table' and subnode[fieldname] then
+      return subnode
+    end
+  end
+  return nil
+end
+
 --[[
 Recursively updates `src`, `pos` and `endpos` in child nodes that are unset.
 Used set a source location of generated nodes through metaprogramming.
@@ -446,6 +515,62 @@ function ASTNode:get_simplified_value()
     return attr
   end
   return self
+end
+
+--[[
+Checks if all nested block statements ends with a node with the tag `tag`.
+Returns true if all last nested block statement matches `tag`.
+Usually used to check if a block ends with return statement.
+
+This function has to perform a minimal control flow analysis to
+find out if the block ends with a return.
+]]
+function ASTNode:ends_with(tag)
+  assert(self.is_Block)
+  local statnodes = self
+  local laststat = statnodes[#statnodes]
+  if not laststat then return false end
+  if laststat.tag == tag then
+    return true
+  elseif laststat.is_Do then
+    return laststat[1]:ends_with(tag)
+  elseif laststat.is_If then
+    local pairs, elseblock = laststat[1], laststat[2]
+    for i=1,#pairs,2 do -- if statements
+      local block = pairs[i+1]
+      if not block:ends_with(tag) then
+        return false
+      end
+    end
+    if elseblock then -- else statement
+      return elseblock:ends_with(tag)
+    end
+  elseif laststat.is_Switch then -- switch statement
+    local pairs, elseblock = laststat[2], laststat[3]
+    for i=1,#pairs,2 do -- case statements
+      local block = pairs[i+1]
+      if not block:ends_with(tag) then
+        return false
+      end
+    end
+    if elseblock then -- else statement
+      return elseblock:ends_with(tag)
+    end
+  elseif laststat.is_While then
+    -- in case of a infinite while loop without breaks, the function could never return
+    -- TODO: consider goto statements breaking the loop
+    -- TODO: consider infinite repeat loop
+    local whilecondattr = laststat[1].attr
+    if whilecondattr.comptime and whilecondattr.value == true then -- infinite loop
+      for childnode in laststat:walk_trace_nodes({Do=true,If=true,Switch=true,Block=true,Break=true}, true) do
+        if childnode.is_Break then
+          return false
+        end
+      end
+      return true
+    end
+  end
+  return false
 end
 
 return ASTNode

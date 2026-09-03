@@ -22,11 +22,11 @@ version.NELUA_VERSION_MINOR = 2
 -- Patch release number.
 version.NELUA_VERSION_PATCH = 0
 -- Git build number (the number of commits in git history).
-version.NELUA_GIT_BUILD = nil
+version.NELUA_GIT_BUILD = 1635
 -- Latest git commit hash.
-version.NELUA_GIT_HASH = nil
+version.NELUA_GIT_HASH = "a58450563e2d2ec49bff499865c8b5cfdf6ff81a"
 -- Latest git commit date.
-version.NELUA_GIT_DATE = nil
+version.NELUA_GIT_DATE = "2025-06-24 16:22:08 -0300"
 -- Suffix for version (like '-dev', '-alpha' and '-beta')
 version.NELUA_VERSION_SUFFIX = '-dev'
 -- Nelua version in a string (like "Nelua 0.2.0-dev").
@@ -41,7 +41,7 @@ local function execute_git_command(args)
   -- try to detect nelua git directory using this script
   local gitdir = fs.abspath(fs.join(fs.dirname(fs.scriptname(), 3), '.git'))
   if fs.isdir(gitdir) then -- git directory found
-    local execargs = tabler.insertvalues({'-C', gitdir}, args)
+    local execargs = tabler.insertvalues({'--git-dir', gitdir}, args)
     local stdout = executor.evalex('git', execargs)
     if stdout and stdout ~= '' then
       return stdout

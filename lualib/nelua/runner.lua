@@ -1,104 +1,186 @@
-require 'nelua.utils.luaver'.check()
+--[[
+Runner module.
 
--- make the lua garbage collector less aggressive to speed up compilation
-collectgarbage("incremental", 800, 400, 16)
-collectgarbage("stop")
+This module is used to run the compiler from a set of arguments,
+it's the first required module when running the compiler.
+]]
 
-local tracker = require 'nelua.utils.tracker'
+-- We expect to be running in Lua 5.4.
+if _VERSION ~= 'Lua 5.4' and _VERSION ~= 'Lua 5.3' then
+  error 'Please use Lua 5.4'
+end
+
+-- Make the lua garbage collector less aggressive to speed up compilation.
+if _VERSION == 'Lua 5.4' then
+  collectgarbage("incremental", 800, 400, 16)
+end
+
+-- Timers must be the first loaded module.
 local nanotimer = require 'nelua.utils.nanotimer'
 local globaltimer = nanotimer.globaltimer
 local timer = nanotimer()
+
+local tracker = require 'nelua.utils.tracker'
 local stringer = require 'nelua.utils.stringer'
 local console = require 'nelua.utils.console'
 local fs = require 'nelua.utils.fs'
 local except = require 'nelua.utils.except'
 local executor = require 'nelua.utils.executor'
 local configer = require 'nelua.configer'
-local platform = require 'nelua.utils.platform'
 local aster = require 'nelua.aster'
+local version = require 'nelua.version'
+local config = configer.get()
 local profiler
+
 local runner = {}
 
-local function run(argv, redirect)
-  -- parse config
-  local config = configer.parse(argv)
+-- Show compiler version.
+function runner.show_version()
+  console.info(version.NELUA_VERSION)
+  console.info('Build number: '..version.NELUA_GIT_BUILD)
+  console.info('Git date: '..version.NELUA_GIT_DATE)
+  console.info('Git hash: '..version.NELUA_GIT_HASH)
+  console.info('Semantic version: '..version.NELUA_SEMVER)
+  local endyear = 2023
+  local curyear = tonumber(os.date('%Y'))
+  if endyear then
+    endyear = math.max(curyear, endyear)
+  end
+  console.info('Copyright (C) 2019-'..endyear..' Eduardo Bart (https://nelua.io/)')
+  return 0
+end
 
-  if config.no_color then console.set_colors_enabled(false) end
+-- Show semantic version.
+function runner.show_semver()
+  console.info(version.NELUA_SEMVER)
+  return 0
+end
 
-  --luacov:disable
-  if config.script then
-    -- inject script and thirdparty directory into lua package path
-    local scriptdir = fs.dirname(fs.abspath(config.input))
-    package.path = fs.join(scriptdir,'?.lua')..platform.luapath_separator..
-                   fs.join(scriptdir,'?','init.lua')..platform.luapath_separator..
-                   package.path
-    -- replace arguments
-    local arg = _G.arg
-    for i=1,math.max(#arg,#config.runargs) do
-      arg[i] = config.runargs[i]
-    end
-    -- run the script
+-- Show current loaded configuration.
+function runner.show_config(options)
+  local inspect = require 'nelua.thirdparty.inspect'
+  options.config = nil -- remove this flag from the config table
+  console.info(inspect(options))
+  return 0
+end
+
+-- Runs a Lua script.
+function runner.run_script()
+  -- overwrite global arguments
+  local arg = _G.arg
+  for i=1,math.max(#arg,#config.runargs) do
+    arg[i] = config.runargs[i]
+  end
+  -- run the script
+  if not config.input then
+    console.error('Missing input file name, please pass a source file as an argument.')
+    return 1
+  end
+  if config.input == '-' then
+    dofile()
+  else
     dofile(config.input)
-    return 0
   end
+  return 0
+end
+
+-- Executes the Lua chunk from 'NELUA_INIT' environment variable.
+local function load_nelua_init()
   local initeval = os.getenv('NELUA_INIT')
-  if initeval then
-    local ok = false
-    local initfunc, err = load(initeval, '@NELUA_INIT')
-    if initfunc then
-      ok, err = pcall(initfunc)
-    end
-    if not ok then
-      except.raisef('error while evaluation NELUA_INIT: %s', tostring(err))
-    end
+  if not initeval then return end
+  local ok = false
+  local initfunc, err = load(initeval, '@NELUA_INIT')
+  if initfunc then
+    ok, err = pcall(initfunc)
   end
-  --luacov:enable
+  if not ok then
+    console.errorf('failed to execute NELUA_INIT: %s', tostring(err))
+    return 1
+  end
+end
 
-  local generator = require('nelua.' .. config.generator .. 'generator')
-  local compiler = generator.compiler
+-- Starts profiling the compiler.
+function runner.start_profiling()
+  profiler = require 'nelua.utils.profiler'
+  collectgarbage()
+  profiler.start()
+end
+
+-- Stops profiling the compiler and show profiling statistics.
+function runner.stop_profiling()
+  if not profiler then return end
+  profiler.stop()
+  profiler.report{incl=true, min_usage=0.1}
+  profiler.report{self=true, min_usage=0.1}
+end
+
+local function run(args, redirect)
+  load_nelua_init()
+  local options = configer.parse(args) -- parse options
+  -- set lua path and restore it when run ends
+  local oldluapath = package.path
+  package.path = options.lua_path
+  local _ <close> = setmetatable({}, {__close = function()
+    package.path = oldluapath
+  end})
+  -- handle actions that exits early
+  if config.version then
+    return runner.show_version()
+  elseif config.semver then
+    return runner.show_semver()
+  elseif config.config then
+    return runner.show_config(options)
+  elseif config.script then
+    return runner.run_script()
+  end
+  -- this is required here because the config may affect how they load
+  local generator = require('nelua.'..config.generator..'generator')
   local preprocessor = require 'nelua.preprocessor'
-
+  local analyzer = require 'nelua.analyzer'
+  local AnalyzerContext = require 'nelua.analyzercontext'
+  local compiler = generator.compiler
   if config.timing then
     console.debugf('startup      %.1f ms', timer:elapsedrestart())
   end
-
-  collectgarbage("restart")
-
   -- determine input
-  local input, infile
-  if config.eval then
-    infile = 'eval_' .. stringer.hash(config.input, 8)
+  local input, inputname
+  if config.eval then -- source from input argument
+    inputname = 'eval_'..stringer.hash(config.input, 8)
     input = config.input
-  else
-    infile = config.input
-    input = fs.ereadfile(infile)
+  elseif config.input == '-' then -- source from stdin
+    --luacov:disable
+    inputname = 'stdin_'..stringer.hash(config.input, 8)
+    input = io.read('*a')
+  else --luacov:enable
+    inputname = config.input
+    if not inputname then
+      console.error('Missing input, please pass a source file as an argument.')
+      return 1
+    end
+    local err
+    input, err = fs.readfile(inputname)
+    if not input then
+      console.errorf("Failed to read input file: %s", err)
+      return 1
+    end
   end
-
-  if config.before_parse then config.before_parse() end
-
-  if config.profile_compiler then --luacov:disable
-    profiler = require 'nelua.utils.profiler'
-    profiler.start()
-  end --luacov:enable
-
+  -- execute arbitrary code from config before parsing
+  if config.before_parse then
+    config.before_parse()
+  end
+  -- we are only interested in profiling since this point
+  if config.profile_compiler then runner.start_profiling() end
   -- parse ast
-  local ast = aster.parse(input, infile)
-
+  local ast = aster.parse(input, inputname)
   -- only checking syntax?
   if config.lint then
     return 0
   end
-
   -- only printing ast?
   if config.print_ast then
     console.info(tostring(ast))
     return 0
   end
-
-  -- this is required here because the config may affect how they load
-  local analyzer = require 'nelua.analyzer'
-  local AnalyzerContext = require 'nelua.analyzercontext'
-
   -- analyze the ast
   local context = AnalyzerContext(analyzer.visitors, ast, config.generator)
   except.try(function()
@@ -106,105 +188,94 @@ local function run(argv, redirect)
   end, function(e)
     e.message = context:get_visiting_traceback(1) .. e:get_message()
   end)
-
+  -- setup benchmark timers
   if config.timing then
     local elapsed = timer:elapsedrestart()
     console.debugf('parse        %.1f ms', aster.parsing_time)
     console.debugf('preprocess   %.1f ms', preprocessor.working_time)
     console.debugf('analyze      %.1f ms', elapsed - aster.parsing_time - preprocessor.working_time)
   end
-  local function print_total_build()
-    if config.timing then
-      console.debug2f('total build  %.1f ms', globaltimer:elapsedrestart())
+  -- only analyzing ast?
+  if config.analyze or config.print_analyzed_ast or config.print_ppcode then
+    if config.print_analyzed_ast then
+      console.info(tostring(ast))
     end
-  end
-
-  if config.print_analyzed_ast then
-    console.info(tostring(ast))
-    print_total_build()
     return 0
   end
-
-  if config.analyze then
-    print_total_build()
-    return 0
-  end
-
   -- generate the code
   local code = generator.generate(context)
-
   if config.timing then
     console.debugf('generate     %.1f ms', timer:elapsedrestart())
   end
-
   -- only printing generated code?
   if config.print_code then
     console.info(code)
-    print_total_build()
     return 0
   end
-
-  -- choose a infile for evals
-  if not infile then infile = 'eval_' .. stringer.hash(code, 8) end
-
+  -- choose a name for generated files
+  local barename
+  if inputname then
+    barename = fs.basename(inputname):gsub('%.[^./\\]+$','') -- remove file extension
+  end
+  if not barename or barename == '' then
+    barename = 'eval_' .. stringer.hash(code, 8)
+  end
   -- save the generated code
-  local outcacheprefix = fs.normcachepath(infile, config.cache_dir)
-  local sourcefile = config.generate_code and config.output or outcacheprefix
+  local outprefix = fs.join(config.cache_dir, barename)
+  local sourcefile = config.code and config.output or outprefix
   if not compiler.has_source_extension(sourcefile) then
-    sourcefile = sourcefile .. compiler.source_extension
+    sourcefile = sourcefile..compiler.source_extension
   end
-  compiler.generate_code(code, sourcefile, context.compileopts)
-
-  local dorun = not config.generate_code and not config.compile_binary
-  local dobinarycompile = config.compile_binary or dorun
-
+  compiler.compile_code(code, sourcefile, context.compileopts)
+  -- only compiling code?
+  if config.code then
+    return 0
+  end
   -- compile the generated code
-  local binaryfile, isexe
-  if dobinarycompile then
-    local binfile = config.output or outcacheprefix
-    binaryfile, isexe = compiler.compile_binary(sourcefile, binfile, context.compileopts)
-
-    if config.timing then
-      console.debugf('compile      %.1f ms', timer:elapsedrestart())
-    end
+  local binfile = config.output or outprefix
+  local outfile, isexe = compiler.compile_binary(sourcefile, binfile, context.compileopts)
+  if config.timing then
+    console.debugf('compile      %.1f ms', timer:elapsedrestart())
   end
-
-  print_total_build()
-
-  -- run
-  if dorun and isexe then
-    local exe, exeargs = compiler.get_run_command(binaryfile, config.runargs, context.compileopts)
-    if config.verbose then console.info(exe .. ' ' .. table.concat(exeargs, ' ')) end
-    local _, status = executor.rexec(exe, exeargs, redirect)
-    if config.timing then
-      console.debugf('run          %.1f ms', timer:elapsedrestart())
-    end
-    return status
+  -- only printing assembly code?
+  if config.print_assembly then
+    console.info(fs.readfile(outfile))
+    return 0
   end
-
-  return 0
+  -- only compiling binaries?
+  if config.compile_only or not isexe then
+    return 0
+  end
+  -- execute binary
+  local exe, exeargs = compiler.get_run_command(outfile, config.runargs, context.compileopts)
+  if config.verbose then console.info(exe .. ' ' .. table.concat(exeargs, ' ')) end
+  local _, status = executor.rexec(exe, exeargs, redirect)
+  if config.timing then
+    console.debugf('run          %.1f ms', timer:elapsedrestart())
+  end
+  return status
 end
 
-function runner.run(argv, redirect)
+function runner.run(args, redirect)
   local status
   except.try(function()
-    status = run(argv, redirect)
-
-    local config = configer.get()
+    status = run(args, redirect)
     if config.on_finish then config.on_finish() end
-    tracker.report()
-  end, function(e)
-    console.logerr(e:get_message())
+    if config.timing then -- show total timing statistics
+      console.debug2f('total time   %.1f ms', globaltimer:elapsedrestart())
+    end
+    tracker.report() -- show tracker statistics in case of any
+  end, function(e) -- got a compile error
+    local msg = e:get_message()
+    if not msg:find('error: ') then
+      console.error(e:get_message())
+    else
+      console.logerr(e:get_message())
+    end
     status = 1
     return true
   end)
-
-  if profiler then --luacov:disable
-    profiler.stop()
-    profiler.report({incl=true, min_usage=0.1})
-    profiler.report({self=true, min_usage=0.1})
-  end --luacov:enable
-
+  runner.stop_profiling()
   return status
 end
 

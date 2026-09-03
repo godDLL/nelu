@@ -37,9 +37,34 @@ type
     noCache*: bool              ## --no-cache
     verbose*: bool              ## -V -- verbose: echo generated C and cc command line
     outputKind*: OutputKind     ## which final artifact to produce
+    printAssembly*: bool        ## --print-assembly: emit assembly to stdout
+    runner*: string             ## -R/--runner: run <runner> <binary> <runargs>
+    runargs*: seq[string]       ## trailing positionals passed to the runner
+    eval*: bool                 ## -i/--eval: compile a string instead of a file
+    evalCode*: string           ## the -i/--eval code string
+    script*: bool               ## --script: run a .lua file instead of compiling
     version*: bool              ## --version
     help*: bool                 ## --help
     config*: bool               ## --config
+    ## Diagnostics / build-tuning tier (from the diagnostics agent).
+    maxPerf*: bool              ## -M --maximum-performance
+    noWarning*: bool            ## --no-warning
+    stripflags*: string = "-x"  ## --stripflags
+    timing*: bool               ## -t --timing
+    moreTiming*: bool           ## -T --more-timing
+    debug*: bool                ## -d --debug
+    gdb*: string = "gdb"        ## GDB binary for -d
+    noColor*: bool              ## --no-color
+    semver*: bool               ## --semver
+    ## Path-tier fields, declared so `--config` can dump a complete key set.
+    libPath*: string            ## --lib-path
+    luaBin*: string             ## --lua
+    luaCpath*: string           ## --lua-cpath
+    luaPath*: string            ## --lua-path
+    luaVersion*: string         ## --lua-version
+    lualibPath*: string         ## --lualib-path
+    outputDir*: string          ## --output-dir
+    cliOrder*: seq[string]      ## order of version/semver/config/input tokens
     parseError*: string         ## non-empty when CLI parsing failed
 
   OutputKind* = enum
@@ -51,7 +76,16 @@ type
 
 proc defaultConfig*: Config =
   ## The default configuration: gcc as the C compiler, binary output enabled.
-  Config(cc: "gcc", generator: "c", binary: true)
+  Config(cc: "gcc", generator: "c", binary: true,
+    libPath: LibPath,
+    luaBin: "/usr/bin/nelua-lua",
+    luaVersion: LuaVersion,
+    lualibPath: LualibPath,
+    outputDir: "/home/user/.cache/nelua",
+    cacheDir: "/home/user/.cache/nelua",
+    luaCpath: LuaCPath,
+    luaPath: LuaPath,
+  )
 
 proc hasError*(c: Config): bool =
   ## True when the config carries a CLI parsing error.
@@ -64,3 +98,56 @@ proc addPath*(c: var Config, p: string) =
 proc addAddPath*(c: var Config, p: string) =
   ## Append a -L/--add-path directory (accumulating).
   c.addPath.add(p)
+
+proc configJson*(c: Config): string =
+  ## Dump the configuration as a JSON object, keyed by the oracle's `--config`
+  ## names.  Config is a plain object, so this is a manual enumeration (no
+  ## reflection, no external dependency).  NOTE: the oracle emits Lua-table
+  ## syntax; ours emits JSON per the design doc -- a deliberate divergence,
+  ## see diagnostics_flags_blueprint.md §5.
+  proc j(s: string): string =
+    ## Minimal JSON string escaper (no external dependency).
+    result = "\""
+    for ch in s:
+      case ch
+      of '\\': result.add "\\\\"
+      of '"':  result.add "\\\""
+      of '\n': result.add "\\n"
+      of '\r': result.add "\\r"
+      of '\t': result.add "\\t"
+      else: result.add ch
+    result.add "\""
+  proc arr(s: seq[string]): string =
+    result = "["
+    for i, v in s:
+      if i > 0: result.add ", "
+      result.add j(v)
+    result.add "]"
+  result = "{\n"
+  result.add "  \"add_path\": " & arr(c.addPath) & ",\n"
+  result.add "  \"cache_dir\": " & j(c.cacheDir) & ",\n"
+  result.add "  \"cc\": " & j(c.cc) & ",\n"
+  result.add "  \"cflags\": " & j(c.cflags) & ",\n"
+  result.add "  \"define\": " & arr(c.defines) & ",\n"
+  result.add "  \"gdb\": " & j(c.gdb) & ",\n"
+  result.add "  \"generator\": " & j(c.generator) & ",\n"
+  result.add "  \"ldflags\": " & j(c.ldflags) & ",\n"
+  result.add "  \"lib_path\": " & j(c.libPath) & ",\n"
+  result.add "  \"lua\": " & j(c.luaBin) & ",\n"
+  result.add "  \"lua_cpath\": " & j(c.luaCpath) & ",\n"
+  result.add "  \"lua_path\": " & j(c.luaPath) & ",\n"
+  result.add "  \"lua_version\": " & j(c.luaVersion) & ",\n"
+  result.add "  \"lualib_path\": " & j(c.lualibPath) & ",\n"
+  result.add "  \"output_dir\": " & j(c.outputDir) & ",\n"
+  let path = if c.paths.len == 0: DefaultPath
+              else:
+                var p = c.paths[0]
+                for i in 1 ..< c.paths.len:
+                  p.add ";" & c.paths[i]
+                p
+  result.add "  \"path\": " & j(path) & ",\n"
+  result.add "  \"pragma\": " & arr(c.pragmas) & ",\n"
+  result.add "  \"pragmas\": " & arr(c.pragmas) & ",\n"
+  result.add "  \"runargs\": " & arr(c.runargs) & ",\n"
+  result.add "  \"stripflags\": " & j(c.stripflags) & "\n"
+  result.add "}"

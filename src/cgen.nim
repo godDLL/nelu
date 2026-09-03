@@ -721,6 +721,33 @@ proc genUnaryOp(s: var Gen, node: Node): string =
   of "&": return "(&" & rstr & ")"     ## ref
   else: return "/*uop " & node.str & "*/"
 
+proc genSpilledCall(s: var Gen, callee: string,
+                    spills: seq[tuple[expr: string, pt: Type, direct: bool]]): string =
+  ## Emit `<callee>(<args>)`, evaluating every argument LEFT-TO-RIGHT by
+  ## assigning each to a named temp inside a GNU statement-expression.  C
+  ## leaves function-argument evaluation order unspecified (in practice
+  ## right-to-left on the x86-64 SysV ABI), so without the spill a
+  ## side-effecting argument could run after the call.  The oracle evaluates
+  ## call arguments left-to-right, so the spill makes the order match.
+  ##
+  ## `direct` args (C `...` varargs) are passed through uncoerced and without
+  ## a temp: a typed temp would impose a promotion C does not apply to variadic
+  ## arguments, and varargs are the tail where ordering is least observable.
+  if spills.len == 0:
+    return callee & "()"
+  var decls: seq[string] = @[]
+  var names: seq[string] = @[]
+  for (expr, pt, direct) in spills:
+    if direct:
+      names.add expr
+    else:
+      inc s.mrCounter
+      let tn = "__ca" & $s.mrCounter
+      let ct = if pt != nil: cType(pt) else: "nlany"
+      decls.add ct & " " & tn & " = " & expr & ";"
+      names.add tn
+  return "({" & decls.join(" ") & " " & callee & "(" & names.join(", ") & "); })"
+
 proc genCall(s: var Gen, node: Node): string =
   let caller = node.children[^1]
   # `require 'name'` is a compile-time directive: the analyzer resolves and
@@ -770,7 +797,12 @@ proc genCall(s: var Gen, node: Node): string =
     calleeType = ca.typ
   elif ca != nil and ca.calleeType != nil:
     calleeType = ca.calleeType
-  var argstrs: seq[string] = @[]
+  # Every argument is spilled to a named temp LEFT-TO-RIGHT inside a GNU
+  # statement-expression (see genSpilledCall).  C leaves function-argument
+  # evaluation order unspecified, so without the spill a side-effecting
+  # argument could run after the call; the oracle evaluates call arguments
+  # left-to-right, so the spill makes the order match.
+  var spills: seq[tuple[expr: string, pt: Type, direct: bool]] = @[]
   for i, arg in args:
     let aes = s.genExpr(arg)
     let at = s.ctx.attrOf.getOrDefault(arg).typ
@@ -778,10 +810,12 @@ proc genCall(s: var Gen, node: Node): string =
     # C8: a `...: cvarargs` slot is a C variadic tail; varargs arguments are
     # passed through uncoerced (C applies its own promotion rules).  Coercing
     # to the cvarargs type itself would emit `(...)(42)`, which is invalid C.
+    # They are also passed DIRECTLY (no temp): a typed temp would impose a
+    # promotion that C does not apply to variadic args.
     if pt != nil and pt.kind == tkCvarargs:
-      argstrs.add aes
+      spills.add (aes, pt, true)
     else:
-      argstrs.add s.coerce(aes, at, pt)
+      spills.add (s.coerce(aes, at, pt), pt, false)
   # C4: record/enum constructor `Rect{ x = 1 }` -> compound literal
   # `((struct <tag>){ .x = 1, .y = 2 })`.
   let na = s.ctx.attrOf.getOrDefault(node)
@@ -811,7 +845,9 @@ proc genCall(s: var Gen, node: Node): string =
   # emit an explicit C cast of the single argument instead of a call expression.
   if ca != nil and ca.calleeType != nil and caller.kind in {nkParen, nkType}:
     let ct = cType(ca.calleeType)
-    let argstr = if args.len > 0: argstrs[0] else: "void"
+    # A type cast has exactly one argument, so left-to-right ordering is
+    # trivial; use its (already coerced) spill expression directly.
+    let argstr = if args.len > 0: spills[0].expr else: "void"
     return "(" & ct & ")(" & argstr & ")"
   # M3: calling a record value `r(...)` dispatches through its `__call`
   # metamethod instead of emitting `<var>(args)` (which C rejects -- a struct
@@ -827,6 +863,11 @@ proc genCall(s: var Gen, node: Node): string =
       ## C7: emit one typed call per argument instead of a single variadic
       ## call.  Coercion is ignored -- each argument is passed to its typed
       ## helper unchanged, so mixed-type argument order is preserved exactly.
+      ##
+      ## Arguments are evaluated LEFT-TO-RIGHT (each `inc()` is its own
+      ## statement, separated by `;`), matching the oracle, which also evaluates
+      ## print args left-to-right.  (A right-to-left spill would print `3 2 1`
+      ## for `print(inc(), inc(), inc())`; the oracle prints `1 2 3`.)
       ##
       ## Every emitted line carries its own trailing semicolon except the final
       ## `nelua_print_newline()`, which has none: genStmt appends exactly one `;`
@@ -903,18 +944,24 @@ proc genCall(s: var Gen, node: Node): string =
         return "nelua_print_newline()"
       lines.add "nelua_print_newline()"
       return lines.join("\n")
-    return cn & "(" & argstrs.join(", ") & ")"
+    return s.genSpilledCall(cn, spills)
   of nkDotIndex:
     let cexpr = s.genExpr(caller)
-    return "(" & cexpr & ")(" & argstrs.join(", ") & ")"
+    return s.genSpilledCall("(" & cexpr & ")", spills)
   of nkColonIndex:
     let recv = s.genExpr(caller.children[0])
     let cn = if ca != nil and ca.codename != "": ca.codename else: cIdent(caller.str)
-    let pre = if argstrs.len > 0: ", " else: ""
-    return cn & "(" & recv & pre & argstrs.join(", ") & ")"
+    # The receiver is the C call's first positional argument; evaluate it
+    # BEFORE the trailing args (left-to-right), so spill it first.
+    let ra = s.ctx.attrOf.getOrDefault(caller.children[0])
+    let rt = if ra != nil: ra.typ else: nil
+    var allSpills: seq[tuple[expr: string, pt: Type, direct: bool]] = @[]
+    allSpills.add (recv, rt, false)
+    allSpills &= spills
+    return s.genSpilledCall(cn, allSpills)
   else:
     let cexpr = s.genExpr(caller)
-    return "(" & cexpr & ")(" & argstrs.join(", ") & ")"
+    return s.genSpilledCall("(" & cexpr & ")", spills)
 
 proc genCallMethod(s: var Gen, node: Node): string =
   let args = node.children[0 ..< node.children.len - 1]
@@ -922,7 +969,12 @@ proc genCallMethod(s: var Gen, node: Node): string =
   let ra = s.ctx.attrOf.getOrDefault(recv)
   let calleeSym = s.ctx.attrOf.getOrDefault(node).calleeSym
   let cn = if calleeSym != nil: calleeSym.codename else: cIdent(node.str)
-  var allargs: seq[string] = @[]
+  let calleeType = s.ctx.attrOf.getOrDefault(node).calleeType
+  # Spill the implicit `self` first, then the explicit args, all evaluated
+  # LEFT-TO-RIGHT inside genSpilledCall's statement-expression.  C leaves
+  # function-argument evaluation order unspecified; the oracle evaluates the
+  # receiver and then the arguments left-to-right.
+  var spills: seq[tuple[expr: string, pt: Type, direct: bool]] = @[]
   let recvStr = s.genExpr(recv)
   if calleeSym != nil and calleeSym.typ != nil and calleeSym.typ.args.len > 0:
     let p0 = calleeSym.typ.args[0]
@@ -932,22 +984,24 @@ proc genCallMethod(s: var Gen, node: Node): string =
       # method's own first param) it is passed unchanged; a value receiver
       # (`r:area()` where `r` is a `Rect` value) is passed by address.
       if ra != nil and ra.typ != nil and ra.typ == p0:
-        allargs.add recvStr
+        spills.add (recvStr, p0, false)
       else:
-        allargs.add "(&" & recvStr & ")"
+        spills.add ("(&" & recvStr & ")", p0, false)
     else:
-      allargs.add recvStr
+      spills.add (recvStr, p0, false)
   else:
-    allargs.add recvStr
-  let calleeType = s.ctx.attrOf.getOrDefault(node).calleeType
+    spills.add (recvStr, nil, false)
   # calleeType.args[0] is the implicit `self`; the explicit args start at [1].
   for i, arg in args:
     let aes = s.genExpr(arg)
     let at = s.ctx.attrOf.getOrDefault(arg).typ
     let ai = if calleeType != nil and i + 1 < calleeType.args.len: i + 1 else: i
     let pt = if calleeType != nil and ai < calleeType.args.len: calleeType.args[ai] else: at
-    allargs.add s.coerce(aes, at, pt)
-  return cn & "(" & allargs.join(", ") & ")"
+    if pt != nil and pt.kind == tkCvarargs:
+      spills.add (aes, pt, true)
+    else:
+      spills.add (s.coerce(aes, at, pt), pt, false)
+  return s.genSpilledCall(cn, spills)
 
 proc genMetaCall(s: var Gen, recv: Node, methodName: string,
                  argNodes: seq[Node] = @[]): string =
@@ -966,26 +1020,33 @@ proc genMetaCall(s: var Gen, recv: Node, methodName: string,
             elif rt != nil and rt.name != "": rt.name & "_" & methodName
             else: "nil"
   let recvStr = s.genExpr(recv)
-  var allargs: seq[string] = @[]
+  # Spill the implicit `self` first, then the explicit args, all evaluated
+  # LEFT-TO-RIGHT inside genSpilledCall's statement-expression (C leaves
+  # function-argument evaluation order unspecified; the oracle evaluates the
+  # receiver and then the arguments left-to-right).
+  var spills: seq[tuple[expr: string, pt: Type, direct: bool]] = @[]
   if md.ftype != nil and md.ftype.args.len > 0:
     let p0 = md.ftype.args[0]
     if p0 != nil and p0.kind == tkPointer:
       # The implicit `self` param is `*Record`.  A value receiver is passed
       # by address; a receiver that is already that pointer is unchanged.
       if rt != nil and rt.kind == tkPointer and rt == p0:
-        allargs.add recvStr
+        spills.add (recvStr, p0, false)
       else:
-        allargs.add "(&" & recvStr & ")"
+        spills.add ("(&" & recvStr & ")", p0, false)
     else:
-      allargs.add recvStr
+      spills.add (recvStr, p0, false)
   else:
-    allargs.add recvStr
+    spills.add (recvStr, nil, false)
   for i, arg in argNodes:
     let aes = s.genExpr(arg)
     let at = s.ctx.attrOf.getOrDefault(arg).typ
     let pt = if md.ftype != nil and i + 1 < md.ftype.args.len: md.ftype.args[i+1] else: at
-    allargs.add s.coerce(aes, at, pt)
-  return cn & "(" & allargs.join(", ") & ")"
+    if pt != nil and pt.kind == tkCvarargs:
+      spills.add (aes, pt, true)
+    else:
+      spills.add (s.coerce(aes, at, pt), pt, false)
+  return s.genSpilledCall(cn, spills)
 
 proc genDotIndex(s: var Gen, node: Node): string =
   let base = node.children[0]
@@ -1383,7 +1444,15 @@ proc genAssign(s: var Gen, node: Node) =
     vtypes.add s.ctx.attrOf.getOrDefault(v).typ
   if values.len == 1 and ntargets > 1 and node.children[ntargets].kind == nkCall:
     let callNode = node.children[ntargets]
-    let rets = s.ctx.callRetTypes.getOrDefault(callNode)
+    var rets = s.ctx.callRetTypes.getOrDefault(callNode)
+    if rets.len == 0:
+      # `callRetTypes` is only populated for a multi-return call that is the
+      # initializer of a multi-decl VarDecl; an assignment `m, n = f()` to
+      # pre-declared locals never sets it, so fall back to the callee's own
+      # return type (its typedef is already collected via calleeType).
+      let ca = s.ctx.attrOf.getOrDefault(callNode)
+      if ca != nil and ca.calleeType != nil:
+        rets = ca.calleeType.returns
     if rets.len == ntargets and rets.len > 1:
       let tag = multiRetTag(rets)
       inc s.mrCounter
@@ -1393,9 +1462,36 @@ proc genAssign(s: var Gen, node: Node) =
         if typeTargets[i]: continue
         s.line targets[i] & " = " & tmp & ".field" & $i & ";"
       return
-  for i in 0 ..< min(targets.len, values.len):
-    if typeTargets[i]: continue
-    s.line targets[i] & " = " & s.coerce(values[i], vtypes[i], ttypes[i]) & ";"
+  # Multi-assignment semantics: the Oracle evaluates the ENTIRE right-hand
+  # side first (every RHS expression reads the pre-assignment values) and only
+  # then assigns the targets left-to-right.  Emitting `a = b; b = a % b;`
+  # inline would let the second RHS expression read the already-updated `a`,
+  # so `a, b = b, a % b` behaves as if `a` on the right were the NEW `a` (the
+  # swap bug: fib(10) prints 1, gcd hangs).  Spill every RHS value into a
+  # temporary BEFORE any target is updated, then assign left-to-right from the
+  # temps.  Single-assignment (`a = e`) and the multi-return-call case above
+  # are untouched; a nil value type (unresolved expression) falls back to the
+  # inline path, which is the pre-existing behavior.
+  var needsTemps = false
+  if targets.len > 1 and values.len > 1:
+    needsTemps = true
+    for vt in vtypes:
+      if vt == nil:
+        needsTemps = false
+        break
+  if needsTemps:
+    inc s.mrCounter
+    let base = "__ma" & $s.mrCounter
+    for i in 0 ..< values.len:
+      if typeTargets[i]: continue
+      s.line cDecl(vtypes[i], base & "_" & $i) & " = " & values[i] & ";"
+    for i in 0 ..< min(targets.len, values.len):
+      if typeTargets[i]: continue
+      s.line targets[i] & " = " & s.coerce(base & "_" & $i, vtypes[i], ttypes[i]) & ";"
+  else:
+    for i in 0 ..< min(targets.len, values.len):
+      if typeTargets[i]: continue
+      s.line targets[i] & " = " & s.coerce(values[i], vtypes[i], ttypes[i]) & ";"
 
 proc genIf(s: var Gen, node: Node) =
   let hasElse = (node.children.len and 1) == 1

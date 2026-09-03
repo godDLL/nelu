@@ -15,12 +15,12 @@ local grammar = [==[
 chunk           <-- SHEBANG? SKIP Block (!.)^UnexpectedSyntax
 
 Block           <==(local / global /
-                    FuncDef / Return /
+                    FuncDef / Return / In /
                     Do / Defer /
                     If / Switch /
                     for /
                     While / Repeat /
-                    Break / Continue /
+                    Break / Continue / Fallthrough /
                     Goto / Label /
                     Preprocess /
                     Assign / call /
@@ -29,8 +29,10 @@ Block           <==(local / global /
 -- Statements
 Label           <== `::` @name @`::`
 Return          <== `return` (expr (`,` @expr)*)?
+In              <== `in` @expr
 Break           <== `break`
 Continue        <== `continue`
+Fallthrough     <== `fallthrough`
 Goto            <== `goto` @name
 Do              <== `do` Block @`end`
 Defer           <== `defer` Block @`end`
@@ -49,8 +51,8 @@ localfunc  : FuncDef  <== `function` $'local' @namedecl @funcbody
 globalfunc : FuncDef  <== `function` $'global' @namedecl @funcbody
 FuncDef         <== `function` $false @funcname @funcbody
 funcbody        <-- `(` funcargs @`)` (`:` @funcrets)~? annots~? Block @`end`
-localvar   : VarDecl  <== $'local' @iddecls (`=` @exprs)?
-globalvar  : VarDecl  <== $'global' @globaldecls (`=` @exprs)?
+localvar   : VarDecl  <== $'local' @suffixeddecls (`=` @exprs)?
+globalvar  : VarDecl  <== $'global' @suffixeddecls (`=` @exprs)?
 Assign          <== vars `=` @exprs
 Preprocess      <== PREPROCESS SKIP
 
@@ -63,9 +65,9 @@ Nil             <== `nil`
 Varargs         <== `...`
 Id              <== name
 IdDecl          <== name (`:` @typeexpr)~? annots?
-typeddecl  : IdDecl <== name `:` @typeexpr annots?
-globaldecl : IdDecl <== (idsuffixed / name) (`:` @typeexpr)~? annots?
-globaldeclexpr  <-- globaldecl / PreprocessExpr
+typeddecl    : IdDecl <== name `:` @typeexpr annots?
+suffixeddecl : IdDecl <== (idsuffixed / name) (`:` @typeexpr)~? annots?
+suffixeddeclexpr  <-- suffixeddecl / PreprocessExpr
 namedecl   : IdDecl <== name
 Function        <== `function` @funcbody
 InitList        <== `{` (field (fieldsep field)* fieldsep?)? @`}`
@@ -80,6 +82,7 @@ Annotation      <== name annotargs?
 -- Preprocessor replaceable nodes
 PreprocessExpr  <== `#[` {@expr->0} @`]#`
 PreprocessName  <== `#|` {@expr->0} @`|#`
+ppcallprim : PreprocessExpr <== {NAME->0} `!` &callsuffix
 
 -- Suffixes
 Call            <== callargs
@@ -103,7 +106,7 @@ callargs        <-| `(` (expr (`,` @expr)*)? @`)` / InitList / String
 annotargs       <-| `(` (expr (`,` @expr)*)? @`)` / InitList / String / PreprocessExpr
 iddecls         <-| iddecl (`,` @iddecl)*
 funcargs        <-| (iddecl (`,` iddecl)* (`,` VarargsType)? / VarargsType)?
-globaldecls     <-| globaldeclexpr (`,` @globaldeclexpr)*
+suffixeddecls   <-| suffixeddeclexpr (`,` @suffixeddeclexpr)*
 exprs           <-| expr (`,` @expr)*
 annots          <-| `<` @Annotation (`,` @Annotation)* @`>`
 funcrets        <-| `(` typeexpr (`,` @typeexpr)* @`)` / typeexpr
@@ -141,8 +144,8 @@ exprfact        <-- (exprunary opfact*)~>foldleft
 exprunary       <-- opunary / exprpow
 exprpow         <-- (exprsimple oppow*)~>foldleft
 exprsimple      <-- Number / String / Type / InitList / Boolean /
-                    Function / Nilptr / Nil / DoExpr / Varargs / exprsuffixed
-exprprim        <-- id / Paren
+                    Function / Nilptr / Nil / Varargs / exprsuffixed
+exprprim        <-- ppcallprim / id / DoExpr / Paren
 
 -- Types
 RecordType      <== 'record' WORDSKIP @`{` (RecordField (fieldsep RecordField)* fieldsep?)? @`}`
@@ -171,7 +174,7 @@ typeopptr : PointerType   <== `*`
 typeopopt : OptionalType  <== `?`
 typeoparr : ArrayType     <== `[` expr? @`]`
 typeopvar : VariantType   <== typevaris
-typeopgen : GenericType   <== `(` @typeargs @`)`
+typeopgen : GenericType   <== `(` @typeargs @`)` / &`{` {| InitList |}
 typevaris : VariantType   <== `|` @typeexprunary (`|` @typeexprunary)*
 
 typeopunary     <-- typeopptr / typeopopt / typeoparr
@@ -224,7 +227,7 @@ COMMENT_SHRT    <-- (!LINEBREAK .)*
 
 -- Preprocess
 PREPROCESS      <-- '##' (PREPROCESS_LONG / PREPROCESS_SHRT)
-PREPROCESS_LONG <-- {:LONG_OPEN {LONG_CONTENT} @LONG_CLOSE:}
+PREPROCESS_LONG <-- {:'[' {:eq: '='*:} '[' {LONG_CONTENT} @LONG_CLOSE:}
 PREPROCESS_SHRT <-- {(!LINEBREAK .)*} LINEBREAK?
 
 -- Long (used by string, comment and preprocess)
@@ -250,12 +253,12 @@ EXTRA_TOKENS    <-- `[[` `[=` `--` `##` -- Force defining these tokens.
 
 -- List of syntax errors.
 local errors = {
+["Expected_end"]            = "unexpected statement syntax, did you forgot an `end` or are using an invalid syntax?",
+["Expected_until"]          = "unexpected statement syntax, did you forgot an `until` or are using an invalid syntax?",
 ["Expected_do"]             = "expected `do` keyword to begin a statement block",
 ["Expected_then"]           = "expected `then` keyword to begin a statement block",
-["Expected_end"]            = "expected `end` keyword to close a statement block",
-["Expected_until"]          = "expected `until` keyword to close a `repeat` statement",
-["Expected_cases"]          = "expected `case` keyword in `switch` statement",
 ["Expected_in"]             = "expected `in` keyword in `for` statement",
+["Expected_cases"]          = "expected `case` keyword in `switch` statement",
 ["Expected_Annotation"]     = "expected an annotation expression",
 ["Expected_expr"]           = "expected an expression",
 ["Expected_exprand"]        = "expected an expression after operator",
@@ -269,8 +272,10 @@ local errors = {
 ["Expected_exprunary"]      = "expected an expression after operator",
 ["Expected_name"]           = "expected an identifier name",
 ["Expected_namedecl"]       = "expected an identifier name",
-["Expected_Id"]             = "expected an identifier name",
-["Expected_IdDecl"]         = "expected an identifier declaration",
+["Expected_id"]             = "expected an identifier name",
+["Expected_iddecl"]         = "expected an identifier declaration",
+["Expected_suffixeddeclexpr"] = "expected an declaration expression",
+["Expected_suffixeddecls"]  = "expected an declaration expression",
 ["Expected_typearg"]        = "expected an argument in type expression",
 ["Expected_typeexpr"]       = "expected a type expression",
 ["Expected_typeexprunary"]  = "expected a type expression",
@@ -316,9 +321,10 @@ end
 
 -- The syntaxdefs module.
 local syntaxdefs = {
+  extension = 'nelua',
   errors = errors,
   grammar = grammar,
-  defs = defs
+  defs = defs,
 }
 
 return syntaxdefs

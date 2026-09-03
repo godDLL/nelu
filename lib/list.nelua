@@ -8,7 +8,6 @@ use a vector or sequence in that case.
 ]]
 
 require 'memory'
-require 'iterators'
 
 ## local function make_listT(T, Allocator)
   ## static_assert(traits.is_type(T), "invalid type '%s'", T)
@@ -44,7 +43,7 @@ require 'iterators'
   -- Concept matching fixed arrays of T.
   local an_arrayT: type = #[concept(function(x)
     if x.type:is_array_of(T) then
-      return true
+      return types.PointerType(x.type)
     end
     return false, string.format("no viable conversion from '%s' to '%s'", x.type, vectorT)
   end, function(node)
@@ -132,15 +131,11 @@ require 'iterators'
   --[[
   Inserts an element before element node `pos`.
   Returns the inserted element node reference.
-  If `pos` is not set, then the element is added at the end of the list.
+  If `pos` is `nilptr`, then the element is added at the end of the list.
 
   *Complexity*: O(1).
   ]]
-  function listT:insert(value: T, pos: facultative(*listnodeT)): *listnodeT
-    ## if pos.type.is_niltype then
-    self:pushback(value)
-    return self.back
-    ## else
+  function listT:insert(pos: *listnodeT, value: T): *listnodeT
     if not pos then
       self:pushback(value)
       return self.back
@@ -156,7 +151,6 @@ require 'iterators'
       node.value = value
       return node
     end
-    ## end
   end
 
   --[[
@@ -267,7 +261,7 @@ require 'iterators'
   Returns the next node of the list and its element.
   Used with `pairs()` iterator.
   ]]
-  function listT:__next(node: *listnodeT): (boolean, *listnodeT, T) <inline>
+  function listT:__next(node: *listnodeT): (boolean, *listnodeT, T)
     local nextnode: *listnodeT
     if unlikely(node == nilptr) then
       nextnode = self.front
@@ -284,7 +278,7 @@ require 'iterators'
   Returns the next node of the list and its element by reference.
   Used with `mpairs()` iterator.
   ]]
-  function listT:__mnext(node: *listnodeT): (boolean, *listnodeT, *T) <inline>
+  function listT:__mnext(node: *listnodeT): (boolean, *listnodeT, *T)
     local nextnode: *listnodeT
     if unlikely(node == nilptr) then
       nextnode = self.front
@@ -330,3 +324,8 @@ Argument `Allocator` is an allocator type for the container storage,
 in case absent then then `DefaultAllocator` is used.
 ]]
 global list: type = #[generalize(make_listT)]#
+
+-- Expose iterators to use with lists.
+require 'iterators'
+
+return list

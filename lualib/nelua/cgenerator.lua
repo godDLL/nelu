@@ -2,6 +2,7 @@ local CEmitter = require 'nelua.cemitter'
 local iters = require 'nelua.utils.iterators'
 local traits = require 'nelua.utils.traits'
 local stringer = require 'nelua.utils.stringer'
+local tabler = require 'nelua.utils.tabler'
 local bn = require 'nelua.utils.bn'
 local pegger = require 'nelua.utils.pegger'
 local cdefs = require 'nelua.cdefs'
@@ -60,10 +61,21 @@ cgenerator.typevisitors = typevisitors
 
 typevisitors[types.ArrayType] = function(context, type)
   local decemitter = CEmitter(context)
-  decemitter:add('typedef struct')
+  context:ensure_builtin('NELUA_MAYALIAS')
+  decemitter:add('typedef struct NELUA_MAYALIAS')
   decemitter:add_type_qualifiers(type)
-  local len = math.max(type.length, typedefs.emptysize)
-  decemitter:add_ln(' ', type.codename, ' {', type.subtype, ' v[', len, '];} ', type.codename, ';')
+  local array_type = type
+  local len_part = ''
+  while array_type and array_type.is_array do
+    local len = math.max(array_type.length, typedefs.emptysize)
+    len_part = len_part..'['..len..']'
+    array_type = array_type.is_array and array_type.subtype
+  end
+  decemitter:add_ln(' ', type.codename, ' {', type.inner_subtype, ' v',len_part,';} ', type.codename, ';')
+  decemitter:add_ln('typedef union NELUA_MAYALIAS ', type.codename, '_cast {',
+    type.codename, ' a; ',
+    type.inner_subtype, ' p',len_part,';',
+    '} ', type.codename, '_cast;')
   if type.size and type.size > 0 and not context.pragmas.nocstaticassert then
     context:ensure_builtins('NELUA_STATIC_ASSERT', 'NELUA_ALIGNOF')
     decemitter:add_ln('NELUA_STATIC_ASSERT(sizeof(',type.codename,') == ', type.size, ' && ',
@@ -74,6 +86,7 @@ typevisitors[types.ArrayType] = function(context, type)
 end
 
 typevisitors[types.PointerType] = function(context, type)
+  if context.ctypedefs[type.codename] then return end
   local decemitter = CEmitter(context)
   local subtype = type.subtype
   if type.is_unbounded_pointer then
@@ -88,6 +101,8 @@ typevisitors[types.PointerType] = function(context, type)
     table.insert(context.latedecls, subtype)
     context.ctypedefs[subcodename] = true
     decemitter:add_ln('typedef ', subcodename, '* ', type.codename, ';')
+  elseif context.ctypedefs[subcodename] then
+    decemitter:add_ln('typedef ', subcodename, '* ', type.codename, ';')
   else
     decemitter:add_ln('typedef ', subtype, '* ', type.codename, ';')
   end
@@ -95,12 +110,13 @@ typevisitors[types.PointerType] = function(context, type)
 end
 
 local function typevisitor_CompositeType(context, type)
-  local decemitter = CEmitter(context)
   local kindname = type.is_record and 'struct' or 'union'
   if not context.ctypedefs[type.codename] and not context.pragmas.noctypedefs then
+    local decemitter = CEmitter(context)
     decemitter:add_ln('typedef ', kindname, ' ', type.codename, ' ', type.codename, ';')
+    table.insert(context.declarations, decemitter:generate())
+    context.ctypedefs[type.codename] = true
   end
-  table.insert(context.declarations, decemitter:generate())
   local defemitter = CEmitter(context)
   defemitter:add(kindname)
   defemitter:add_type_qualifiers(type)
@@ -166,6 +182,10 @@ end
 
 typevisitors[types.NiltypeType] = function(context)
   context:ensure_builtin('nlniltype')
+end
+
+typevisitors[types.TypeType] = function(context)
+  context:ensure_builtin('nltype')
 end
 
 typevisitors.FunctionReturnType = function(context, functype)
@@ -341,11 +361,11 @@ function visitors.InitList(_, node, emitter, untypedinit)
               if j > 1 then
                 emitter:add_text(', ')
               end
-              emitter:add_converted_val(fieldtype.subtype, arrchildnode, nil, nil, arrchildnode.attr.comptime)
+              emitter:add_converted_val(fieldtype.subtype, arrchildnode, nil, nil, true)
             end
             emitter:add_text('}')
           else
-            emitter:add_converted_val(fieldtype, childvalnode, nil, nil, childvalnode.attr.comptime)
+            emitter:add_converted_val(fieldtype, childvalnode, nil, nil, true)
           end
         end
         emitter:add_text('}')
@@ -369,7 +389,7 @@ function visitors.InitList(_, node, emitter, untypedinit)
           assert(field)
           local childvaltype = childvalnode.attr.type
           if childvaltype.is_array then
-            emitter:add_indent('(*(', childvaltype, '*)_tmp.', field.name, ') = ')
+            emitter:add_indent('((', childvaltype, '_cast*)&_tmp.', field.name, ')->a = ')
           else
             emitter:add_indent('_tmp.', field.name, ' = ')
           end
@@ -393,7 +413,7 @@ function visitors.InitList(_, node, emitter, untypedinit)
         if i > 1 then
           emitter:add_text(', ')
         end
-        emitter:add_converted_val(subtype, childnode, nil, nil, childnode.attr.comptime)
+        emitter:add_converted_val(subtype, childnode, nil, nil, true)
       end
       if untypedinit then
         emitter:add_text('}')
@@ -406,7 +426,11 @@ function visitors.InitList(_, node, emitter, untypedinit)
       emitter:add_zeroed_type_literal(type)
       emitter:add_ln(';')
       for i=1,#childnodes do
-        emitter:add_indent('_tmp.v[', i-1 ,'] = ')
+        if subtype.is_array then
+          emitter:add_indent('((', subtype, '_cast*)&_tmp.v[', i-1 ,'])->a = ')
+        else
+          emitter:add_indent('_tmp.v[', i-1 ,'] = ')
+        end
         emitter:add_converted_val(subtype, childnodes[i])
         emitter:add_ln(';')
       end
@@ -414,7 +438,8 @@ function visitors.InitList(_, node, emitter, untypedinit)
       emitter:dec_indent() emitter:add_indent('})')
     end
   else --luacov:disable
-    error('not implemented yet')
+    assert(type.is_table)
+    node:raisef('table literals is not implemented yet')
   end --luacov:enable
 end
 
@@ -422,9 +447,19 @@ end
 function visitors.Directive(context, node, emitter)
   local name, args = node[1], node[2]
   if name == 'cinclude' then
-    context:ensure_include(args[1])
+    local code = args[1]
+    if traits.is_function(code) then
+      local decemitter = CEmitter(context)
+      code(decemitter)
+      code = decemitter:generate()
+      context:add_directive(code)
+    else
+      context:ensure_include(code)
+    end
   elseif name == 'cfile' then
     context:ensure_cfile(args[1])
+  elseif name == 'cincdir' then
+    context:ensure_cincdir(args[1])
   elseif name == 'cemit' then
     local code = args[1]
     if traits.is_string(code) then
@@ -441,9 +476,8 @@ function visitors.Directive(context, node, emitter)
       code(decemitter)
       code = decemitter:generate()
     end
-    -- actually add in the directives section (just above declarations section)
-    context:add_directive(code)
-  elseif name == 'cemitdef' then
+    context:add_declaration(code)
+  elseif name == 'cemitdefn' then
     local code = args[1]
     if traits.is_string(code) then
       code = stringer.ensurenewline(code)
@@ -459,12 +493,18 @@ function visitors.Directive(context, node, emitter)
     table.insert(context.compileopts.cflags, args[1])
   elseif name == 'ldflags' then
     table.insert(context.compileopts.ldflags, args[1])
+  elseif name == 'stripflags' then
+    table.insert(context.compileopts.stripflags, args[1])
   elseif name == 'linklib' then
     context:ensure_linklib(args[1])
+  elseif name == 'linkdir' then
+    context:ensure_linkdir(args[1])
   elseif name == 'pragmapush' then
     context:push_forked_pragmas(args[1])
   elseif name == 'pragmapop' then
     context:pop_pragmas()
+  elseif name == 'pragma' then
+    tabler.update(context.pragmas, args[1])
   end
 end
 
@@ -472,9 +512,10 @@ end
 function visitors.Id(context, node, emitter, untypedinit)
   local attr = node.attr
   local type = attr.type
-  assert(not type.is_comptime)
   if type.is_nilptr then
     emitter:add_null()
+  elseif type.is_niltype then
+    emitter:add_nil_literal()
   elseif attr.comptime then
     emitter:add_literal(attr, untypedinit)
   else
@@ -584,7 +625,11 @@ local function visitor_Call(context, node, emitter, argnodes, callee, calleeobjn
       emitter:add_value(callee)
     end
     emitter:add_text('(')
-    emitter:add_converted_val(selftype, calleeobj, calleeobjtype)
+    if attr.ismetacall then
+      emitter:add_converted_val(selftype, node[2], calleeobjtype)
+    else
+      emitter:add_converted_val(selftype, calleeobj, calleeobjtype)
+    end
   else
     emitter:add_value(callee)
     emitter:add_text('(')
@@ -647,11 +692,15 @@ function visitors.Call(context, node, emitter, untyped)
   else -- usual function call
     local callee = calleenode
     local calleeattr = calleenode.attr
+    local calleesym = attr.calleesym
     if calleeattr.builtin then -- is a builtin call?
       local builtin = cbuiltins.calls[calleeattr.name]
       callee = builtin(context, node, emitter)
-    elseif attr.calleesym then
-      callee = attr.calleesym
+    elseif calleesym then
+      if calleesym.type.is_function then -- force declaration of functions
+        emitter:fork():add(calleenode)
+      end
+      callee = calleesym
     end
     if callee then -- call not omitted?
       visitor_Call(context, node, emitter, argnodes, callee)
@@ -670,7 +719,16 @@ function visitors.DotIndex(context, node, emitter, untypedinit)
   local attr = node.attr
   local objnode = node[2]
   local objtype = objnode.attr.type
-  if attr.comptime then -- compile-time constant
+  if objnode.attr.requirename then -- require call
+    local rollbackpos = emitter:get_pos()
+    emitter:add_indent()
+    emitter:add(objnode)
+    if emitter:get_pos() == rollbackpos+1 then
+      emitter:rollback(rollbackpos) -- revert text added
+    else
+      emitter:add(';')
+    end
+  elseif attr.comptime then -- compile-time constant
     emitter:add_literal(attr, untypedinit)
   elseif objtype.is_type then -- global field
     emitter:add(context:declname(attr))
@@ -678,7 +736,7 @@ function visitors.DotIndex(context, node, emitter, untypedinit)
     local type = attr.type
     local castarray = type.is_array and not attr.arrayindex
     if castarray then
-      emitter:add('(*(', type, '*)')
+      emitter:add('(((', type, '_cast*)&')
     end
     local name = attr.dotfieldname or node[1]
     if objtype.is_pointer then
@@ -687,7 +745,7 @@ function visitors.DotIndex(context, node, emitter, untypedinit)
       emitter:add(objnode, '.', cdefs.quotename(name))
     end
     if castarray then
-      emitter:add(')')
+      emitter:add(')->a)')
     end
   end
 end
@@ -701,6 +759,7 @@ end
 function visitors.KeyIndex(context, node, emitter)
   local indexnode, objnode = node[1], node[2]
   local objattr = objnode.attr
+  local type = node.attr.type
   local objtype = objattr.type
   local pointer = false
   if objtype.is_pointer and objtype.subtype then -- indexing a pointer to an array
@@ -712,8 +771,18 @@ function visitors.KeyIndex(context, node, emitter)
     while topobjnode.is_KeyIndex do
       topobjnode = topobjnode[2]
     end
+    local castarray
+    if type.is_array then
+      local parent_node = context:get_visiting_node(1)
+      if not parent_node.is_KeyIndex or not parent_node[2].attr.type.is_array then
+        emitter:add('(((', type, '_cast*)&')
+        castarray = true
+      end
+    end
     if (pointer and objtype.length == 0) or -- unbounded array
-       (topobjnode.is_DotIndex and topobjnode[2].attr.type.is_composite) then -- record/union array field
+       (not pointer and objnode.is_KeyIndex and objnode.attr.type.is_array) or -- multidimensional index
+       (not pointer and topobjnode.is_DotIndex and topobjnode[2].attr.type:implicit_deref_type().is_composite) then
+      -- record/union array field
       objattr.arrayindex = true
       emitter:add(objnode, '[')
     elseif pointer then -- pointer to bounded array
@@ -727,8 +796,12 @@ function visitors.KeyIndex(context, node, emitter)
     else
       emitter:add(indexnode, ']')
     end
+    if castarray then
+      emitter:add(')->a)')
+    end
   else --luacov:disable
-    error('not implemented yet')
+    assert(objtype.is_table)
+    node:raisef('table indexing is not implemented yet')
   end --luacov:enable
 end
 
@@ -737,7 +810,13 @@ function visitors.Block(context, node, emitter)
   local scope = context:push_forked_scope(node)
   emitter:inc_indent()
   emitter:add_list(node, '')
-  cgenerator.emit_close_scope(context, emitter, scope)
+  if scope.parent.is_repeat_loop then
+    scope.parent.emit_repeat_stop(emitter)
+  end
+  local laststat = node[#node]
+  if laststat and not laststat.is_breakflow then
+    cgenerator.emit_close_scope(context, emitter, scope, true)
+  end
   emitter:dec_indent()
   context:pop_scope()
 end
@@ -747,98 +826,112 @@ function visitors.Return(context, node, emitter)
   local deferemitter = emitter:fork()
   -- close parent blocks before returning
   local scope = context.scope
-  local retscope = scope:get_up_return_scope()
+  local retscope = scope:get_up_function_scope()
   cgenerator.emit_close_upscopes(context, deferemitter, scope, retscope)
-  if retscope.is_doexpr then -- inside a do expression
+  local funcscope = context.state.funcscope
+  assert(funcscope == retscope)
+  local functype = funcscope.funcsym and funcscope.funcsym.type
+  local numrets = functype and #functype.rettypes or #node
+  if numrets == 0 then -- no returns
+    emitter:add_value(deferemitter)
+    if retscope.is_root then -- main must always return an integer
+      emitter:add_indent_ln('return 0;')
+    else
+      emitter:add_indent_ln('return;')
+    end
+  elseif numrets == 1 then -- one return
     local retnode = node[1]
-    emitter:add_indent_ln('_expr = ', retnode, ';')
-    emitter:add(deferemitter)
-    local needgoto = true
-    if context:get_visiting_node(2).is_DoExpr then
-      local blockstats = context:get_visiting_node(1)
-      if node == blockstats[#blockstats] then -- last statement does not need goto
-        needgoto = false
+    local rettype
+    if retscope.is_root then
+      rettype = retscope.rettypes and retscope.rettypes[1] or primtypes.cint
+      if rettype and not rettype.is_integral then
+        node:raisef("main cannot return value of type '%s', only integral numbers can be returned", rettype)
       end
+    else
+      rettype = functype:get_return_type(1)
     end
-    if needgoto then
-      local doexprlabel = retscope.doexprlabel
-      if not doexprlabel then
-        doexprlabel = context.scope:get_up_function_scope():generate_name('_doexprlabel')
-        retscope.doexprlabel = doexprlabel
-      end
-      emitter:add_indent_ln('goto ', doexprlabel, ';')
-    end
-  else -- returning from a function
-    local funcscope = context.state.funcscope
-    assert(funcscope == retscope)
-    local functype = funcscope.funcsym and funcscope.funcsym.type
-    local numrets = functype and #functype.rettypes or #node
-    if numrets == 0 then -- no returns
+    if not deferemitter:empty() and not (retnode and retnode.attr.comptime) then
+      local retname = funcscope:generate_name('_ret')
+      emitter:add_indent(rettype, ' ', retname, ' = ')
+      emitter:add_converted_val(rettype, retnode)
+      emitter:add_ln(';')
       emitter:add_value(deferemitter)
-      if retscope.is_root then -- main must always return an integer
-        emitter:add_indent_ln('return 0;')
-      else
-        emitter:add_indent_ln('return;')
+      emitter:add_indent_ln('return ', retname, ';')
+    else
+      emitter:add_value(deferemitter)
+      emitter:add_indent('return ')
+      emitter:add_converted_val(rettype, retnode, nil, true)
+      emitter:add_ln(';')
+    end
+  else -- multiple returns
+    if retscope.is_root then
+      node:raisef("multiple returns in main is not supported")
+    end
+    local funcrettypename = context:funcrettypename(functype)
+    local multiretvalname, retname, retemitter
+    local sideeffects = not deferemitter:empty() or node:recursive_has_attr('sideeffect')
+    if sideeffects then
+      retname = funcscope:generate_name('_mulret')
+      emitter:add_indent_ln(funcrettypename, ' ', retname, ';')
+    else -- no side effects
+      retemitter = emitter:fork()
+      retemitter:add_indent('return (', funcrettypename, '){')
+    end
+    for i,funcrettype,retnode,rettype,lastcallindex in izipargnodes(functype.rettypes, node) do
+      if not sideeffects and i > 1 then
+        retemitter:add(', ')
       end
-    elseif numrets == 1 then -- one return
-      local retnode = node[1]
-      local rettype = retscope.is_root and primtypes.cint or functype:get_return_type(1)
-      if not deferemitter:empty() and retnode and not retnode.is_Id and not retnode.attr.comptime then
-        local retname = funcscope:generate_name('_ret')
-        emitter:add_indent(rettype, ' ', retname, ' = ')
-        emitter:add_converted_val(rettype, retnode)
-        emitter:add_ln(';')
-        emitter:add_value(deferemitter)
-        emitter:add_indent_ln('return ', retname, ';')
-      else
-        emitter:add_value(deferemitter)
-        emitter:add_indent('return ')
-        emitter:add_converted_val(rettype, retnode, nil, true)
-        emitter:add_ln(';')
+      if lastcallindex == 1 then -- last assignment value may be a multiple return call
+        multiretvalname = funcscope:generate_name('_ret')
+        local rettypename = context:funcrettypename(retnode.attr.calleetype)
+        emitter:add_indent_ln(rettypename, ' ', multiretvalname, ' = ', retnode, ';')
       end
-    else -- multiple returns
-      if retscope.is_root then
-        node:raisef("multiple returns in main is not supported")
-      end
-      local funcrettypename = context:funcrettypename(functype)
-      local multiretvalname, retname, retemitter
-      local sideeffects = not deferemitter:empty() or node:recursive_has_attr('sideeffect')
-      if sideeffects then
-        retname = funcscope:generate_name('_mulret')
-        emitter:add_indent_ln(funcrettypename, ' ', retname, ';')
-      else -- no side effects
-        retemitter = emitter:fork()
-        retemitter:add_indent('return (', funcrettypename, '){')
-      end
-      for i,funcrettype,retnode,rettype,lastcallindex in izipargnodes(functype.rettypes, node) do
-        if not sideeffects and i > 1 then
-          retemitter:add(', ')
-        end
-        if lastcallindex == 1 then -- last assignment value may be a multiple return call
-          multiretvalname = funcscope:generate_name('_ret')
-          local rettypename = context:funcrettypename(retnode.attr.calleetype)
-          emitter:add_indent_ln(rettypename, ' ', multiretvalname, ' = ', retnode, ';')
-        end
-        local retvalname = retnode
-        if lastcallindex then
-          retvalname = string.format('%s.r%d', multiretvalname, lastcallindex)
-        end
-        if sideeffects then
-          emitter:add_indent(string.format('%s.r%d', retname, i), ' = ')
-          emitter:add_converted_val(funcrettype, retvalname, rettype)
-          emitter:add_ln(';')
-        else
-          retemitter:add_converted_val(funcrettype, retvalname, rettype)
-        end
+      local retvalname = retnode
+      if lastcallindex then
+        retvalname = string.format('%s.r%d', multiretvalname, lastcallindex)
       end
       if sideeffects then
-        emitter:add(deferemitter)
-        emitter:add_indent_ln('return ', retname, ';')
-      else -- no side effects
-        retemitter:add_ln('};')
-        emitter:add(retemitter)
+        emitter:add_indent(string.format('%s.r%d', retname, i), ' = ')
+        emitter:add_converted_val(funcrettype, retvalname, rettype)
+        emitter:add_ln(';')
+      else
+        retemitter:add_converted_val(funcrettype, retvalname, rettype)
       end
     end
+    if sideeffects then
+      emitter:add(deferemitter)
+      emitter:add_indent_ln('return ', retname, ';')
+    else -- no side effects
+      retemitter:add_ln('};')
+      emitter:add(retemitter)
+    end
+  end
+end
+
+-- Emits `in` statement.
+function visitors.In(context, node, emitter)
+  -- close parent blocks before returning
+  local scope = context.scope
+  local exprscope = scope:get_up_doexpr_scope()
+  local deferemitter = emitter:fork()
+  cgenerator.emit_close_upscopes(context, deferemitter, scope, exprscope)
+  local retnode = node[1]
+  emitter:add_indent_ln('_expr = ', retnode, ';')
+  emitter:add(deferemitter)
+  local needgoto = true
+  if context:get_visiting_node(2).is_DoExpr then
+    local blockstats = context:get_visiting_node(1)
+    if node == blockstats[#blockstats] then -- last statement does not need goto
+      needgoto = false
+    end
+  end
+  if needgoto then
+    local doexprlabel = exprscope.doexprlabel
+    if not doexprlabel then
+      doexprlabel = context.scope:get_up_function_scope():generate_name('_doexprlabel')
+      exprscope.doexprlabel = doexprlabel
+    end
+    emitter:add_indent_ln('goto ', doexprlabel, ';')
   end
 end
 
@@ -878,7 +971,7 @@ function visitors.Switch(context, node, emitter)
     emitter:add_indent_ln("case ", caseexprs[#caseexprs], ': {') -- last case
     emitter:add(caseblock) -- block
     local laststmt = caseblock[#caseblock]
-    if not laststmt or not (laststmt.is_Return or laststmt.is_Continue or laststmt.is_Break) then
+    if not laststmt or not laststmt.is_breakflow then
       emitter:add_indent_ln('  break;')
     end
     emitter:add_indent_ln("}")
@@ -887,7 +980,7 @@ function visitors.Switch(context, node, emitter)
     emitter:add_indent_ln('default: {')
     emitter:add(elsenode)
     local laststmt = elsenode[#elsenode]
-    if not laststmt or not (laststmt.is_Return or laststmt.is_Continue or laststmt.is_Break) then
+    if not laststmt or not laststmt.is_breakflow then
       emitter:add_indent_ln('  break;')
     end
     emitter:add_indent_ln("}")
@@ -914,15 +1007,24 @@ end
 function visitors.DoExpr(context, node, emitter)
   local attr = node.attr
   local isstatement = context:get_visiting_node(1).is_Block
-  if isstatement then -- a macros could have replaced a statement with do exprs
-    if attr.noop then -- skip macros without operations
-      return true
+  if isstatement then
+    if #node[1] == 0 then -- no statements
+      return
     end
+    emitter:add_indent()
   end
   local blocknode = node[1]
-  if blocknode[1].is_Return then -- single statement
+  if blocknode[1] and blocknode[1].is_In then -- single statement
     emitter:add(blocknode[1][1])
+  elseif not attr.type then
+    assert(isstatement)
+    emitter:add_ln("{") emitter:inc_indent()
+    context:push_forked_scope(node)
+    emitter:add(blocknode)
+    context:pop_scope()
+    emitter:dec_indent() emitter:add_indent("}")
   else -- multiple statements
+    assert(attr.type)
     emitter:add_ln("({") emitter:inc_indent()
     emitter:add_indent_ln(attr.type, ' _expr;')
     emitter:dec_indent()
@@ -967,21 +1069,27 @@ end
 -- Emits `repeat` statement.
 function visitors.Repeat(context, node, emitter)
   local blocknode, condnode = node[1], node[2]
-  emitter:add_indent_ln("while(1) {")
-  local scope = context:push_forked_scope(node)
-  emitter:add(blocknode)
+  emitter:add_indent_ln("{")
   emitter:inc_indent()
-  emitter:add_indent('if(')
-  emitter:add_val2boolean(condnode)
-  emitter:add_ln(') {')
-  emitter:add_indent_ln('  break;')
-  emitter:add_indent_ln('}')
+  context:ensure_type(primtypes.boolean)
+  emitter:add_indent_ln("bool _repeat_stop;")
+  emitter:add_indent_ln("do {")
+  local scope = context:push_forked_scope(node)
+  scope.emit_repeat_stop = function(block_emitter)
+    context:push_node(node) -- to fix get_visiting_node() call
+    block_emitter:add_indent('_repeat_stop = ')
+    block_emitter:add_val2boolean(condnode)
+    block_emitter:add_ln(';')
+    context:pop_node(node)
+  end
+  emitter:add(blocknode)
   context:pop_scope()
+  emitter:add_indent_ln('} while(!_repeat_stop);')
   emitter:dec_indent()
-  emitter:add_indent_ln('}')
   if scope.breaklabel then
     emitter:add_indent_ln(scope.breaklabel, ':;')
   end
+  emitter:add_indent_ln('}')
 end
 
 -- Emits numeric `for` statement.
@@ -993,7 +1101,9 @@ function visitors.ForNum(context, node, emitter)
   local ittype, itmutate = itattr.type, itattr.mutate or itattr.refed
   local itforname = itmutate and '_it' or context:declname(itattr)
   local scope = context:push_forked_scope(node)
-  emitter:add_indent('for(', ittype, ' ', itforname, ' = ')
+  emitter:add_indent('for(')
+  emitter:add_qualified_declaration({}, ittype, itforname)
+  emitter:add(' = ')
   emitter:add_converted_val(ittype, begvalnode)
   local cmpval, stepval = endvalnode, fixedstep
   if not fixedend or not compop then -- end expression
@@ -1008,7 +1118,12 @@ function visitors.ForNum(context, node, emitter)
   end
   emitter:add('; ')
   if compop then -- fixed compare operator
-    emitter:add(itforname, ' ', cdefs.for_compare_ops[compop], ' ')
+    local for_compare_ops = {
+      le = '<=', ge = '>=',
+      lt = '<',  gt = '>',
+      ne = '!=', eq = '==',
+    }
+    emitter:add(itforname, ' ', for_compare_ops[compop], ' ')
     if traits.is_string(cmpval) then
       emitter:add(cmpval)
     else
@@ -1017,7 +1132,8 @@ function visitors.ForNum(context, node, emitter)
   else -- step is an expression, must detect the compare operation at runtime
     emitter:add('_step >= 0 ? ', itforname, ' <= _end : ', itforname, ' >= _end')
   end
-  emitter:add_ln('; ', itforname, ' = ', itforname, ' + ', stepval, ') {')
+  emitter:add_ln('; ', itforname, ' += ', stepval, ') {')
+
   if itmutate then -- block mutates the iterator, copy it
     emitter:inc_indent()
     emitter:add_indent_ln(itnode, ' = _it;')
@@ -1052,9 +1168,21 @@ end
 -- Emits `continue` statement.
 function visitors.Continue(context, _, emitter)
   local scope = context.scope
+  local loopscope = scope:get_up_loop_scope()
+  if loopscope.is_repeat_loop then
+    loopscope.emit_repeat_stop(emitter)
+  end
   cgenerator.emit_close_upscopes(context, emitter, scope, scope:get_up_loop_scope())
   emitter:add_indent_ln('continue;')
 end
+
+-- Emits `fallthrough` statement.
+function visitors.Fallthrough(context, _, emitter)
+  context:ensure_builtin('NELUA_FALLTHROUGH')
+  emitter:add_indent_ln('NELUA_FALLTHROUGH(); /* fallthrough */')
+end
+
+function visitors.NoOp() end
 
 -- Emits label statement.
 function visitors.Label(context, node, emitter)
@@ -1088,7 +1216,7 @@ function visitors.VarDecl(context, node, emitter)
       local declared, defined
       if varattr.staticstorage then -- declare variables in the top scope
         local decemitter = CEmitter(context)
-        local custominit = valnode and vartype:is_initializable_from_attr(valnode.attr)
+        local custominit = (valnode and vartype:is_initializable_from_attr(valnode.attr)) or varattr.ctopinit
         declared = true
         defined = custominit or (not valnode and not lastcallindex)
         varnode.attr.ignoreconst = not defined
@@ -1132,6 +1260,15 @@ function visitors.VarDecl(context, node, emitter)
     elseif not vartype.is_comptime and valnode and
            not valnode.attr.comptime and not lastcallindex then -- could be a call
       emitter:add_indent_ln(valnode, ';')
+    elseif valnode and valnode.attr.requirename then -- require call
+      local rollbackpos = emitter:get_pos()
+      emitter:add_indent()
+      emitter:add(valnode)
+      if emitter:get_pos() == rollbackpos+1 then
+        emitter:rollback(rollbackpos) -- revert text added
+      else
+        emitter:add(';')
+      end
     end
     if varattr.cinclude and (context.pragmas.nodce or varattr:is_used(true)) then
       context:ensure_include(varattr.cinclude)
@@ -1170,6 +1307,15 @@ function visitors.Assign(context, node, emitter)
     elseif not vartype.is_comptime and valnode and
            not valnode.attr.comptime and not lastcallindex then -- could be a call
       emitter:add_indent_ln(valnode, ';')
+    elseif valnode and valnode.attr.requirename then -- require call
+      local rollbackpos = emitter:get_pos()
+      emitter:add_indent()
+      emitter:add(valnode)
+      if emitter:get_pos() == rollbackpos+1 then
+        emitter:rollback(rollbackpos) -- revert text added
+      else
+        emitter:add(';')
+      end
     end
   end
   emitter:add(defemitter)
@@ -1217,7 +1363,7 @@ function visitors.FuncDef(context, node, emitter)
       emitter:add_indent_ln(varnode, ' = ', funcname, ';')
     elseif varnode.is_index then
       local fieldname, objtype = varnode[1], varnode[2].attr.type
-      if objtype.is_record then
+      if objtype.is_record or (objtype.is_pointer and objtype.subtype.is_record) then
         funcname = context.rootscope:generate_name(objtype.codename..'_funcdef_'..fieldname)
         emitter:add_indent_ln(varnode, ' = ', funcname, ';')
       end
@@ -1385,7 +1531,6 @@ function visitors.BinaryOp(context, node, emitter, untypedinit)
       emitter:add_zeroed_type_literal(type)
       emitter:add_ln(';')
       if opname == 'and' then
-        assert(not attr.ternaryand)
         emitter:add_indent(primtypes.boolean, ' cond_ = ')
         emitter:add_val2boolean('t1_', type)
         emitter:add_ln(';')
@@ -1436,11 +1581,9 @@ function visitors.BinaryOp(context, node, emitter, untypedinit)
 end
 
 -- Emits defers before exiting scope `scope`.
-function cgenerator.emit_close_scope(context, emitter, scope, isupscope)
-  if scope.closed then return end -- already closed
-  if not isupscope then -- mark as closed
-    scope.closed = true
-  end
+function cgenerator.emit_close_scope(context, emitter, scope)
+  if scope.closing then return end
+  scope.closing = true -- prevent closing again
   local deferblocks = scope.deferblocks
   if deferblocks then
     for i=#deferblocks,1,-1 do
@@ -1452,16 +1595,18 @@ function cgenerator.emit_close_scope(context, emitter, scope, isupscope)
       emitter:add_indent_ln('}')
     end
   end
+  scope.closing = nil -- allow to close again
 end
 
 -- Emits all defers when exiting a nested scope.
 function cgenerator.emit_close_upscopes(context, emitter, scope, topscope)
   cgenerator.emit_close_scope(context, emitter, scope)
-  repeat
-    scope = scope.parent
-    cgenerator.emit_close_scope(context, emitter, scope, true)
-  until scope == topscope
-  cgenerator.emit_close_scope(context, emitter, scope, true)
+  if topscope and topscope ~= scope then
+    repeat
+      scope = scope.parent
+      cgenerator.emit_close_scope(context, emitter, scope)
+    until scope == topscope
+  end
 end
 
 -- Emits C pragmas to disable harmless C warnings that the generated code may trigger.
@@ -1470,22 +1615,24 @@ function cgenerator.emit_warning_pragmas(context)
   local emitter = CEmitter(context)
   emitter:add[[
 /* Disable some warnings that the generated code can trigger. */
-#if defined(__clang__)
+#if defined(__clang__) && __clang_major__ >= 3
   #pragma clang diagnostic ignored "-Wtype-limits"
   #pragma clang diagnostic ignored "-Wwrite-strings"
   #pragma clang diagnostic ignored "-Wunused"
   #pragma clang diagnostic ignored "-Wunused-parameter"
   #pragma clang diagnostic ignored "-Wmissing-field-initializers"
   #pragma clang diagnostic ignored "-Wparentheses-equality"
+  #pragma clang diagnostic ignored "-Wtautological-compare"
+  #pragma clang diagnostic ignored "-Wmissing-braces"
   #ifndef __cplusplus
-    #pragma clang diagnostic ignored "-Wmissing-braces"
     #pragma clang diagnostic ignored "-Wincompatible-pointer-types"
     #pragma clang diagnostic error   "-Wimplicit-function-declaration"
     #pragma clang diagnostic error   "-Wimplicit-int"
   #else
     #pragma clang diagnostic ignored "-Wnarrowing"
+    #pragma clang diagnostic ignored "-Wc99-designator"
   #endif
-#elif defined(__GNUC__)
+#elif defined(__GNUC__) && __GNUC__ >= 5
   #pragma GCC diagnostic ignored "-Wtype-limits"
   #pragma GCC diagnostic ignored "-Wwrite-strings"
   #pragma GCC diagnostic ignored "-Wunused-parameter"
@@ -1550,7 +1697,14 @@ end
 function cgenerator.emit_nelua_main(context, ast, emitter)
   assert(ast.is_Block) -- ast is expected to be a Block
   local rollbackpos = emitter:get_pos()
-  emitter:add_text("int nelua_main(int nelua_argc, char** nelua_argv) {\n") -- begin block
+  emitter:add_text("int nelua_main(int argc, char** argv) {\n") -- begin block
+  if context.cmainimports then
+    emitter:inc_indent()
+    for _,varname in ipairs(context.cmainimports) do
+      emitter:add_indent_ln('nelua_',varname,' = ',varname,';')
+    end
+    emitter:dec_indent()
+  end
   local startpos = emitter:get_pos() -- save current emitter position
   context:traverse_node(ast, emitter) -- emit ast statements
   if context.hookmain or emitter:get_pos() ~= startpos then -- main is used or statements were added
@@ -1558,7 +1712,12 @@ function cgenerator.emit_nelua_main(context, ast, emitter)
       emitter:add_indent_ln("  return 0;") -- ensures that an int is always returned
     end
     emitter:add_ln("}") -- end bock
-    context:add_declaration('static int nelua_main(int nelua_argc, char** nelua_argv);\n', 'nelua_main')
+    local maindecl = 'static int nelua_main(int argc, char** argv);\n'
+    if context.hookmain and context.hookmain.noinline then
+      context:ensure_builtin('NELUA_NOINLINE')
+      maindecl = 'NELUA_NOINLINE '..maindecl
+    end
+    context:add_declaration(maindecl, 'nelua_main')
   else -- empty main, we can skip `nelua_main` usage
     emitter:rollback(rollbackpos) -- revert text added for begin block
   end
@@ -1567,6 +1726,9 @@ end
 -- Emits C `main`.
 function cgenerator.emit_entrypoint(context, ast)
   local emitter = CEmitter(context)
+  if context.pragmas.nocheading then
+    context.compileopts.nocheading = true
+  end
   context:push_forked_state{funcscope = context.rootscope}
   -- if custom entry point is set while `nelua_main` is not hooked,
   -- then we can skip `nelua_main` and `main` declarations

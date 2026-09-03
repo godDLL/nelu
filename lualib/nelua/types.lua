@@ -22,12 +22,6 @@ local ASTNode = require 'nelua.astnode'
 
 local types = {}
 
--- Counter that increment on every new defined type that are fundamentally different.
-local typeid_counter = 0
-
--- Table of type's id by its codename.
-local typeid_by_codename = {}
-
 -- These are set by types.set_typedefs when typedefs file is loaded.
 local typedefs, primtypes
 
@@ -42,8 +36,6 @@ types.Type = Type
 -- Define the shape of all fields used in the type.
 -- Use this as a reference to know all used fields in the Type class by the compiler.
 Type.shape = shaper.shape {
-  -- Unique identifier for the type, used when needed for runtime type information.
-  id = shaper.integer,
   -- Size of the type at runtime in bytes.
   size = shaper.integer:is_optional(),
   -- Size of the type at runtime in bits.
@@ -197,8 +189,12 @@ Type.shape = shaper.shape {
   is_cstring = shaper.optional_boolean,
   is_acstring = shaper.optional_boolean,
   is_byte_pointer = shaper.optional_boolean,
+  is_array_pointer = shaper.optional_boolean,
   is_bytearray_pointer = shaper.optional_boolean,
   is_unbounded_pointer = shaper.optional_boolean,
+  is_bounded_pointer = shaper.optional_boolean,
+  is_unbounded_array = shaper.optional_boolean,
+  is_multidim_array = shaper.optional_boolean,
   is_cvalist = shaper.optional_boolean,
 
   -- Booleans for checking the underlying type (lib types).
@@ -212,6 +208,7 @@ Type.shape = shaper.shape {
   is_filestream = shaper.optional_boolean,
   is_time_t = shaper.optional_boolean,
   is_clock_t = shaper.optional_boolean,
+  is_wchar_t = shaper.optional_boolean,
 }
 
 -- This is used to check if a table is a 'bn'.
@@ -246,15 +243,6 @@ function Type:_init(name, size)
     self.codename = 'nl' .. self.name
   end
 
-  -- generate an unique id for this type in case not generated yet for this codename
-  local id = typeid_by_codename[self.codename]
-  if not id then -- generate an id
-    id = typeid_counter
-    typeid_counter = typeid_counter + 1
-    typeid_by_codename[self.codename] = id
-  end
-  self.id = id
-
   -- set unary and binary operators tables
   local mt = getmetatable(self)
   self.unary_operators = setmetatable({}, {__index = mt.unary_operators})
@@ -264,7 +252,6 @@ end
 -- Set a new codename for this type, storing it in the typeid table.
 function Type:set_codename(codename)
   self.codename = codename
-  typeid_by_codename[codename] = self.id
 end
 
 -- Set a nickname for this type if not set yet.
@@ -323,15 +310,25 @@ function Type:binary_operator(opname, rtype, lattr, rattr)
 end
 
 -- Get the desired type when converting this type from another type.
-function Type:get_convertible_from_type(type)
+function Type:get_convertible_from_type(type, explicit, fromcall)
   if self == type then
     -- the type itself
     return self
   elseif type.is_any then
     -- anything can be converted to and from `any`
     return self
+  elseif type.is_niltype and not explicit and fromcall then
+    -- call arguments can be converted from `niltype`
+    return self
   end
-  return false, string.format("no viable type conversion from `%s` to `%s`", type, self)
+  local msg = string.format("no viable type conversion from '%s' to '%s'", type, self)
+  if type.nickname and type.is_procedure then
+    msg = msg..'\n\t'..string.format("where '%s' is also known as '%s'", type.nickname, type:typedesc())
+  end
+  if self.nickname and self.is_procedure then
+    msg = msg..'\n\t'..string.format("where '%s' is also known as '%s'", self.nickname, self:typedesc())
+  end
+  return false, msg
 end
 
 -- Get the desired type when converting this type from an attr.
@@ -379,13 +376,13 @@ end
 
 -- Checks if this type can initialize from the attr (succeeds only for compile time attrs).
 function Type:is_initializable_from_attr(attr)
-  return attr.comptime and self == attr.type
+  return (attr.comptime and self == attr.type) or attr.ctopinit
 end
 
 -- Checks if this type equals to another type.
 -- Usually this is overwritten by derived types, but this is a fallback implementation.
 function Type:is_equal(type)
-  return type.id == self.id
+  return type.codename == self.codename
 end
 
 -- Give the underlying type when implicit dereferencing this type.
@@ -426,10 +423,6 @@ end
 -- Compare if two types are equal.
 function Type.__eq(t1, t2)
   if getmetatable(t1) == getmetatable(t2) then
-    if t1.id == t2.id then -- early check for same type (optimization)
-      -- types with the same type id should always be the same
-      return true
-    end
     return t1:is_equal(t2)
   end
   return false
@@ -452,6 +445,9 @@ Type.unary_operators.ref = function(ltype, lattr)
       return nil, nil, string.format('cannot reference not addressable type "%s"', ltype)
     end
   else
+    if ltype.is_aggregate then
+      return types.PointerType(ltype)
+    end
     return nil, nil, string.format('cannot reference compile time value of type "%s"', ltype)
   end
 end
@@ -572,6 +568,21 @@ function types.typenodes_to_types(nodes)
   return typelist
 end
 
+-- Convert a list of nodes to a list of types.
+function types.nodes_to_types(nodes)
+  local typelist = {}
+  for i=1,#nodes do
+    local nodetype = nodes[i].attr.type
+    assert(nodetype)
+    typelist[i] = nodetype
+  end
+  if #typelist == 1 and typelist[1].is_void then
+    -- single void type means no returns
+    typelist = {}
+  end
+  return typelist
+end
+
 -- Convert a list of argument nodes into a list of argument types.
 -- This consider if last argument is a function call.
 -- Returns nil if need to wait type resolution to complete.
@@ -584,10 +595,11 @@ function types.argtypes_from_argnodes(argnodes, wantedlen)
     argtypes[i] = argtype
   end
   if nargs > 0 and (not wantedlen or nargs < wantedlen) then
-    local lastattr = argnodes[nargs].attr
+    local argnode = argnodes[nargs]
+    local lastattr = argnode.attr
     if not lastattr.type then return end -- cannot complete evaluation yet
     local calleetype = lastattr.calleetype
-    if calleetype then
+    if calleetype and not argnode.is_Paren then
       if calleetype.is_any then --luacov:disable
         if wantedlen then
           for i=nargs,wantedlen do
@@ -705,10 +717,8 @@ local TypeType = types.typeclass()
 types.TypeType = TypeType
 TypeType.is_type = true
 TypeType.is_comptime = true
-TypeType.nodecl = true
 TypeType.is_unpointable = true
 TypeType.is_polymorphic = true
-TypeType.is_nameable = true
 
 function TypeType:_init(name)
   Type._init(self, name, 0)
@@ -739,6 +749,14 @@ NiltypeType.is_empty = true
 
 function NiltypeType:_init(name, size)
   Type._init(self, name, size)
+end
+
+-- Get the desired type when converting this type from another type.
+function NiltypeType:get_convertible_from_type(type, explicit, fromcall)
+  if type.is_void then
+    return true
+  end
+  return Type.get_convertible_from_type(self, type, explicit, fromcall)
 end
 
 -- Negation operator for niltype type.
@@ -814,7 +832,6 @@ end
 local AnyType = types.typeclass()
 types.AnyType = AnyType
 AnyType.is_any = true
-AnyType.is_nilable = true
 AnyType.is_falseable = true
 AnyType.sideeffect = true
 
@@ -848,6 +865,7 @@ end --luacov:enable
 local VaranysType = types.typeclass(AnyType)
 types.VaranysType = VaranysType
 VaranysType.is_varanys = true
+VaranysType.is_nilable = true
 VaranysType.is_multipleargs = true
 VaranysType.is_nolvalue = true
 
@@ -950,7 +968,7 @@ end
 -- Helper to create an comparison operation functions for scalar type.
 local function make_arith_cmpop(cmpfunc)
   return function(ltype, rtype, lattr, rattr)
-    if rtype.is_scalar then
+    if ltype.is_scalar and rtype.is_scalar then
       -- we can optimize away the operation when the attr is the same and not a float
       -- float are ignored because x <= x is false when x is NaN
       local same = lattr == rattr and not ltype.is_float
@@ -1043,7 +1061,7 @@ function IntegralType:signed_type()
 end
 
 -- Get the desired type when converting this type from an attr.
-function IntegralType:get_convertible_from_attr(attr, explicit, autoref)
+function IntegralType:get_convertible_from_attr(attr, explicit, fromcall)
   if not explicit and attr.comptime and attr.type.is_scalar then
     -- implicit conversion between two compile time scalar types,
     -- we can convert only if the compiler time value does not overflow/underflow the type
@@ -1060,13 +1078,13 @@ function IntegralType:get_convertible_from_attr(attr, explicit, autoref)
     -- in range and integral, thus a valid conversion
     return self
   end
-  return ScalarType.get_convertible_from_attr(self, attr, explicit, autoref)
+  return ScalarType.get_convertible_from_attr(self, attr, explicit, fromcall)
 end
 
 -- Get the desired type when converting this type from another type.
-function IntegralType:get_convertible_from_type(type, explicit, autoref)
+function IntegralType:get_convertible_from_type(type, explicit, fromcall)
   if type.is_integral then
-    if type.id == self.id then
+    if type.codename == self.codename then
       -- early return for the same type
       return self
     elseif self:is_type_inrange(type) then
@@ -1081,7 +1099,7 @@ function IntegralType:get_convertible_from_type(type, explicit, autoref)
     -- explicit cast from a pointer to an integral that can fit the pointer
     return self
   end
-  return ScalarType.get_convertible_from_type(self, type, explicit, autoref)
+  return ScalarType.get_convertible_from_type(self, type, explicit, fromcall)
 end
 
 -- Checks if this type scalar type can fit another scalar type.
@@ -1360,12 +1378,12 @@ function FloatType:_init(name, size, align, decimaldigits, mantdigits)
 end
 
 -- Get the desired type when converting this type from another type.
-function FloatType:get_convertible_from_type(type, explicit, autoref)
+function FloatType:get_convertible_from_type(type, explicit, fromcall)
   if type.is_scalar then
     -- any scalar can convert to a float
     return self
   end
-  return ScalarType.get_convertible_from_type(self, type, explicit, autoref)
+  return ScalarType.get_convertible_from_type(self, type, explicit, fromcall)
 end
 
 -- Checks if the value can fit in this type min and max range.
@@ -1502,6 +1520,8 @@ ArrayType.shape = shaper.fork_shape(Type.shape, {
   length = shaper.integer,
   -- The subtype for the array.
   subtype = shaper.type,
+  -- The inner subtype for the array, (relevant for multidimensional arrays).
+  inner_subtype = shaper.type,
 })
 
 function ArrayType:_init(subtype, length, node)
@@ -1516,7 +1536,11 @@ function ArrayType:_init(subtype, length, node)
   self.length = length
   self.align = subtype.align
   if length == 0 then
+    self.is_unbounded_array = true
     self.is_empty = true
+  end
+  if subtype.is_array then
+    self.is_multidim_array = true
   end
   -- validated subtype
   if subtype.is_comptime then
@@ -1524,6 +1548,12 @@ function ArrayType:_init(subtype, length, node)
   elseif not subtype:is_defined() then
     ASTNode.raisef(node, "in array type: subtype cannot be of forward declared type '%s'", subtype)
   end
+  -- calculate inner subtype for multidimensional arrays
+  local inner_subtype = subtype
+  while inner_subtype.is_array do
+    inner_subtype = inner_subtype.subtype
+  end
+  self.inner_subtype = inner_subtype
 end
 
 -- Checks if this type equals to another type.
@@ -1544,12 +1574,12 @@ function ArrayType:typedesc()
 end
 
 -- Get the desired type when converting this type from another type.
-function ArrayType:get_convertible_from_type(type, explicit, autoref)
-  if not explicit and autoref and type:is_pointer_of(self) and not self.nocopy then
+function ArrayType:get_convertible_from_type(type, explicit, fromcall)
+  if not explicit and fromcall and type:is_pointer_of(self) and not self.nocopy then
     -- implicit automatic dereference
     return self, true
   end
-  return Type.get_convertible_from_type(self, type, explicit, autoref)
+  return Type.get_convertible_from_type(self, type, explicit, fromcall)
 end
 
 -- Checks if this type is an array of the subtype.
@@ -1657,11 +1687,24 @@ function FunctionType:_init(argattrs, rettypes, node, refonly)
   Type._init(self, 'function', typedefs.ptrsize)
 
   if argattrs then -- set the arguments
-    -- make sure each arg attr is really an Attr class
-    for i=1,#argattrs do
-      local argattr = argattrs[i]
-      if not argattr._attr then
-        setmetatable(argattr, Attr)
+    if argattrs[1] and argattrs[1]._astnode then
+      -- convert argnodes to argttrs
+      local argnodes = argattrs
+      argattrs = {}
+      for i=1,#argnodes do
+        local argnode = argnodes[i]
+        argattrs[i] = setmetatable({
+          name='arg'..i,
+          type=assert(argnode.attr.type, 'untyped astnode'),
+        }, Attr)
+      end
+    else
+      -- make sure each arg attr is really an Attr class
+      for i=1,#argattrs do
+        local argattr = argattrs[i]
+        if not argattr._attr then
+          setmetatable(argattr, Attr)
+        end
       end
     end
   end
@@ -1694,7 +1737,7 @@ function FunctionType:_init(argattrs, rettypes, node, refonly)
   if rettypes then
     for i=1,#rettypes do
       local rettype = rettypes[i]
-      if rettype.is_comptime then
+      if rettype.is_comptime and not rettype.is_type then
         ASTNode.raisef(node, "in function return: return #%d cannot be of compile-time type '%s'", i, rettype)
       elseif not refonly and not rettype:is_defined() then
         ASTNode.raisef(node, "in function return: return #%d cannot be of forward declared type '%s'", i, rettype)
@@ -1733,8 +1776,23 @@ function FunctionType:get_return_type(index)
   end
 end
 
+-- Get the return value in the specified index.
+function FunctionType:get_return_type_and_value(index)
+  local rettype = self:get_return_type(index)
+  if not rettype.is_comptime then return rettype end
+  local node = self.node
+  if not node then return rettype end
+  local scope = node.scope
+  if not scope then return rettype end
+  local retvalues = scope.retvalues
+  if not retvalues then return rettype end
+  local retvalue = retvalues[index]
+  if not retvalue then return rettype end
+  return rettype, retvalue
+end
+
 -- Get the desired type when converting this type from another type.
-function FunctionType:get_convertible_from_type(type, explicit, autoref)
+function FunctionType:get_convertible_from_type(type, explicit, fromcall)
   if type.is_nilptr then
     -- allow setting a function to a nil pointer
     return self
@@ -1748,7 +1806,7 @@ function FunctionType:get_convertible_from_type(type, explicit, autoref)
       return self
     end
   end
-  return Type.get_convertible_from_type(self, type, explicit, autoref)
+  return Type.get_convertible_from_type(self, type, explicit, fromcall)
 end
 
 -- Helper to emit a list of typed fields.
@@ -1829,7 +1887,7 @@ PolyFunctionType.shape = shaper.fork_shape(Type.shape, {
   -- A function trigger side effects when it throw errors or operate on global variables.
   sideeffect = shaper.optional_boolean,
   -- Whether to always evaluate the polymorphic function.
-  alwayseval = shaper.optional_boolean,
+  alwayspoly = shaper.optional_boolean,
 })
 
 function PolyFunctionType:_init(args, rettypes, node)
@@ -1873,7 +1931,7 @@ end
 
 function PolyFunctionType:eval_poly(args, srcnode)
   local polyeval
-  if not self.alwayseval then
+  if not self.alwayspoly then
     polyeval = self:get_poly_eval(args)
   end
   if not polyeval then
@@ -1918,6 +1976,8 @@ RecordType.shape = shaper.fork_shape(Type.shape, {
   packed = shaper.optional_boolean,
   -- Use in the lib in generics like 'span', 'vector' to represent the subtype.
   subtype = shaper.type:is_optional(),
+  K = shaper.type:is_optional(),
+  V = shaper.type:is_optional(),
 })
 
 function RecordType:_init(fields, node)
@@ -1960,8 +2020,16 @@ function RecordType:update_fields()
       elseif fieldtype.is_comptime then
         ASTNode.raisef(self.node, "record field '%s' cannot be of compile-time type '%s'",
           field.name, fieldtype)
+      elseif fieldtype == self or
+            (fieldtype.is_array and fieldtype.subtype == self) or
+            (fieldtype.is_bounded_pointer and fieldtype.subtype.subtype == self) then
+        ASTNode.raisef(self.node, "record field '%s' cannot nest record type '%s'",
+          field.name, fieldtype)
       end
       field.index = i
+      if fields[field.name] and fields[field.name] ~= field then
+        ASTNode.raisef(self.node, "duplicate record field '%s'", field.name, fieldtype)
+      end
       fields[field.name] = field
 
       local fieldsize = fieldtype.size
@@ -2054,12 +2122,12 @@ function Type:set_metafield(name, symbol)
 end
 
 -- Get the desired type when converting this type from another type.
-function RecordType:get_convertible_from_type(type, explicit, autoref)
-  if not explicit and autoref and type:is_pointer_of(self) and not self.nocopy then
+function RecordType:get_convertible_from_type(type, explicit, fromcall)
+  if not explicit and fromcall and type:is_pointer_of(self) and not self.nocopy then
     -- perform implicit automatic dereference on a pointer to this record
     return self, true
   end
-  return Type.get_convertible_from_type(self, type, explicit, autoref)
+  return Type.get_convertible_from_type(self, type, explicit, fromcall)
 end
 
 -- Checks if this type has pointers, used by the garbage collector.
@@ -2237,7 +2305,11 @@ function PointerType:_init(subtype)
     end
     if subtype.length == 0 then
       self.is_unbounded_pointer = true
+    else
+      self.is_bounded_pointer = true
     end
+    self.is_array_pointer = true
+    self.is_contiguous = true
   elseif subtype.is_integral and subtype.size == 1 then
     self.is_byte_pointer = true
   end
@@ -2246,19 +2318,29 @@ function PointerType:_init(subtype)
 end
 
 -- Get the desired type when converting this type from an attr.
-function PointerType:get_convertible_from_attr(attr, explicit, autoref)
+function PointerType:get_convertible_from_attr(attr, explicit, fromcall)
   local type = attr.type
-  if not explicit and autoref and self.subtype == type and type.is_aggregate then
-    -- implicit automatic reference for records and arrays
-    if not attr.lvalue then -- can only reference l-values
-      return false, string.format(
-        'cannot automatic reference rvalue of type "%s" to pointer type "%s"',
-        type, self)
+  if not explicit and fromcall and type.is_aggregate then
+    local selfsubtype = self.subtype
+    if selfsubtype == type or
+      (selfsubtype.is_unbounded_array and type.is_array and selfsubtype.subtype == type.subtype) then
+      -- implicit automatic reference for records and arrays
+      if not attr.lvalue then -- can only reference l-values
+        if type.is_aggregate and (not explicit or
+           (attr.calleetype == primtypes.type)) then
+          -- promote expression to a lvalue
+          attr.promotelvalue = true
+        else
+          return false, string.format(
+            'cannot automatic reference rvalue of type "%s" to pointer type "%s"',
+            type, self)
+        end
+      end
+      attr.refed = true
+      return self, true
     end
-    attr.refed = true
-    return self, true
   end
-  return Type.get_convertible_from_attr(self, attr, explicit, autoref)
+  return Type.get_convertible_from_attr(self, attr, explicit, fromcall)
 end
 
 local function is_pointer_subtype_convertible(ltype, rtype)
@@ -2273,7 +2355,7 @@ local function is_pointer_subtype_convertible(ltype, rtype)
 end
 
 -- Get the desired type when converting this type from another type.
-function PointerType:get_convertible_from_type(type, explicit, autoref)
+function PointerType:get_convertible_from_type(type, explicit, fromcall)
   if type.is_pointer then
     if type.subtype == self.subtype then
       -- early check for the same type (optimization)
@@ -2287,20 +2369,17 @@ function PointerType:get_convertible_from_type(type, explicit, autoref)
     else
       local selfsubtype = self.subtype
       local typesubtype = type.subtype
-      if type.is_unbounded_pointer and
-         is_pointer_subtype_convertible(typesubtype.subtype, selfsubtype) then
-        -- implicit casting from unbounded arrays pointers to pointers
+      if type.is_array_pointer and
+         is_pointer_subtype_convertible(selfsubtype, typesubtype.subtype) then
+        -- implicit casting from arrays pointers to pointers
         return self
-      elseif self.is_unbounded_pointer and
+      elseif self.is_array_pointer and
              is_pointer_subtype_convertible(selfsubtype.subtype, typesubtype) then
-        -- implicit casting from pointers to unbounded arrays pointers
+        -- implicit casting from pointers to arrays pointers
         return self
       elseif self.is_unbounded_pointer and typesubtype.is_array and
              is_pointer_subtype_convertible(selfsubtype.subtype, typesubtype.subtype) then
-        -- implicit casting from checked arrays pointers to unbounded arrays pointers
-        return self
-      elseif self.is_byte_pointer and type.is_bytearray_pointer then
-        -- implicit casting from pointer to a byte array to cstring
+        -- implicit casting from bounded arrays pointers to unbounded arrays pointers
         return self
       elseif is_pointer_subtype_convertible(selfsubtype, typesubtype) then
         -- implicit casting between integral of same size and signess
@@ -2312,7 +2391,8 @@ function PointerType:get_convertible_from_type(type, explicit, autoref)
       end
     end
   elseif type.is_string then
-    if self.is_bytearray_pointer then
+    if self.is_array_pointer and
+      is_pointer_subtype_convertible(self.subtype.subtype, primtypes.byte) then
       -- implicit casting from string to a pointer to a byte array
       return self
     elseif is_pointer_subtype_convertible(self.subtype, primtypes.byte) then
@@ -2335,7 +2415,7 @@ function PointerType:get_convertible_from_type(type, explicit, autoref)
       end
     end
   end
-  return Type.get_convertible_from_type(self, type, explicit, autoref)
+  return Type.get_convertible_from_type(self, type, explicit, fromcall)
 end
 
 -- Returns the resulting type when mixing this type with another type.
@@ -2354,6 +2434,11 @@ end
 -- Checks if this type is pointing to the subtype.
 function PointerType:is_pointer_of(subtype)
   return self.subtype == subtype
+end
+
+-- Checks if this type can be represented as a contiguous array of the subtype.
+function PointerType:is_contiguous_of(subtype)
+  return self.subtype:is_contiguous_of(subtype)
 end
 
 -- Give the underlying type when implicit dereferencing this type.
@@ -2417,11 +2502,11 @@ function StringType:_init(name)
 end
 
 -- Get the desired type when converting this type from another type.
-function StringType:get_convertible_from_type(type, explicit, autoref)
+function StringType:get_convertible_from_type(type, explicit, fromcall)
   if type.is_stringy then -- implicit cast cstring/acstring to string
     return self
   end
-  return RecordType.get_convertible_from_type(self, type, explicit, autoref)
+  return RecordType.get_convertible_from_type(self, type, explicit, fromcall)
 end
 
 -- String length operator.
@@ -2448,11 +2533,11 @@ end
 local function make_string_cmp_opfunc(cmpfunc)
   return function(ltype, rtype, lattr, rattr)
     if ltype.is_string and rtype.is_string then -- comparing strings?
-      local lval, rval, reval = lattr.value, rattr.value, nil
+      local lval, rval = lattr.value, rattr.value
       if lval and rval then -- both are compile time strings
-        reval = cmpfunc(lval, rval)
+        local reval = cmpfunc(lval, rval)
+        return primtypes.boolean, reval
       end
-      return primtypes.boolean, reval
     end
   end
 end
@@ -2472,7 +2557,6 @@ StringType.binary_operators.gt = make_string_cmp_opfunc(function(a,b) return a>b
 local CVaList = types.typeclass(RecordType)
 types.CVaList = CVaList
 CVaList.is_cvalist = true
-CVaList.is_nameable = false
 CVaList.nodecl = true
 CVaList.cimport = true
 CVaList.cinclude = '<stdarg.h>'
@@ -2510,15 +2594,15 @@ function ConceptType:_init(func, desiredfunc)
 end
 
 -- Checks if this type is convertible from another type.
-function ConceptType:get_convertible_from_type(type, explicit, autoref)
+function ConceptType:get_convertible_from_type(type, explicit, fromcall)
   local attr = Attr{type=type}
-  return self:get_convertible_from_attr(attr, explicit, autoref, {attr})
+  return self:get_convertible_from_attr(attr, explicit, fromcall, {attr})
 end
 
 -- Checks if an attr can match a concept.
-function ConceptType:get_convertible_from_attr(attr, explicit, autoref, argattrs)
+function ConceptType:get_convertible_from_attr(attr, explicit, fromcall, argattrs)
   local concept_eval_func = self.func -- alias to have better error messages
-  local type, err = concept_eval_func(attr, explicit, autoref, argattrs)
+  local type, err = concept_eval_func(attr, explicit, fromcall, argattrs)
   if type == true then -- concept returned true, use the incoming type
     assert(attr.type)
     type = attr.type
@@ -2615,7 +2699,9 @@ Returns the type of `x`.
 Where `x` can be an Attr, an ASTNode or a Type.
 ]]
 function types.decltype(x)
-  if not traits.is_table(x) then
+  if x == nil then
+    return primtypes.niltype
+  elseif not traits.is_table(x) then
     return nil, string.format("in decltype: invalid argument of lua type '%s'", type(x))
   end
   local type
@@ -2652,7 +2738,7 @@ end
 -- Evaluate a generic to a type by calling it's function defined in the preprocessor.
 function GenericType:eval_type(params)
   local generic_eval_func = self.func -- alias to have better error messages
-  local ok, ret, err = except.trycall(generic_eval_func, table.unpack(params))
+  local ok, ret, err = except.trycall(generic_eval_func, table.unpack(params, 1, params.n))
   if not ok then
     -- the generic creation failed due to a lua error in preprocessor function
     return nil, ret

@@ -88,7 +88,7 @@ function Attr:is_maybe_negative()
 end
 
 function Attr:is_readonly()
-  return self.const or self.comptime or (self.type and self.type.is_comptime)
+  return self.const or self.comptime or self.close or (self.type and self.type.is_comptime)
 end
 
 function Attr:is_forward_declare_type()
@@ -107,7 +107,10 @@ end
 
 function Attr:must_define_at_runtime()
   local type = self.type
-  return not (type.is_comptime or self.comptime or (type.size == 0 and not self.refed))
+  return not (type.is_comptime or
+              type.is_nilptr or
+              self.comptime or
+              (type.size == 0 and not self.refed and not type.is_array))
 end
 
 function Attr:must_zero_initialize()

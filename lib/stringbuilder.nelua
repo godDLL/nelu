@@ -12,15 +12,12 @@ object creation, and garbage collection overhead.
 require 'span'
 require 'memory'
 
-local function snprintf(s: cstring, maxlen: csize, format: cstring, ...: cvarargs): cint <cimport,cinclude'<stdio.h>'> end
+local strchar: type = require 'detail.strchar'
+local strconv: type = require 'detail.strconv'
+local strprintf: type = require 'detail.strprintf'
 
-local MAX_FORMAT <comptime> = 32
-local MAX_ITEM <comptime> = 128
-
--- Helper to check if a character is a digit.
-local function isdigit(c: cint): boolean <inline>
-  return (@cuint)(c)-'0'_b < 10
-end
+local MAX_FORMAT: usize <comptime> = 32
+local MAX_ITEM: usize <comptime> = 128
 
 -- Helper to scan format string.
 local function scanformat(strfmt: *[0]byte, form: *[MAX_FORMAT]byte): usize
@@ -30,15 +27,15 @@ local function scanformat(strfmt: *[0]byte, form: *[MAX_FORMAT]byte): usize
     p = p + 1  -- skip flags
   end
   assert(p < L_FMTFLAGS.size + 1, "invalid format (repeated flags)")
-  if isdigit(strfmt[p]) then p = p + 1 end  -- skip width
-  if isdigit(strfmt[p]) then p = p + 1 end  -- (2 digits at most)
-  if strfmt[p] == '.'_byte then
+  if strchar.isdigit(strfmt[p]) then p = p + 1 end  -- skip width
+  if strchar.isdigit(strfmt[p]) then p = p + 1 end  -- (2 digits at most)
+  if strfmt[p] == '.'_b then
     p = p + 1
-    if isdigit(strfmt[p]) then p = p + 1 end -- skip precision
-    if isdigit(strfmt[p]) then p = p + 1 end -- (2 digits at most)
+    if strchar.isdigit(strfmt[p]) then p = p + 1 end -- skip precision
+    if strchar.isdigit(strfmt[p]) then p = p + 1 end -- (2 digits at most)
   end
-  assert(not isdigit(strfmt[p]), "invalid format (width or precision too long)")
-  form[0] = '%'_byte
+  assert(not strchar.isdigit(strfmt[p]), "invalid format (width or precision too long)")
+  form[0] = '%'_b
   memory.copy(&form[1], &strfmt[0], p + 1)
   form[p + 2] = 0
   return p
@@ -60,7 +57,7 @@ end
   ## end
 
   local Allocator: type = #[Allocator]#
-  local INIT_CAPACITY <comptime> = 128
+  local INIT_CAPACITY: usize <comptime> = 16
 
   -- String builder record defined when instantiating the generic `stringbuilder`.
   local stringbuilderT: type = @record{
@@ -97,6 +94,9 @@ end
   The internal buffer is not freed, and it may be reused.
   ]]
   function stringbuilderT:clear(): void
+    if self.size > 0 then
+      memory.zero(&self.data[0], self.size)
+    end
     self.size = 0
   end
 
@@ -110,12 +110,12 @@ end
     local cap: usize = self.data.size
     if needed <= cap then return true end
     if cap == 0 then cap = INIT_CAPACITY end
-    repeat
+    while cap < needed do
       cap = cap * 2
       if cap <= INIT_CAPACITY then -- capacity overflow
         return false
       end
-    until cap >= needed
+    end
     self.data = self.allocator:spanrealloc0(self.data, cap)
     if self.data.size ~= cap then -- reallocation failed, try to allocate the minimum
       self.data = self.allocator:spanrealloc0(self.data, needed)
@@ -152,6 +152,18 @@ end
   end
 
   --[[
+  Removes `n` previously written bytes effectively rewinding the internal writing buffer.
+  The internal buffer must have at least `n` bytes.
+  ]]
+  function stringbuilderT:rollback(n: usize): void
+    if unlikely(n == 0) then return end
+    check(self.size >= n, 'not enough space in string buffer')
+    local newsize: usize = self.size - n
+    self.size = newsize
+    memory.zero(&self.data[newsize], n)
+  end
+
+  --[[
   Resizes the internal writing buffer to `n` bytes, and sets the writing position to its end.
   When growing new elements will be zeroed.
   Returns `true` in case of success, otherwise `false` when out of buffer memory space.
@@ -159,6 +171,9 @@ end
   function stringbuilderT:resize(n: usize): boolean
     if not stringbuilderT_grow(self, n) then
       return false
+    end
+    if n < self.size then
+      memory.zero(&self.data[n], self.size - n)
     end
     self.size = n
     return true
@@ -194,16 +209,25 @@ end
   function stringbuilderT:write(...: varargs): (boolean, usize)
     local written: usize = 0
     ## for i=1,select('#', ...) do
+    do -- must create a scope for defer
       ## local argnode = select(i, ...)
       ## local argtype = argnode.attr.type
       ## if argtype.is_span and argtype.subtype == primtypes.byte then
-        local s: span(byte) = #[argnode]#
+      local s: span(byte) = #[argnode]#
+      ## elseif argtype.is_integral then
+      local buf: [48]byte <noinit>
+      local s: string = strconv.int2str(&buf, #[argnode]#, 10)
+      ## elseif argtype.is_float then
+      local buf: [64]byte <noinit>
+      local s: string = strconv.num2str(&buf, #[argnode]#)
+      ## elseif argtype.is_boolean then
+      local s: string = #[argnode]# == true and 'true' or 'false'
       ## elseif not argtype.is_stringy then
-        -- TODO: avoid extra string allocation here
-        local s: string = tostring(#[argnode]#)
-        defer s:destroy() end
+      -- TODO: avoid extra string allocation here
+      local s: string = tostring(#[argnode]#)
+      defer s:destroy() end
       ## else
-        local s: string = #[argnode]#
+      local s: string = #[argnode]#
       ## end
       if s.size > 0 then
         local p: span(byte) = self:prepare(s.size)
@@ -212,78 +236,79 @@ end
         written = written + s.size
         self.size = self.size + s.size
       end
+    end
     ## end
     return true, written
   end
 
   -- Helper to format an argument.
   local function formatarg(self: *stringbuilderT, c: byte,
-                           buff: cstring, maxitem: usize, form: *[MAX_FORMAT]byte, arg1: auto): (boolean, isize)
+                           form: *[MAX_FORMAT]byte, arg1: auto): (boolean, isize)
+    local buf: span(byte) = self:prepare(MAX_ITEM) -- to put formatted item
+    if buf.size < MAX_ITEM then
+      return false, 0
+    end
     local nb: isize = -1
     ## if primtypes.cint:is_convertible_from(arg1.type) then
-      if c == 'c'_byte then
+      if c == 'c'_b then
         local n: cint = (@cint)(arg1)
-        nb = snprintf(buff, maxitem, &form[0], n)
+        nb = strprintf.snprintf((@cstring)(buf.data), MAX_ITEM, &form[0], n)
         goto next
       end
     ## end if primtypes.clonglong:is_convertible_from(arg1.type) then
-      if c == 'd'_byte or c == 'i'_byte then
-        local lenmod: cstring = 'lli'
-        addlenmod(form, lenmod, #lenmod - 1)
+      if c == 'd'_b or c == 'i'_b then
+        addlenmod(form, 'lli', 2)
         local n: clonglong = (@clonglong)(arg1)
-        nb = snprintf(buff, maxitem, &form[0], n)
+        nb = strprintf.snprintf((@cstring)(buf.data), MAX_ITEM, &form[0], n)
         goto next
       end
     ## end if primtypes.culonglong:is_convertible_from(arg1.type) then
-      if c == 'o'_byte or
-         c == 'u'_byte or
-         c == 'x'_byte or c == 'X'_byte then
-        local lenmod: cstring = 'llu'
-        addlenmod(form, lenmod, #lenmod - 1)
+      if c == 'o'_b or
+         c == 'u'_b or
+         c == 'x'_b or c == 'X'_b then
+        addlenmod(form, 'llu', 2)
         ## if arg1.type.is_integral then
         local n: culonglong = (@culonglong)((#[arg1.type:unsigned_type()]#)(arg1))
         ## else
         local n: culonglong = (@culonglong)(arg1)
         ## end
-        nb = snprintf(buff, maxitem, &form[0], n)
+        nb = strprintf.snprintf((@cstring)(buf.data), MAX_ITEM, &form[0], n)
         goto next
       end
     ## end if primtypes.number:is_convertible_from(arg1.type) then
-      if c == 'a'_byte or c == 'A'_byte or
-         c == 'f'_byte or
-         c == 'e'_byte or c == 'E'_byte or
-         c == 'g'_byte or c == 'G'_byte then
+      if c == 'a'_b or c == 'A'_b or
+         c == 'f'_b or
+         c == 'e'_b or c == 'E'_b or
+         c == 'g'_b or c == 'G'_b then
         ## if arg1.type.is_clongdouble then
-        local lenmod: cstring = 'Lf'
-        addlenmod(form, lenmod, #lenmod - 1)
-        nb = snprintf(buff, maxitem, &form[0], arg1)
+        addlenmod(form, 'Lf', 1)
+        nb = strprintf.snprintf((@cstring)(buf.data), MAX_ITEM, &form[0], arg1)
         ## elseif arg1.type.is_float128 then
         ## linklib 'quadmath'
         local function quadmath_snprintf(s: cstring, maxlen: csize, format: cstring, ...: cvarargs): cint <cimport,cinclude'<quadmath.h>'> end
-        local lenmod: cstring = 'Qf'
-        addlenmod(form, lenmod, #lenmod - 1)
-        nb = quadmath_snprintf(buff, maxitem, &form[0], arg1)
+        addlenmod(form, 'Qf', 1)
+        nb = quadmath_snprintf((@cstring)(buf.data), MAX_ITEM, &form[0], arg1)
         ## else
         local n: float64 = (@float64)(arg1)
-        nb = snprintf(buff, maxitem, &form[0], n)
+        nb = strprintf.snprintf((@cstring)(buf.data), MAX_ITEM, &form[0], n)
         ## end
         goto next
       end
     ## end if primtypes.pointer:is_convertible_from(arg1.type) or arg1.type.is_function then
-      if c == 'p'_byte then
+      if c == 'p'_b then
         --TODO: handle lenmod?
         local p: pointer = (@pointer)(arg1)
         if p == nilptr then
-          memory.copy(buff, "(null)"_cstring, 7)
+          memory.copy((@cstring)(buf.data), "(null)"_cstring, 7)
           nb = 6
         else
           local n: culonglong = (@culonglong)((@usize)(p))
-          nb = snprintf(buff, maxitem, '0x%llx', n)
+          nb = strprintf.snprintf((@cstring)(buf.data), MAX_ITEM, '0x%llx', n)
         end
         goto next
       end
     ## end
-    if c == 's'_byte then
+    if c == 's'_b then
       ## if arg1.type.is_stringy then
       local s: string = (@string)(arg1)
       ## else
@@ -291,22 +316,27 @@ end
       ## end
       local slen: usize = s.size + 1
       if form[1] == c and form[2] == 0 then -- just copy the string
-        buff = (@cstring)(self:prepare(slen).data)
-        if buff then
-          memory.copy(buff, s.data, s.size)
-          nb = (@isize)(s.size)
+        buf = self:prepare(slen)
+        if buf.size < slen then
+          return false, 0
         end
+        memory.copy(buf.data, s.data, s.size)
+        nb = (@isize)(s.size)
       else
+        if slen < MAX_ITEM then slen = MAX_ITEM end
+        buf = self:prepare(slen)
+        if buf.size < slen then
+          return false, 0
+        end
         ## if arg1.type.is_string then
         -- the string may not be null terminated (in case of a string view)
         -- copy to force null termination
         -- TODO: this may be expansive, should we implement a custom snprintf later?
         s = string.copy(s)
         ## end
-        buff = (@cstring)(self:prepare(slen > maxitem and slen or maxitem).data)
-        if buff then
-          nb = snprintf(buff, maxitem, &form[0], s.data)
-        end
+        local cs: cstring = (@cstring)(s.data)
+        if s.size == 0 then cs = ''_cstring end
+        nb = strprintf.snprintf((@cstring)(buf.data), buf.size, &form[0], cs)
         ## if arg1.type.is_string then
         s:destroy()
         ## end
@@ -314,9 +344,6 @@ end
       ## if not arg1.type.is_stringy then
       s:destroy()
       ## end
-      if not buff then
-        return false, 0
-      end
       goto next
     end
     assert(false, 'invalid format for argument')
@@ -332,27 +359,21 @@ end
   The `fmt` string is expected to be a valid format, it should follow `string.format` rules.
   ]]
   function stringbuilderT:writef(fmt: string, ...: varargs): (boolean, usize)
-    local L_ESC: byte <comptime> = '%'_byte
     local pos: usize, written: usize, argi: int32 = 0, 0, 0
     while pos < fmt.size do
       local c: byte = fmt.data[pos]
       pos = pos + 1
-      if c ~= L_ESC then
+      if c ~= '%'_b then
         if not self:writebyte(c) then return false, written end
         written = written + 1
       else
         c = fmt.data[pos]
-        if c == L_ESC then -- %%
-          if not self:writebyte(L_ESC) then return false, written end
+        if c == '%'_b then -- %%
+          if not self:writebyte('%'_b) then return false, written end
           written = written + 1
           pos = pos + 1
         else -- format item
           local form: [MAX_FORMAT]byte -- to store the format ('%...')
-          local maxitem: usize = MAX_ITEM
-          local buff: cstring = (@cstring)(self:prepare(MAX_ITEM).data) -- to put formatted item
-          if not buff then
-            return false, written
-          end
           -- scan format
           pos = pos + scanformat(&fmt.data[pos], &form)
           c = fmt.data[pos]
@@ -361,15 +382,15 @@ end
           local ok: boolean, nb: isize = false, -1
           ## for i=1,select('#', ...) do
           if #[i]# == argi then
-            ok, nb = formatarg(self, c, buff, maxitem, &form, #[select(i, ...)]#)
+            ok, nb = formatarg(self, c, &form, #[select(i, ...)]#)
             goto next
           end
           ## end
+          assert(false, 'bad format argument (no value)')
           ::next::
           if not ok then
             return false, written
           end
-          assert(nb >= 0, 'missing argument in format')
           self:commit((@usize)(nb))
           written = written + (@usize)(nb)
         end
@@ -385,6 +406,11 @@ end
   function stringbuilderT:view(): string
     if unlikely(self.size == 0) then return (@string){} end
     return (@string){data = &self.data[0], size = self.size}
+  end
+
+  -- Alias to `view` method, for supporting `tostringview`.
+  function stringbuilderT:__tostringview(): string
+    return self:view()
   end
 
   ## if Allocator == DefaultAllocator then
@@ -446,3 +472,5 @@ global stringbuilder: type = #[make_stringbuilderT()]#
 
 -- Some string methods are used in polymorphic functions, like `tostring`.
 require 'string'
+
+return stringbuilder

@@ -10,10 +10,12 @@ thus the list itself is passed by reference by default (like lua tables again).
 
 A sequence is typically used as a more efficient table that
 can hold only sequences of a fixed value type.
+
+Remarks: A sequence initialized from a list of unnamed fields is filled with the list elements.
 ]]
 
 require 'memory'
-require 'iterators'
+require 'span'
 
 ## local function make_sequenceT(T, Allocator)
   ## static_assert(traits.is_type(T), "invalid type '%s'", T)
@@ -48,12 +50,17 @@ require 'iterators'
 
   -- Concept matching fixed arrays of T.
   local an_arrayT: type = #[concept(function(x)
-    if x.type:is_array_of(T) then
+    -- if x.type:is_array_of(T) then
+    --   return types.PointerType(x.type)
+    -- end
+    if x.type:is_contiguous_of(T) then
       return true
     end
     return false, string.format("no viable conversion from '%s' to '%s'", x.type, sequenceT)
   end, function(node)
-    return node.tag == 'InitList' and types.ArrayType(T, #node)
+    if node.is_InitList and #node > 0 and not node:find_child_with_field('is_Pair') then
+      return node.tag == 'InitList' and types.ArrayType(T, #node)
+    end
   end)]#
 
   --[[
@@ -162,7 +169,7 @@ require 'iterators'
   The sequence must not be empty.
   ]]
   function sequenceT:pop(): T <inline>
-    check(self.impl and self.impl.size > 0, 'length is 0')
+    assert(self.impl ~= nilptr and self.impl.size > 0, 'attempt to pop an empty sequence')
     local ret: T = self.impl.data[self.impl.size]
     self.impl.size = self.impl.size - 1
     return ret
@@ -175,7 +182,7 @@ require 'iterators'
   ]]
   function sequenceT:insert(pos: usize, v: T): void
     self:_init()
-    check(pos > 0 and pos <= self.impl.size + 1, 'position out of bounds')
+    assert(pos > 0 and pos <= self.impl.size + 1, 'position out of bounds')
     if unlikely(self.impl.size + 2 >= self.impl.data.size) then
       sequenceT_grow(self)
     end
@@ -192,7 +199,7 @@ require 'iterators'
   The `pos` must be valid (within sequence bounds).
   ]]
   function sequenceT:remove(pos: usize): T
-    check(self.impl and self.impl.size > 0, 'position out of bounds')
+    assert(self.impl ~= nilptr and self.impl.size > 0 and pos <= self.impl.size, 'position out of bounds')
     local ret: T = self.impl.data[pos]
     if self.impl.size > pos then
       memory.move(&self.impl.data[pos], &self.impl.data[pos+1], (self.impl.size - pos) * #T)
@@ -249,7 +256,7 @@ require 'iterators'
   function sequenceT:__atindex(pos: usize): *T <inline>
     self:_init()
     if unlikely(pos > self.impl.size) then
-      check(pos == self.impl.size + 1, 'position out of bounds')
+      assert(pos == self.impl.size + 1, 'position out of bounds')
       self.impl.size = self.impl.size + 1
       if unlikely(self.impl.size + 1 > self.impl.data.size) then
         sequenceT_grow(self)
@@ -285,6 +292,25 @@ require 'iterators'
     return self
   end
 
+  --[[
+  Returns the sequence elements from `i` to `j`.
+  Both `i` and `j` must be known at compile-time.
+
+  This function is equivalent to
+  ```
+  return seq[i], seq[i+1], ..., seq[j]
+  ```
+  ]]
+  function sequenceT:unpack(i: isize <comptime>, j: isize <comptime>) <inline>
+    ## local rets = {}
+    assert(i >= 1 and j <= #self and i <= j, 'unpack out of range')
+    ## for k=i.value,j.value do
+      local #|'v'..k|#: T = self[#[k]#]
+      ## table.insert(rets, aster.Id{'v'..k})
+    ## end
+    return #[aster.unpack(rets)]#
+  end
+
   ## return sequenceT
 ## end
 
@@ -296,3 +322,5 @@ Argument `Allocator` is an allocator type for the container storage,
 in case absent then `DefaultAllocator` is used.
 ]]
 global sequence: type = #[generalize(make_sequenceT)]#
+
+return sequence

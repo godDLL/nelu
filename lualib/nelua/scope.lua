@@ -74,7 +74,7 @@ function Scope.create_root(context, node)
     usednames = {},
     is_root = true,
     is_function = true,
-    is_returnbreak = true,
+    is_resultbreak = true,
   }, Scope)
   setmetatable(rootscope.symbols, {
     __index = rootscope_symbols__index,
@@ -90,7 +90,7 @@ function Scope:fork(node)
     node = node,
     context = context,
     parent = self,
-    is_topscope = self.is_root,
+    is_topscope = self.is_root or self.is_require,
     children = {},
     labels = {},
     usednames = {},
@@ -134,11 +134,11 @@ function Scope:get_up_function_scope()
   return upfunctionscope
 end
 
--- Return the first upper scope that would process return statements.
-function Scope:get_up_return_scope()
+-- Return the first upper scope that is a do expression.
+function Scope:get_up_doexpr_scope()
   local upreturnscope = self.upreturnscope
   if not upreturnscope then
-    upreturnscope = self:get_up_scope_of_kind('is_returnbreak')
+    upreturnscope = self:get_up_scope_of_kind('is_doexpr')
     self.upreturnscope = upreturnscope
   end
   return upreturnscope
@@ -187,7 +187,7 @@ function Scope:find_label(name)
       return label, self
     end
     self = self.parent
-  until (not self or self.is_returnbreak)
+  until (not self or self.is_function)
 end
 
 function Scope:add_label(label)
@@ -208,10 +208,13 @@ Generates a unique identifier name prefixed with `name` in the current scope.
 Returns "name_N" where N is an integral number that starts for 1,
 and increments every generate call.
 ]]
-function Scope:generate_name(name)
+function Scope:generate_name(name, compact)
   local count = (self.usednames[name] or 0) + 1
   self.usednames[name] = count
-  return name..'_'..count
+  if count > 1 or not compact then
+    return name..'_'..count
+  end
+  return name
 end
 
 function Scope:make_checkpoint()
@@ -260,7 +263,7 @@ function Scope:add_symbol(symbol)
   local symbols = self.symbols
   local oldsymbol = symbols[key]
   if oldsymbol then
-    if oldsymbol == symbol then
+    if oldsymbol == symbol or symbols[symbol] then -- symbol already registered
       return
     end
     -- shadowing a symbol with the same name
@@ -269,7 +272,7 @@ function Scope:add_symbol(symbol)
       key = symbol
     else
       -- shadowing an usual variable
-      if rawget(symbols, key) == oldsymbol then
+      if rawget(symbols, key) == oldsymbol then -- the old symbol is really in this scope
         -- this symbol will be overridden but we still need to list it for the resolution
         symbols[oldsymbol] = oldsymbol
       end
@@ -304,14 +307,12 @@ function Scope:delay_resolution(force)
   self.delay = true
 end
 
-function Scope:resolve_symbol(symbol)
-  if symbol:resolve_type() then
-    local unresolved_symbols = self.unresolved_symbols
-    if unresolved_symbols and unresolved_symbols[symbol] then
-      unresolved_symbols[symbol] = nil
-      local context = self.context
-      context.unresolvedcount = context.unresolvedcount - 1
-    end
+function Scope:finish_symbol_resolution(symbol)
+  local unresolved_symbols = self.unresolved_symbols
+  if unresolved_symbols and unresolved_symbols[symbol] then
+    unresolved_symbols[symbol] = nil
+    local context = self.context
+    context.unresolvedcount = context.unresolvedcount - 1
   end
 end
 
@@ -334,8 +335,7 @@ function Scope:resolve_symbols()
         end
       end
       if symbol.type then
-        unresolved_symbols[symbol] = nil
-        context.unresolvedcount = context.unresolvedcount - 1
+        self:finish_symbol_resolution(symbol)
       end
     end
     -- if nothing was resolved previously then try resolve symbol with unknown possible types
@@ -346,8 +346,7 @@ function Scope:resolve_symbols()
         local symbol = unknownlist[i]
         local force = context.state.anyphase and primtypes.any or not symbol:is_waiting_resolution()
         if symbol:resolve_type(force) then
-          unresolved_symbols[symbol] = nil
-          context.unresolvedcount = context.unresolvedcount - 1
+          self:finish_symbol_resolution(symbol)
           count = count + 1
         end
         --break
@@ -359,9 +358,22 @@ function Scope:resolve_symbols()
   return count
 end
 
-function Scope:add_return_type(index, type)
+function Scope:add_return_type(index, type, refnode)
   if not type then
-    self.has_unknown_return = true
+    -- ignore the unknown types in recursive functions
+    if refnode then
+      for symbol in refnode:walk_symbols() do
+        if symbol == self.funcsym or symbol == self.polysym then
+          return
+        end
+      end
+    end
+    self.has_unknown_return = refnode or true
+  elseif self.has_unknown_return == refnode then
+    self.has_unknown_return = nil
+  end
+  if type and type.is_void then -- void must be converted to nil
+    type = primtypes.niltype
   end
   local possible_rettypes = self.possible_rettypes
   if not possible_rettypes then
@@ -376,8 +388,22 @@ function Scope:add_return_type(index, type)
   end
 end
 
-function Scope:resolve_rettypes()
-  if self.rettypes or not self.is_returnbreak then -- not on a return block or already resolved
+function Scope:add_return_value(index, value)
+  if not value then return end
+  local retvalues = self.retvalues
+  if not retvalues then
+    retvalues = {}
+    self.retvalues = retvalues
+  end
+  if retvalues[index] == nil then
+    retvalues[index] = value
+  elseif retvalues[index] ~= value then
+    self.node:raisef("function cannot return multiple distinct compile time types")
+  end
+end
+
+function Scope:resolve_return_types()
+  if self.rettypes or not self.is_resultbreak then -- not on a return block or already resolved
     return 0
   end
   local possible_rettypes = self.possible_rettypes
@@ -409,7 +435,7 @@ function Scope:resolve_rettypes()
 end
 
 function Scope:resolve()
-  local count = self:resolve_symbols() + self:resolve_rettypes()
+  local count = self:resolve_symbols() + self:resolve_return_types()
   if config.debug_scope_resolve and count > 0 then
     console.info(self.node:format_message('info', "scope resolved %d symbols", count))
   end

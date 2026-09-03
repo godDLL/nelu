@@ -12,7 +12,9 @@ import config
 import compile
 import parser
 import analyzer
+import luaengine
 import osproc
+import timing
 
 # Nim's `quit` clamps the exit code to the `int8` range on POSIX (anything > 127
 # becomes 127), which breaks exit-code propagation for programs that abort
@@ -20,7 +22,8 @@ import osproc
 # C `exit` import so the full 0..255 range is preserved.
 proc cexit(code: cint) {.importc: "exit", header: "<stdlib.h>", noreturn.}
 
-const VersionString = "Nelua-in-Nim 0.2.0-dev (clean-room reimplementation)"
+const VersionString = "Nelua-in-Nim 0.2.1 (clean-room reimplementation)"
+const SemverString = "0.2.1"
 
 proc printHelp() =
   echo "Usage: nelua [options] [input ...]"
@@ -35,25 +38,43 @@ proc printHelp() =
   echo "  -c, --code               Emit C and stop"
   echo "  -a, --analyze            Analyze only, no codegen"
   echo "  --lint                   Check for syntax errors only"
+  echo "  --script                 Run a Lua script instead of compiling"
   echo "  --print-ast              Print the AST"
   echo "  --print-analyzed-ast     Print the analyzed AST"
   echo "  --print-ppcode           Print the preprocessing code"
   echo "  --print-code             Print the generated code"
+  echo "  --print-assembly         Print the assembly generated code only"
   echo "  -P <pragma>              Set initial compiler pragma"
+  echo "  -i <code>                Evaluate a nelua string"
+  echo "  --eval <code>            Evaluate a nelua string"
   echo "  -D <define>              Define a preprocessor value"
   echo "  --cc <cc>                C compiler to use (default: gcc)"
   echo "  --cflags <flags>         Extra flags for the C compiler"
   echo "  --ldflags <flags>        Extra flags for the linker"
   echo "  --path <dir>             Add a module search path"
+  echo "  -R <runner>              Execute compiled output with a runner"
+  echo "  --runner <runner>        Execute compiled output with a runner"
   echo "  -L <dir>, --add-path <dir>  Add a module search path (accumulating)"
   echo "  -o <output>              Output file"
   echo "  --cache-dir <dir>        Compilation cache directory"
   echo "  -s, --strip-bin          Strip symbols from the binary"
+  echo "  --stripflags <flags>     Flags passed to strip (default: -x)"
   echo "  --sanitize               Enable runtime sanitizers"
   echo "  -g <generator>           Code generator backend (default: c)"
   echo "  --no-cache               Do not use cached compilation"
   echo "  --version                Print the version and exit"
+  echo "  --semver                 Print the semantic version and exit"
   echo "  --config                 Dump the effective configuration and exit"
+  echo "  -w, --no-warning         Disable warnings (hook; none emitted yet)"
+  echo "  --no-color               Disable ANSI colour (hook; none emitted yet)"
+  echo "  -D <define>              Define a preprocessor value"
+  echo "  --define <define>        Define a preprocessor value"
+  echo "  -P <pragma>              Set initial compiler pragma"
+  echo "  --pragma <pragma>        Set initial compiler pragma"
+  echo "  -M, --maximum-performance Optimize for maximum performance"
+  echo "  -t, --timing             Print per-stage timing"
+  echo "  -T, --more-timing        Print per-file timing"
+  echo "  -d, --debug              Run the binary under GDB"
   echo "  -V                       Verbose: echo generated C and cc command line"
   echo "  --help                   Show this help and exit"
 
@@ -112,39 +133,122 @@ proc main(): int =
   for i in 0..<paramCount():
     args[i] = paramStr(i + 1)
 
-  let (c, positionals) = parseArgs(args)
+  timing.setStart()
+  var (c, positionals) = parseArgs(args)
+
+  if c.timing or c.moreTiming:
+    timing.enabled = true
+    timing.stages = c.timing
+    timing.detail = c.moreTiming
 
   if c.help:
     printHelp()
     return 0
-  if c.version:
-    echo VersionString
-    return 0
-  if hasError(c):
+
+  # Mutual exclusivity among the print-and-exit flags (--version / --semver /
+  # --config) and `input`, checked BEFORE parse errors: the oracle reports the
+  # exclusivity conflict for `--version --config --bogus` rather than the
+  # unknown-option error.  The oracle names the second distinct token the
+  # subject and the first the conflict, e.g. `--config hello` ->
+  # "argument 'input' can not be used together with option '--config'" and
+  # `hello --config` -> the reverse.
+  var seenTokens: seq[string] = @[]
+  for tok in c.cliOrder:
+    if tok notin seenTokens:
+      seenTokens.add tok
+  if seenTokens.len >= 2:
+    proc word(tok: string): string =
+      if tok == "input": "argument 'input'"
+      else: "option '--" & tok & "'"
+    stderr.writeLine("error: " & word(seenTokens[1]) &
+                     " can not be used together with " & word(seenTokens[0]))
     return 1
 
+  # Parse errors (unknown option, bad path, output-mode conflict) take
+  # precedence over the print-and-exit flags: `--version --bogus` is an error,
+  # not a version dump.  (Mutual exclusivity is checked FIRST: the oracle
+  # reports the exclusivity conflict for `--version --config --bogus`.)
+  if hasError(c):
+    stderr.writeLine("error: " & c.parseError)
+    return 1
+
+  if c.semver:
+    echo SemverString
+    return 0
   if c.config:
     if positionals.len > 0:
       stderr.writeLine("error: argument 'input' can not be used together with option '--config'")
       return 1
     dumpConfig(c)
     return 0
+  if c.version:
+    echo VersionString
+    return 0
+
+  # --script short-circuits the entire nelua pipeline: run a .lua file through
+  # the embedded Lua engine instead of compiling nelua.  Pure-Lua path.  Placed
+  # after --config (the oracle checks --config first: `--script --config` with
+  # no input dumps config, `--config --script <file>` errors on the positional).
+  if c.script:
+    if positionals.len == 0:
+      stderr.writeLine("error: Missing input file name, please pass a source file as an argument.")
+      return 1
+    let (scriptErr, scriptExit) = runScript(positionals[0])
+    if scriptErr.len > 0:
+      stderr.writeLine(scriptErr)
+    return scriptExit
+
+  # -i/--eval: the code string IS the input.  Use a fixed synthetic path so the
+  # generated unitname ("eval") is a valid C identifier (computeUnitname feeds
+  # the C symbol prefix).  Any trailing positionals become application runargs
+  # for the runner, matching the reference (the code is the input, not a file).
+  # This runs before the no-input check: `-i 'code'` has no positional of its
+  # own, so without this the driver would print usage and exit 0.
+  var evalSource = ""
+  if c.eval:
+    if c.evalCode.len == 0:
+      stderr.writeLine("nelua: -i/--eval requires a code argument")
+      return 1
+    if positionals.len > 0:
+      c.runargs = positionals
+    positionals = @["eval.nelua"]
+    evalSource = c.evalCode
+
+  # -R/--runner: the reference takes exactly one input file; every remaining
+  # positional is an application argument passed to the runner as <runargs>.
+  # This runs before the no-input check: `-R echo` with no input must error,
+  # not fall through to usage.
+  if c.runner.len > 0:
+    if positionals.len == 0:
+      stderr.writeLine("error: Missing input, please pass a source file as an argument.")
+      return 1
+    if positionals.len > 1:
+      c.runargs = positionals[1..^1]
+    positionals = positionals[0..0]
 
   if positionals.len == 0:
-    ## No input: the oracle prints usage and exits 0.
-    printHelp()
-    return 0
+    ## No input.  With NO arguments at all the oracle prints usage and exits 0;
+    ## with some flag but no input it errors "Missing input, please pass a
+    ## source file as an argument." (e.g. `-b`, `-c`, `-R echo`).
+    if paramCount() == 0:
+      printHelp()
+      return 0
+    stderr.writeLine("error: Missing input, please pass a source file as an argument.")
+    return 1
 
   var failed = false
   var exitCode = 0
   for input in positionals:
     var source: string
-    try:
-      source = readFile(input)
-    except OSError, IOError:
-      stderr.writeLine("nelua: cannot read '" & input & "': " & getCurrentExceptionMsg())
-      failed = true
-      continue
+    if c.eval:
+      source = evalSource
+    else:
+      try:
+        source = readFile(input)
+      except OSError, IOError:
+        stderr.writeLine("error: Failed to read input file: " & input & ": " & getCurrentExceptionMsg())
+        failed = true
+        continue
 
     ## `--print-ast` / `--print-analyzed-ast` / `--analyze` / `--print-ppcode`
     ## only need the parser or analyzer.  They must NOT run the C code
@@ -185,6 +289,8 @@ proc main(): int =
           failed = true
       else:
         echo res.cSource
+    elif c.printAssembly:
+      echo res.assemblySource
     elif c.lint:
       # Syntax check only, matching the reference.  `parser.parse` prints the
       # diagnostic itself and returns nil on a ParseError; anything that does
@@ -199,8 +305,9 @@ proc main(): int =
     else:
       # Default / -b --binary: compile() already emitted and ran the binary.
       if c.output.len > 0:
-        # Honor -o by copying the produced binary to the requested name.
-        let builtBin = getCurrentDir() / "tmp" / analyzer.computeUnitname(input)
+        # Honor -o by copying the produced binary to the requested name.  The binary
+        # was built in the shared cache by compile(); read it back from there.
+        let builtBin = cacheDir() / analyzer.computeUnitname(input)
         try:
           if fileExists(builtBin):
             copyFile(builtBin, c.output)
@@ -219,7 +326,9 @@ proc main(): int =
         # and propagating its exit code. compile() already captured both.
         stdout.write(res.output)
         exitCode = res.exitCode
+        timing.printRun(res.runMs)
 
+  timing.printTotal()
   return if failed: 1 elif exitCode != 0: exitCode else: 0
 
 when isMainModule:

@@ -27,32 +27,55 @@ and a system-dependent error code as a third result.
 
 require 'filestream'
 
+-- Common C imports.
+
 local FILE: type <cimport,cinclude'<stdio.h>',forwarddecl> = @record{}
-local stdin: *FILE <cimport,cinclude'<stdio.h>'>
-local stdout: *FILE <cimport,cinclude'<stdio.h>'>
-local stderr: *FILE <cimport,cinclude'<stdio.h>'>
-local function tmpfile(): *FILE <cimport,cinclude'<stdio.h>'> end
-local function fclose(fp: *FILE): cint <cimport,cinclude'<stdio.h>'> end
-local function fflush(fp: *FILE): cint <cimport,cinclude'<stdio.h>'> end
-local function strerror(errnum: cint): cstring <cimport,cinclude'<string.h>'> end
-local errno: cint <cimport,cinclude'<errno.h>'>
 
 -- Namespace for I/O module.
 global io: type = @record{}
 
 local FStream: type = #[filestream.value.fields.fs.type.subtype]#
-local stderrfs: FStream = {fp = stderr}
-local stdoutfs: FStream = {fp = stdout}
-local stdinfs: FStream = {fp = stdin}
 
--- Default error output file handle.
-global io.stderr: filestream = {fs = &stderrfs}
+--[[
+The following is a trick to define `io.stdout`, `io.stderr` and `io.stdin` on first usage,
+so we can avoid generating C code for them when they are not used.
+]]
+##[[
+local infieldindex = false
+setmetatable(symbols.io.value.metafields, {__index = hygienize(function(metafields, key)
+  if infieldindex then return end
+  infieldindex = true
+]]
+  ## if key == 'stderr' then
+  local stderr: *FILE <cimport,cinclude'<stdio.h>'>
+  local stderrfs: FStream = {fp = stderr}
 
--- Default output file handle.
-global io.stdout: filestream = {fs = &stdoutfs}
+  -- Default error output file handle.
+  global io.stderr: filestream = {fs = &stderrfs}
+  ## elseif key == 'stdout' then
+  local stdout: *FILE <cimport,cinclude'<stdio.h>'>
+  local stdoutfs: FStream = {fp = stdout}
 
--- Default input file handle.
-global io.stdin: filestream = {fs = &stdinfs}
+  -- Default output file handle.
+  global io.stdout: filestream = {fs = &stdoutfs}
+  ## elseif key == 'stdin' then
+  local stdin: *FILE <cimport,cinclude'<stdio.h>'>
+  local stdinfs: FStream = {fp = stdin}
+
+  -- Default input file handle.
+  global io.stdin: filestream = {fs = &stdinfs}
+  ## end
+##[[
+  infieldindex = false return rawget(metafields, key)
+end)})
+]]
+
+-- Returns last errno message plus its code.
+local function geterrno(): (string, integer)
+  local errno: cint <cimport,cinclude'<errno.h>'>
+  local function strerror(errnum: cint): cstring <cimport,cinclude'<string.h>'> end
+  return strerror(errno), errno
+end
 
 --[[
 Opens a file, in the mode specified in the string `mode`.
@@ -74,40 +97,33 @@ function io.popen(prog: string, mode: facultative(string)) : (filestream, string
   ## if mode.type.is_niltype then
   local mode: string = "r"
   ## else
-  assert(m.size == 1 and (m.data[0] == 'r' or m.data[0] == 'w') and m.data[1] == '\0', 'invalid mode')
+  assert(mode.size == 1 and (mode.data[0] == 'r'_b or mode.data[0] == 'w'_b) and mode.data[1] == 0, 'invalid mode')
   ## end
   ## if ccinfo.is_wasm then
-  return filestream{}, 'unsupported', 1
+  return filestream{}, 'unsupported', -1
   ## else
   local modecs: cstring <nodce> = mode
   local progcs: cstring <nodce> = prog
   local fp: *FILE
   local closef: function(fp: *FILE): cint
-##[==[
-  -- C code is used so that the generated C is portable across platforms.
-  cinclude '<stdio.h>' -- for popen/pclose
-  cinclude '<stddef.h>' -- for NULL
-  cinclude [[
-/* Include POSIX APIs. */
-#if !defined(_WIN32) && (defined(__unix__) || defined(__unix) || (defined(__APPLE__) && defined(__MACH__)))
-  #include <unistd.h>
-#endif
-]]
-  cemit[[
-#ifdef _WIN32
-  fp = _popen(progcs, modecs);
-  closef = _pclose;
-#elif _POSIX_VERSION >= 200112L
-  fflush(NULL);
-  fp = popen(progcs, modecs);
-  closef = pclose;
-#endif
-]]
-]==]
+  ## cinclude '@unistd.h'
+  ## cemit '#if defined(_WIN32)'
+  local function _popen(command: cstring, type: cstring): *FILE <cimport,cinclude'<stdio.h>'> end
+  local function _pclose(stream: *FILE): cint <cimport,cinclude'<stdio.h>'> end
+  fp = _popen(progcs, modecs)
+  closef = _pclose
+  ## cemit '#elif _POSIX_VERSION >= 200112L'
+  local function popen(command: cstring, type: cstring): *FILE <cimport,cinclude'<stdio.h>'> end
+  local function pclose(stream: *FILE): cint <cimport,cinclude'<stdio.h>'> end
+  local function fflush(fp: *FILE): cint <cimport,cinclude'<stdio.h>'> end
+  fflush(nilptr)
+  fp = popen(progcs, modecs)
+  closef = pclose
+  ## cemit '#endif'
   if not fp and not closef then
-    return filestream{}, 'unsupported', 1
+    return filestream{}, 'unsupported', -1
   elseif not fp then
-    return filestream{}, strerror(errno), errno
+    return filestream{}, geterrno()
   end
   return filestream._fromfp(fp, closef), '', 0
   ## end
@@ -132,7 +148,7 @@ Save any written data to the default output file.
 
 Equivalent to `io.output():flush()`.
 ]]
-function io.flush(): (boolean, string, integer)
+function io.flush(): (boolean, string, integer) <polymorphic>
   return io.stdout:flush()
 end
 
@@ -173,9 +189,11 @@ In case of success, returns an open handle for a temporary file.
 This file is opened in update mode and it is automatically removed when the program ends.
 ]]
 function io.tmpfile(): (filestream, string, integer)
+  local function fclose(fp: *FILE): cint <cimport,cinclude'<stdio.h>'> end
+  local function tmpfile(): *FILE <cimport,cinclude'<stdio.h>'> end
   local fp: *FILE = tmpfile()
   if not fp then
-    return filestream{}, strerror(errno), errno
+    return filestream{}, geterrno()
   end
   return filestream._fromfp(fp, fclose), '', 0
 end
@@ -212,8 +230,12 @@ end
 
 -- Like `io.writef` but also flushes the standard output.
 function io.printf(...: varargs): void
-  io.writef(...)
-  io.flush()
+  io.stdout:printf(...)
+end
+
+-- Like `print`, but writes to `io.stdout` using `io.write`.
+function io.print(...: varargs): void
+  io.stdout:print(...)
 end
 
 --[[
@@ -244,7 +266,7 @@ that is, it iterates over the lines of the default input file.
 It currently never closes the file when the iteration finishes.
 In case of errors opening the file, this function raises the error, instead of returning an error code.
 ]]
-function io.lines(filename: facultative(string), fmt: overload(integer,string,niltype)): (auto, auto, string)
+function io.lines(filename: facultative(string), fmt: overload(integer,string,niltype))
   ## if filename.type.is_niltype then
     return io.stdin:lines()
   ## else
@@ -259,13 +281,10 @@ function io.lines(filename: facultative(string), fmt: overload(integer,string,ni
     }
     local function lines_next(state: LinesState, prevstr: string): (boolean, string)
       local str: string, errmsg: string, status: integer = state.file:read(state.fmt)
-      local ok: boolean = status == 0
-      if not ok then -- must close the file
-        state.file:close()
-        state.file:destroy()
-      end
-      return ok, str
+      return status == 0, str
     end
-    return lines_next, (@LinesState){file=file,fmt=fmt}, (@string){}
+    return lines_next, (@LinesState){file=file,fmt=fmt}, (@string){}, file
   ## end
 end
+
+return io

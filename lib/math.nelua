@@ -12,6 +12,8 @@ local an_optional_integral: type = #[concept(function(x) return x.type.is_integr
 
 -- Compile time utilities.
 ##[[
+linklib 'm'
+
 local function choose_float_type(x)
   local type
   if x.type.is_float then
@@ -58,6 +60,12 @@ end
   ## local ftype, fname, incname = choose_cmath_func(name, x)
   local T: type = #[ftype]#
   local function #|name|#(x: T): T <cimport(#[fname]#),cinclude(#[incname]#),nosideeffect> end
+## end
+
+## local function import_cmath_func1_int(name, x)
+  ## local ftype, fname, incname = choose_cmath_func(name, x)
+  local T: type = #[ftype]#
+  local function #|name|#(x: T): cint <cimport(#[fname]#),cinclude(#[incname]#),nosideeffect> end
 ## end
 
 ## local function import_cmath_func2(name, x, y)
@@ -119,6 +127,11 @@ function math.round(x: an_scalar): auto <inline,nosideeffect>
   ## end
 end
 
+-- Like `math.round`, but the result is always converted to an integer.
+function math.iround(x: an_scalar): integer <inline,nosideeffect>
+  return math.round(x)
+end
+
 -- Returns the rounded value of `x` towards zero.
 function math.trunc(x: an_scalar): auto <inline,nosideeffect>
   ## if x.type.is_float then
@@ -127,6 +140,11 @@ function math.trunc(x: an_scalar): auto <inline,nosideeffect>
   ## else
     return x
   ## end
+end
+
+-- Like `math.trunc`, but the result is always converted to an integer.
+function math.itrunc(x: an_scalar): integer <inline,nosideeffect>
+  return math.trunc(x)
 end
 
 --[[
@@ -490,7 +508,7 @@ function math.type(x: auto): auto <inline,nosideeffect>
   ## end
 end
 
-require 'detail.xoshiro256'
+local Xoshiro256: type = require 'detail.xoshiro256'
 
 -- Default initialization for the pseudo random generator
 local default_random: Xoshiro256 = {state={
@@ -514,14 +532,31 @@ To ensure a required level of randomness to the initial state
 you should call `math.randomseed` with explicit arguments.
 ]]
 function math.randomseed(x: an_optional_integral, y: an_optional_integral): (integer, integer)
+  local random_buf: [2]uint64 <noinit>
   ## if x.type.is_niltype and y.type.is_niltype then
-  local function time(tloc: *ctime_t): ctime_t <cimport,cinclude'<time.h>'> end
-  local x: uint64 = (@uint64)(time(nilptr))
-  local y: uint64 = (@usize)(&x)
+    ## if ccinfo.is_wasi then
+      local function __wasi_random_get(buf: *uint8, size: culong): uint16 <cimport,cinclude'<wasi/api.h>'> end
+      __wasi_random_get((@*uint8)(&random_buf), 16)
+    ## elseif ccinfo.is_emscripten then
+      local function emscripten_random(): float32 <cimport,cinclude'<emscripten.h>'> end
+      local random_floats: *[4]float32 = (@*[4]float32)(&random_buf)
+      random_floats[0] = emscripten_random()
+      random_floats[1] = emscripten_random()
+      random_floats[2] = emscripten_random()
+      random_floats[3] = emscripten_random()
+    ## else
+      local function time(tloc: *ctime_t): ctime_t <cimport,cinclude'<time.h>'> end
+      random_buf[0] = (@uint64)(time(nilptr))
+      random_buf[1] = (@usize)(&random_buf)
+    ## end
   ## elseif y.type.is_niltype then
-  local y: uint64 = 0
+    random_buf[0] = (@uint64)(x)
+    random_buf[1] = 0
+  ## else
+    random_buf[0] = (@uint64)(x)
+    random_buf[1] = (@uint64)(y)
   ## end
-  local ix: integer, iy: integer = (@integer)(x), (@integer)(y)
+  local ix: integer, iy: integer = (@integer)(random_buf[0]), (@integer)(random_buf[1])
   default_random:seed((@uint64)(ix), (@uint64)(iy))
   return ix, iy
 end
@@ -541,23 +576,61 @@ Its pseudo-random generator is initialized with the equivalent of a call to `mat
 so that `math.random` should generate different sequences of results each time the program runs.
 ]]
 function math.random(m: an_optional_scalar, n: an_optional_scalar): auto
-  local r: number = default_random:random()
-  ## if not m.type.is_niltype and not n.type.is_niltype then
-    local low: integer, up: integer = (@integer)(m), (@integer)(n)
-    check(low == m and up == n, "number has no integer representation")
-    check(low <= up, "interval is empty")
-    check(low >= 0 or up < math.maxinteger + low, "interval too large")
-    r = r * ((@number)(up - low) + 1.0)
-    return (@integer)(r) + low
-  ## elseif not m.type.is_niltype then
+  ## if not m.type.is_niltype then
+    ## if not n.type.is_niltype then
+    local low: integer = (@integer)(m)
+    local high: integer = (@integer)(n)
+    check(low == m and high == n, "number has no integer representation")
+    ## else
     local low: integer <comptime> = 1
     local high: integer = (@integer)(m)
-    check(high > 0, "interval is empty")
-    r = r * (@number)(high)
-    return (@integer)(r) + low
+    check(high == m, "number has no integer representation")
+    if high == 0 then
+      return (@integer)(default_random:nextrand())
+    end
+    ## end
+    check(low <= high, "interval is empty")
+    return (@integer)(default_random:randomuint((@uint64)(high) - (@uint64)(low)) + (@uint64)(low))
   ## else
-    return r
+    return default_random:randomfloat()
   ## end
+end
+
+-- Returns true if value `x` is a NaN (not a number) floating point number.
+function math.isnan(x: an_scalar): boolean
+  ## if x.type.is_float then
+    if x ~= x then return true end -- early check, NaN cannot be equal to itself
+    --[[
+    Arbitrary way to check NaN without relying much on float format.
+    C99 `isnan` is intentionally not used here because it doesn't work under `-ffast-math`
+    while this method should work.
+    Note that it's fine to downcast to float32 just for NaN checking.
+    Also <volatile> must be used so the code is not optimized outwith '-ffast-math' on Clang.
+    ]]
+    local n: auto <volatile> = x
+    local UF2I: type = @union{f: float32, i: uint32}
+    local pinf: UF2I = {f=#[math.huge]#}
+    local ninf: UF2I = {f=#[-math.huge]#}
+    local ux: UF2I = {f=n}
+    return (ux.i & ninf.i == ninf.i and ux.i ~= ninf.i) or -- negative nan
+           (ux.i & pinf.i == pinf.i and ux.i ~= pinf.i and ux.i ~= ninf.i) -- positive nan
+  ## else
+    return false
+  ## end
+end
+
+-- Returns true if value `x` is an infinite floating point number.
+function math.isinf(x: an_scalar): boolean
+  ## if x.type.is_float then
+    return x + x == x and x ~= 0
+  ## else
+    return false
+  ## end
+end
+
+-- Returns true if value `x` is a finite floating point number (neither NaN or Inf).
+function math.isfinite(x: an_scalar): boolean
+  return not math.isnan(x) and not math.isinf(x)
 end
 
 -- Float value of PI.
@@ -574,3 +647,5 @@ global math.maxinteger: integer <comptime> = #[primtypes.integer.max]#
 
 -- An integer with the maximum value for an unsigned integer.
 global math.maxuinteger: uinteger <comptime> = #[primtypes.uinteger.max]#
+
+return math

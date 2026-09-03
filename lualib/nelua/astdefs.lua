@@ -254,6 +254,14 @@ aster.register('Return',
   shaper.array_of(shaper.Node),  -- returned exprs
 {
   is_unpackable = true,
+  is_breakflow = true,
+})
+
+-- In statement.
+aster.register('In', {
+  shaper.Node, -- final expr
+}, {
+  is_breakflow = true,
 })
 
 -- If statement.
@@ -309,10 +317,19 @@ aster.register('ForIn', {
 })
 
 -- Break statement.
-aster.register('Break', {})
+aster.register('Break', {}, {
+  is_breakflow = true,
+})
 
 -- Continue statement.
-aster.register('Continue', {})
+aster.register('Continue', {}, {
+  is_breakflow = true,
+})
+
+-- Fallthrough statement.
+aster.register('Fallthrough', {}, {
+  is_breakflow = true,
+})
 
 -- Label statement.
 aster.register('Label', {
@@ -353,8 +370,11 @@ aster.register('FuncDef', {
   is_function = true,
 })
 
--- This is used only internally.
+-- Directive statement, used only internally for some preprocessor directives.
 aster.register('Directive', {
   shaper.string, -- name
   shaper.table, -- arguments exprs
 })
+
+-- No operation statement, used only internally when discarding AST nodes.
+aster.register('NoOp', {})

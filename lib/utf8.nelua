@@ -47,7 +47,8 @@ local function utf8iscont(p: byte): boolean
 end
 
 -- Helper to convert an integer to its corresponding UTF-8 byte sequence.
-local function utf8esc(buf: *[8]byte, x: uint32): int32
+local function utf8esc(x: uint32): ([8]byte, int32)
+  local buf: [8]byte <noinit>
   local n: int32 = 1
   check(x <= 0x7FFFFFFF_u)
   if x < 0x80 then -- ASCII?
@@ -62,7 +63,9 @@ local function utf8esc(buf: *[8]byte, x: uint32): int32
     until x <= mfb -- still needs continuation byte?
     buf[8 - n] = (@byte)((~mfb << 1) | x) -- add first byte
   end
-  return n
+  memory.move(&buf[0], &buf[8-n], (@usize)(n))
+  memory.zero(&buf[n], (@usize)(8-n))
+  return buf, n
 end
 
 --[[
@@ -107,14 +110,23 @@ end
 --[[
 Receives zero or more integers, converts each one to its corresponding UTF-8 byte sequence,
 and returns a string with the concatenation of all these sequences.
+
+Containers of integers (e.g vector, sequence or span) are also accepted as arguments,
+returning a string with the concatenation of all their elements.
 ]]
 function utf8.char(...: varargs): string
   local sb: stringbuilder
-  local buf: [8]byte
-  local len: int32 <noinit>
   ## for i=1,select('#', ...) do
-    len = utf8esc(&buf, (@uint32)(#[select(i, ...)]#))
-    sb:write(string{data=&buf[8 - len], size=(@usize)(len)})
+    local val: auto = #[select(i, ...)]#
+    ## if val.type.is_container then
+      for i: integer, v: integer in ipairs(val) do
+        local buf: [8]byte, len: int32 = utf8esc((@uint32)(v))
+        sb:write(string{data=&buf[0], size=(@usize)(len)})
+      end
+    ## else
+      local buf: [8]byte, len: int32 = utf8esc((@uint32)(val))
+      sb:write(string{data=&buf[0], size=(@usize)(len)})
+    ## end
   ## end
   return sb:promote()
 end
@@ -269,3 +281,5 @@ function utf8.len(s: string, i: facultative(isize), j: facultative(isize), relax
   end
   return n, -1
 end
+
+return utf8

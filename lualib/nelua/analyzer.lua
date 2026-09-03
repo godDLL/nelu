@@ -2,6 +2,7 @@ local iters = require 'nelua.utils.iterators'
 local traits = require 'nelua.utils.traits'
 local tabler = require 'nelua.utils.tabler'
 local pegger = require 'nelua.utils.pegger'
+local defer = require 'nelua.utils.defer'
 local fs = require 'nelua.utils.fs'
 local typedefs = require 'nelua.typedefs'
 local Attr = require 'nelua.attr'
@@ -19,6 +20,12 @@ local analyzer = {}
 local luatype = type
 
 local primtypes = typedefs.primtypes
+local builtin_attrs = typedefs.builtin_attrs
+local orig_primtypes = {}
+local orig_builtin_attrs = {}
+tabler.updatecopymt(orig_primtypes, primtypes)
+tabler.updatecopymt(orig_builtin_attrs, builtin_attrs)
+
 local visitors = {}
 analyzer.visitors = visitors
 
@@ -454,6 +461,11 @@ function visitors.InitList(context, node, opts)
     visitor_Record_literal(context, node, desiredtype)
   elseif desiredtype.is_union then
     visitor_Union_literal(context, node, desiredtype)
+  elseif desiredtype.is_array_pointer then
+    local clone = node:clone()
+    clone.attr.desiredtype = desiredtype.subtype
+    local newnode = aster.UnaryOp{'ref', clone}
+    context:transform_and_traverse_node(node, newnode)
   else
     node:raisef("type '%s' cannot be initialized using an initializer list", desiredtype)
   end
@@ -472,14 +484,14 @@ function visitors.Pair(context, node)
 end
 
 function visitors.Directive(context, node)
-  local name, params = node[1], node[2]
+  local name, args = node[1], node[2]
   -- check directive shape
   if not node.checked then
     local paramshape = typedefs.pp_directives[name]
     if not paramshape then
       node:raisef("directive '%s' is undefined", name)
     end
-    local ok, err = paramshape(params)
+    local ok, err = paramshape(args)
     if not ok then
       node:raisef("invalid arguments for directive '%s': %s", name, err)
     end
@@ -487,10 +499,13 @@ function visitors.Directive(context, node)
   end
   -- handle directive
   if name == 'pragmapush' then
-    local pragmas = params[1]
-    context:push_forked_pragmas(pragmas)
+    context:push_forked_pragmas(args[1])
   elseif name == 'pragmapop' then
     context:pop_pragmas()
+  elseif name == 'pragma' then
+    tabler.update(context.pragmas, args[1])
+  elseif name == 'libpath' then
+    table.insert(context.libpaths, args[1])
   else
     node.done = true
   end
@@ -589,6 +604,12 @@ function visitors.Annotation(context, node, opts)
     else
       objattr.codename = codename
     end
+    if codename == 'nelua_argc' or codename == 'nelua_argv' then
+      context.cmainimports = context.cmainimports or {}
+      table.insert(context.cmainimports, (codename:gsub('nelua_', '')))
+    end
+    context.cimports = context.cimports or {}
+    context.cimports[codename] = true
   elseif name == 'nickname' then
     assert(objattr._type and objattr.is_nameable)
     local type, nickname = objattr, params
@@ -599,10 +620,19 @@ function visitors.Annotation(context, node, opts)
     if objattr._type then
       objattr:update_fields()
     end
-  elseif name == 'codename' then
+  elseif name == 'codename' or (name == 'cexport' and params ~= true) then
+    if name == 'cexport' then
+      objattr.codename = params
+    end
     objattr.fixedcodename = params
     objattr.nodce = true
+    if objattr.type and objattr.type.is_polyfunction then
+      node:raisef("polymorphic functions cannot use codename annotation")
+    end
   elseif istypedecl and (name == 'cincomplete' or name =='forwarddecl') then
+    if name =='forwarddecl' and objattr._type and objattr.fields and #objattr.fields > 0 then
+      node:raisef("defining fields in types marked with forward declaration is not allowed")
+    end
     objattr.size = nil
     objattr.bitsize = nil
     objattr.align = nil
@@ -642,7 +672,6 @@ function visitors.Annotation(context, node, opts)
 end
 
 function visitors.Id(context, node)
-  if node.checked then return node.attr end
   local name = node[1]
   local state = context.state
   if name == 'type' and state.intypeexpr  then
@@ -677,8 +706,6 @@ function visitors.Id(context, node)
   symbol:add_use_by(state.funcscope.funcsym)
   if symbol.type then
     node.done = symbol
-  else
-    node.checked = true
   end
   return symbol
 end
@@ -697,7 +724,10 @@ function visitors.IdDecl(context, node)
       typenode:raisef("invalid type")
     end
     if type.is_void then
-      node:raisef("variable declaration cannot be of the empty type '%s'", type)
+      node:raisef("variable declaration cannot be of the type '%s'", type)
+    elseif type.is_generic then
+      node:raisef("variable declaration cannot be of the type '%s', \z
+        maybe you forgot to instantiate the generic?", type)
     end
     attr.type = type
   end
@@ -724,10 +754,9 @@ function visitors.IdDecl(context, node)
       symbol.scope = scope
       symbol.lvalue = true
     end
-  else
-    -- global record field
+  else -- record field
     assert(namenode.is_DotIndex)
-    context:push_forked_state{inglobaldecl=node}
+    context:push_forked_state{infielddecl=node}
     symbol = context:traverse_node(namenode)
     context:pop_state()
     symbol.scope = context.rootscope
@@ -766,6 +795,14 @@ function visitors.Type(context, node, opts)
     typenode:raisef("invalid type")
   end
   if symbol then
+    if symbol.type and not (symbol.type.is_type or symbol.type.is_auto) then
+      node:raisef("attempt to assign a type to a symbol of type '%s'", symbol.type)
+    end
+    if symbol.value then
+      -- overwrite old symbol value, (this fixes forward declarations on generics)
+      tabler.mirror(symbol.value, type)
+    end
+    symbol.type = primtypes.type
     symbol.value = type
     context:choose_type_symbol_names(symbol)
   end
@@ -797,7 +834,7 @@ function visitors.FuncType(context, node)
   for i=1,#argnodes do
     local argnode = argnodes[i]
     local argattr
-    if argnode.is_IdDecl then
+    if argnode.is_IdDecl or argnode.is_VarargsType then
       argattr = argnode.attr
     else
       local argtype = argnode.attr.value
@@ -856,6 +893,7 @@ function visitors.RecordType(context, node, opts)
   else
     recordtype = types.RecordType({}, node)
     recordtype.size = nil -- size is unknown yet
+    recordtype.is_empty = nil
   end
   attr.type = primtypes.type
   attr.value = recordtype
@@ -1076,7 +1114,7 @@ function visitors.GenericType(context, node)
   if not generic_type or not traits.is_type(generic_type) or not generic_type.is_generic then
     node:raisef("in generic evaluation: symbol '%s' of type '%s' cannot generalize", name, symbol.type)
   end
-  local params = {}
+  local params = {n=#argnodes}
   for i=1,#argnodes do
     local argnode = argnodes[i]
     context:traverse_node(argnode)
@@ -1164,11 +1202,13 @@ local function izipargnodes(vars, argnodes)
   local lastargnode = argnodes[lastargindex]
   local lastcalleetype = lastargnode and lastargnode.attr.calleetype
   local niltype = primtypes.niltype
+  local lastvarnode = vars[#vars]
+  local multipleargs = lastvarnode and lastvarnode.type and lastvarnode.type.is_multipleargs
   if lastargnode and lastargnode.is_call and
      (not lastcalleetype or not lastcalleetype.is_type) then
     -- last arg is a runtime call
     return function()
-      local var, argnode
+      local previ, var, argnode = i
       i, var, argnode = iter(ts, i)
       if i then
         -- NOTE: the calletype may change while iterating
@@ -1199,6 +1239,17 @@ local function izipargnodes(vars, argnodes)
         else
           -- call type is now known yet, argtype will be nil
           return i, var, argnode, argnode and argnode.attr.type
+        end
+      elseif multipleargs then
+        local calleetype = argnodes[lastargindex].attr.calleetype
+        if calleetype and calleetype.is_procedure then
+          i = previ + 1
+          local callretindex = i - lastargindex + 1
+          local argtype = calleetype:get_return_type(callretindex)
+          if argtype and not argtype.is_niltype and callretindex > 1 then
+            lastargnode.attr.usemultirets = true
+            return i, primtypes.varargs, nil, argtype, callretindex
+          end
         end
       end
     end
@@ -1275,6 +1326,14 @@ local function visitor_Call(context, node, argnodes, calleetype, calleesym, call
   local attr = node.attr
   if calleetype then
     local sideeffect
+    if calleetype.is_record and calleetype.metafields.__call then
+      calleetype = calleetype.metafields.__call.type
+      if not calleetype.is_procedure then
+        node:raisef("in record call: expected meta field '__call' to be a procedure but is of type '%s'", calleetype)
+      end
+      attr.ismetacall = true
+      calleeobjnode = node[2]
+    end
     if calleetype.is_procedure then -- function call
       local argattrs = {}
       for i=1,#argnodes do
@@ -1321,7 +1380,7 @@ local function visitor_Call(context, node, argnodes, calleetype, calleesym, call
       end
       local polyargs = {}
       local knownallargs = true
-      for i,funcarg,argnode,argtype in izipargnodes(pseudoargattrs, argnodes) do
+      for i,funcarg,argnode,argtype,lastcallindex in izipargnodes(pseudoargattrs, argnodes) do
         local arg
         local funcargtype
         if traits.is_type(funcarg) then funcargtype = funcarg
@@ -1347,7 +1406,9 @@ local function visitor_Call(context, node, argnodes, calleetype, calleesym, call
             arg = argnode.attr
           end
         else
-          if funcargtype.is_cvarargs or funcargtype.is_varargs then
+          if (funcargtype.is_cvarargs or funcargtype.is_varargs) and
+            (not (argtype and funcargtype.is_varargs and lastcallindex and lastcallindex > 1) or
+            (argtype and argtype.is_niltype)) then
             break
           end
           arg = argtype
@@ -1371,9 +1432,8 @@ local function visitor_Call(context, node, argnodes, calleetype, calleesym, call
         elseif not funcargtype then
           break
         end
-
-        if argtype and argtype.is_niltype and not funcargtype.is_nilable then
-          node:raisef("in call of function '%s': expected an argument at index %d but got nothing",
+        if argtype and argnode and argtype.is_niltype and not funcargtype.is_nilable then
+          node:raisef("in call of function '%s': expected an argument at index %d but got nil",
             calleename, i)
         end
         if arg then
@@ -1459,9 +1519,13 @@ local function visitor_Call(context, node, argnodes, calleetype, calleesym, call
           end
         end
       end
-      attr.calleesym = calleesym
+      if attr.ismetacall then
+        attr.calleesym = calleetype.symbol
+      else
+        attr.calleesym = calleesym
+      end
       if calleetype then
-        attr.type = calleetype:get_return_type(1)
+        attr.type, attr.value = calleetype:get_return_type_and_value(1)
         sideeffect = calleetype.sideeffect
         if calleetype.symbol then
           calleetype.symbol:add_use_by(context.state.funcscope.funcsym)
@@ -1509,7 +1573,8 @@ function visitors.Call(context, node, opts)
       local builtinfunc = builtins[calleeattr.name]
       if builtinfunc then
         local builtintype = attr.builtintype
-        if builtintype then
+        if builtintype and builtinfunc ~= builtins.require then
+          -- cache type if not require builtin
           calleetype = builtintype
         else
           builtintype = builtinfunc(context, node, argnodes, calleenode)
@@ -1612,10 +1677,10 @@ end
 
 local function visitor_Type_MetaFieldIndex(context, node, objtype, name)
   local attr = node.attr
-  local symbol = objtype.metafields[name]
+  local symbol = objtype.metafields and objtype.metafields[name]
   local parentnode = context:get_visiting_node(1)
   local infuncdef = (context.state.infuncdef == parentnode) and parentnode
-  local inglobaldecl = (context.state.inglobaldecl == parentnode) and parentnode
+  local infielddecl = (context.state.infielddecl == parentnode) and parentnode
   local inpolydef = context.state.inpolydef and symbol == context.state.inpolydef
   if inpolydef then
     symbol = attr._symbol and attr or nil
@@ -1628,16 +1693,17 @@ local function visitor_Type_MetaFieldIndex(context, node, objtype, name)
       symbol:link_node(infuncdef)
       -- declaration of record global function
       symbol.metafunc = true
+      symbol.staticstorage = true
       if node.is_ColonIndex then
         symbol.metafuncselftype = types.PointerType(objtype)
       end
-    elseif inglobaldecl then -- global declaration
-      symbol:link_node(inglobaldecl)
-      -- declaration of record global variable
+    elseif infielddecl then -- meta field declaration
+      symbol:link_node(infielddecl)
+      -- declaration of record meta field variable
       symbol.metafield = true
     else
       symbol:link_node(node)
-      if objtype.is_string and not objtype.metafields.sub then
+      if objtype.is_string and objtype.metafields and not objtype.metafields.sub then
         node:raisef("cannot index meta field '%s' in record '%s', \z
           maybe you forgot to require module 'string'?", name, objtype)
       else
@@ -1649,7 +1715,7 @@ local function visitor_Type_MetaFieldIndex(context, node, objtype, name)
     end
     symbol.anonymous = true
     symbol.scope = context.rootscope
-  elseif (infuncdef or inglobaldecl) and not symbol.forwarddecl then
+  elseif (infuncdef or infielddecl) and not symbol.forwarddecl then
     if symbol.node ~= node then
       node:raisef("cannot redefine meta type field '%s' in record '%s'", name, objtype)
     end
@@ -1662,7 +1728,6 @@ local function visitor_Type_MetaFieldIndex(context, node, objtype, name)
   if not infuncdef then
     symbol:add_use_by(context.state.funcscope.funcsym)
   end
-  node.done = symbol
   return symbol
 end
 
@@ -1684,12 +1749,10 @@ end
 
 local function visitor_Type_FieldIndex(context, node, objtype, name)
   objtype = objtype:implicit_deref_type()
-  if objtype.is_enum and not (context.state.infuncdef or context.state.inglobaldecl) then
+  if objtype.is_enum and not (context.state.infuncdef or context.state.infielddecl) then
     return visitor_EnumType_FieldIndex(context, node, objtype, name)
-  elseif objtype.metafields then
-    return visitor_Type_MetaFieldIndex(context, node, objtype, name)
   else
-    node:raisef("cannot index fields on type '%s'", objtype)
+    return visitor_Type_MetaFieldIndex(context, node, objtype, name)
   end
 end
 
@@ -1738,7 +1801,7 @@ local function visitor_Array_KeyIndex(_, node, objtype, _, indexnode)
         if bn.isneg(indexvalue) then
           indexnode:raisef("cannot index negative value %s", indexvalue)
         end
-        if objtype.is_array and objtype.length ~= 0 and not (indexvalue < bn.new(objtype.length)) then
+        if objtype.length ~= 0 and indexvalue >= bn.new(objtype.length) then
           indexnode:raisef("index %s is out of bounds, array maximum index is %d",
             indexvalue:todecint(), objtype.length - 1)
         end
@@ -1817,7 +1880,7 @@ function visitors.Block(context, node)
       if except.isexception(err) then
         except.reraise(err)
       else
-        node:raisef('error while preprocessing block: %s', err)
+        node:raisef('error while preprocessing block: %s', context.ppcontext:translate_error(err))
       end
     end
     node.preprocess = nil
@@ -1891,7 +1954,6 @@ function visitors.Switch(context, node)
   local done = valnode.done
   for i=1,#casepairs,2 do
     local caseexprs, caseblock = casepairs[i], casepairs[i+1]
-
     for j=1,#caseexprs do
       local casenode = caseexprs[j]
       context:traverse_node(casenode)
@@ -1902,7 +1964,12 @@ function visitors.Switch(context, node)
       done = done and casenode.done and true
     end
     done = done and caseblock.done and true
+    local casescope = context:get_forked_scope(caseblock)
+    casescope.switchcase_index = 1
     context:traverse_node(caseblock)
+    if casescope.fallthrough and casescope.fallthrough ~= caseblock[#caseblock] then
+      casescope.fallthrough:raisef("`fallthrough` statement must be the very last statement of a switch case block")
+    end
   end
   if elsenode then
     context:traverse_node(elsenode)
@@ -1935,6 +2002,7 @@ function visitors.Repeat(context, node)
   local blocknode, condnode = node[1], node[2]
   local scope = context:push_forked_cleaned_scope(node)
   scope.is_loop = true
+  scope.is_repeat_loop = true
   context:traverse_node(blocknode)
   context:push_scope(blocknode.scope)
   context:traverse_node(condnode, {desiredtype=primtypes.boolean})
@@ -1969,7 +2037,7 @@ function visitors.ForNum(context, node)
       itsymbol:add_possible_type(btype, begvalnode)
       itsymbol:add_possible_type(etype, endvalnode)
       if btype and etype then
-        scope:resolve_symbol(itsymbol)
+        itsymbol:resolve_type()
         ittype = itsymbol.type
       end
     end
@@ -2022,7 +2090,7 @@ function visitors.ForNum(context, node)
 
   local fixedstep
   local stepvalue
-  if stype and stype.is_scalar and (sattr.comptime or sattr.const) then
+  if stype and stype.is_scalar and (sattr.comptime or (sattr.const and stype == ittype)) then
     -- constant step
     fixedstep = stepvalnode
     stepvalue = sattr.value
@@ -2035,7 +2103,7 @@ function visitors.ForNum(context, node)
     fixedstep = '1'
   end
   local fixedend
-  if etype and etype.is_scalar and (eattr.comptime or eattr.const) then
+  if etype and etype.is_scalar and (eattr.comptime or (eattr.const and etype == ittype)) then
     fixedend = true
   end
   if not compop and stepvalue then
@@ -2055,8 +2123,8 @@ end
 
 function visitors.ForIn(context, node)
   local itvarnodes, inexpnodes, blocknode = node[1], node[2], node[3]
-  if #inexpnodes > 3 then
-    node:raisef("`in` statement can have at most 3 arguments")
+  if #inexpnodes > 4 then
+    node:raisef("`in` statement can have at most 4 arguments")
   end
 
   if context.generator == 'lua' then -- lua backend
@@ -2069,44 +2137,27 @@ function visitors.ForIn(context, node)
       context:pop_scope()
     until resolutions_count == 0
   else -- on other backends must implement using while loops
-    -- build extra nodes for the extra iterating values
-    local itvardeclnodes = {}
-    local itvaridnodes = {}
-    for i=1,#itvarnodes-1 do
-      local itvarnode = itvarnodes[i+1]
-      itvardeclnodes[i] = itvarnode
-      itvaridnodes[i] = aster.Id{itvarnode[1],
-        pattr={noinit=true},
-        src=itvarnode.src,
-        pos=itvarnode.pos, endpos=itvarnode.endpos
-      }
-    end
-
     -- replace the for in node with a while loop
     local newnode = aster.Do{aster.Block{
       aster.VarDecl{'local', {
           aster.IdDecl{'__fornext'},
           aster.IdDecl{'__forstate'},
-          aster.IdDecl{'__forit'}
+          aster.IdDecl{'__fornextit'},
+          aster.IdDecl{'__forclose', false, {aster.Annotation{'close'}}},
         },
         inexpnodes
       },
       aster.While{aster.Boolean{true}, aster.Block{
         aster.VarDecl{'local', tabler.insertvalues({
-          aster.IdDecl{'__forcont', pattr={noinit=true}}
-        }, itvardeclnodes)},
-        aster.Assign{
-          tabler.insertvalues({
-            aster.Id{'__forcont'},
-            aster.Id{'__forit'}
-          }, itvaridnodes), {
-            aster.Call{{aster.Id{'__forstate'}, aster.Id{'__forit'}}, aster.Id{'__fornext'}}
+          aster.IdDecl{'__forcont'},
+        }, itvarnodes), {
+            aster.Call{{aster.Id{'__forstate'}, aster.Id{'__fornextit'}}, aster.Id{'__fornext'}}
           }
         },
         aster.If{{aster.UnaryOp{'not', aster.Id{'__forcont'}}, aster.Block{
           aster.Break{}
         }}},
-        aster.VarDecl{'local', {itvarnodes[1]}, {aster.Id{'__forit'}}},
+        aster.Assign{{aster.Id{'__fornextit'}}, {aster.Id{itvarnodes[1][1]}}},
         aster.Do{blocknode}
       }}
     }}
@@ -2125,6 +2176,29 @@ function visitors.Continue(context, node)
   if not context.scope:get_up_scope_of_kind('is_loop') then
     node:raisef("`continue` statement is not inside a loop")
   end
+  node.done = true
+end
+
+function visitors.Fallthrough(context, node)
+  local scope = context.scope
+  local switchcase_index = scope.switchcase_index
+  if not switchcase_index then
+    node:raisef("`fallthrough` statement must be inside a switch case black")
+  end
+  local switchnode = context:get_visiting_node(2)
+  assert(switchnode.is_Switch)
+  local casepairs, elsenode = switchnode[2], switchnode[3]
+  if not (casepairs[switchcase_index+2] or elsenode) then
+    node:raisef("`fallthrough` statement must be followed by another switch block")
+  end
+  if scope.fallthrough and scope.fallthrough ~= node then
+    node:raisef("`fallthrough` statement must be used at most once per switch case block")
+  end
+  scope.fallthrough = node
+  node.done = true
+end
+
+function visitors.NoOp(_, node)
   node.done = true
 end
 
@@ -2148,7 +2222,7 @@ function visitors.Goto(context, node)
   local labelname = node[1]
   local label, labelscope = context.scope:find_label(labelname)
   if not label then
-    local funcscope = context.scope:get_up_return_scope() or context.rootscope
+    local funcscope = context.scope:get_up_function_scope() or context.rootscope
     if not funcscope.resolved_once then
       -- we should find it in the next traversal
       funcscope:delay_resolution(true)
@@ -2173,6 +2247,7 @@ end
 local function visit_close(context, declnode, varnode, symbol)
   local objtype = varnode.attr.type
   if not objtype then return end
+  if objtype.is_niltype then return end
   objtype = objtype:implicit_deref_type()
   if not objtype.metafields or not objtype.metafields.__close then
     varnode:raisef(
@@ -2204,6 +2279,13 @@ end
 function visitors.VarDecl(context, node)
   local declscope, varnodes, valnodes = node[1], node[2], node[3]
   local assigning = not not valnodes
+  local last_call_node
+  if assigning then
+    local last_node = valnodes[#valnodes]
+    if last_node.is_call then
+      last_call_node = last_node
+    end
+  end
   valnodes = valnodes or {}
   if #varnodes < #valnodes then
     node:raisef("extra expressions in declaration, expected at most %d but got %d",
@@ -2236,14 +2318,8 @@ function visitors.VarDecl(context, node)
       if vartype.is_nolvalue then
         varnode:raisef("variable declaration cannot be of the type '%s'", vartype)
       end
-      if vartype.is_type and not valnode then
-        varnode:raisef("a type declaration must assign to a type")
-      end
     end
     assert(symbol.type == vartype)
-    if (varnode.attr.comptime or varnode.attr.const) and not varnode.attr.nodecl and not valnode then
-      varnode:raisef("const variables must have an initial value")
-    end
     if valnode then
       context:traverse_node(valnode, {symbol=symbol, desiredtype=vartype})
       valtype = valnode.attr.type
@@ -2253,14 +2329,18 @@ function visitors.VarDecl(context, node)
         if valtype.is_varanys then
           -- varanys are always stored as any in variables
           valtype = primtypes.any
-        elseif not vartype and valtype.is_niltype then
-          -- untyped variables assigned to nil always store as any type
-          valtype = primtypes.any
+        elseif valtype.is_void then
+          valtype = primtypes.niltype
         end
       end
-      if varnode.attr.comptime and not (valnode.attr.comptime and valtype) then
-        varnode:raisef("compile time variables can only assign to compile time expressions")
-      elseif vartype and vartype.is_auto then
+      if varnode.attr.comptime then
+        if not (valnode.attr.comptime and valtype) then
+          varnode:raisef("compile time variables can only assign to compile time expressions")
+        elseif (valnode.attr.value == nil and valnode.attr.type ~= primtypes.niltype) then
+          varnode:raisef("compile time variables cannot be of type '%s'", vartype)
+        end
+      end
+      if vartype and vartype.is_auto then
         if not valtype then
           varnode:raisef("auto variables must be assigned to expressions where type is known ahead")
         elseif valtype.is_nolvalue then
@@ -2272,14 +2352,21 @@ function visitors.VarDecl(context, node)
       elseif vartype == primtypes.type and valtype ~= primtypes.type then
         valnode:raisef("cannot assign a type to '%s'", valtype)
       end
+    else
+      if i > 1 and (valtype and valtype.is_type) then
+        varnode:raisef("a type declaration can only assign to the first assignment expression")
+      end
+      if vartype and vartype.is_type then
+        varnode:raisef("a type declaration must assign to a type")
+      end
+      if (varnode.attr.comptime or varnode.attr.const) and not varnode.attr.nodecl then
+        varnode:raisef("const variables must have an initial value")
+      end
     end
     if not inscope then
       symbol.scope:add_symbol(symbol)
     end
     if assigning and valtype then
-      if valtype.is_void then
-        varnode:raisef("cannot assign to expressions of type 'void'")
-      end
       local assignvaltype = false
       if varnode.attr.comptime then
         -- for comptimes the type must be known ahead
@@ -2322,8 +2409,8 @@ function visitors.VarDecl(context, node)
         end
       end
     end
-    if assigning and (valtype or valnode) then
-      symbol:add_possible_type(valtype, valnode)
+    if assigning and (valtype or valnode or last_call_node) then
+      symbol:add_possible_type(valtype, valnode or last_call_node)
     end
     if symbol.close then -- process close annotation
       visit_close(context, node, varnode, symbol)
@@ -2341,6 +2428,11 @@ function visitors.Assign(context, node)
   if #varnodes < #valnodes then
     node:raisef("extra expressions in assign, expected at most %d but got %d", #varnodes, #valnodes)
   end
+  local last_call_node
+  local last_node = valnodes[#valnodes]
+  if last_node.is_call then
+    last_call_node = last_node
+  end
   local done = true
   for i,varnode,valnode,valtype in izipargnodes(varnodes, valnodes) do
     local symbol = context:traverse_node(varnode)
@@ -2355,9 +2447,6 @@ function visitors.Assign(context, node)
       valnode, valtype = visitor_convert(context, valnodes, i, vartype, valnode, valtype)
     end
     if valtype then
-      if valtype.is_void then
-        varnode:raisef("cannot assign to expressions of type 'void'")
-      end
       if valnode and not valnode.attr:can_copy() then
         valnode:raisef("cannot assign non copyable type '%s'", valtype)
       end
@@ -2367,8 +2456,8 @@ function visitors.Assign(context, node)
       end
     end
     if symbol then -- symbol may nil in case of array/dot index
-      if valtype or valnode then
-        symbol:add_possible_type(valtype, valnode)
+      if valtype or valnode or last_call_node then
+        symbol:add_possible_type(valtype, valnode or last_call_node)
       end
       symbol.mutate = true
 
@@ -2392,7 +2481,7 @@ end
 
 function visitors.Return(context, node)
   local retnodes = node
-  local funcscope = context.scope:get_up_return_scope() or context.rootscope
+  local funcscope = context.scope:get_up_function_scope() or context.rootscope
   funcscope.hasreturn = true
   if funcscope.rettypes then
     local done = true
@@ -2407,13 +2496,10 @@ function visitors.Return(context, node)
           if funcrettype.is_auto then
             funcscope.rettypes[i] = rettype
           else
-            if rettype.is_niltype and not funcrettype.is_nilable then
-              node:raisef("missing return expression at index %d of type '%s'", i, funcrettype)
-            end
             if retnode and rettype then
               retnode, rettype = visitor_convert(context, retnodes, i, funcrettype, retnode, rettype)
             end
-            if rettype then
+            if retnode and rettype then
               local ok, err = funcrettype:is_convertible_from(retnode or rettype)
               if not ok then
                 (retnode or node):raisef("return at index %d: %s", i, err)
@@ -2431,72 +2517,58 @@ function visitors.Return(context, node)
         end
       end
       if retnode then
+        if rettype and rettype.is_type then
+          funcscope:add_return_value(i, retnode.attr.value)
+        end
         done = done and retnode.done and true
       end
     end
     node.done = done
   else
     context:traverse_nodes(retnodes)
-    for i,_,rettype in iargnodes(retnodes) do
-      funcscope:add_return_type(i, rettype)
+    for i,retnode,rettype in iargnodes(retnodes) do
+      funcscope:add_return_type(i, rettype, retnode)
+      if rettype and retnode and rettype.is_type then
+        funcscope:add_return_value(i, retnode.attr.value)
+      end
     end
   end
 end
 
-local function block_endswith_return(blocknode)
-  local statnodes = blocknode
-  local laststat = statnodes[#statnodes]
-  if not laststat then return false end
-  if laststat.is_Return then
-    blocknode.attr.returnending = true
-    return true
-  elseif laststat.is_Call then
-    local lastattr = laststat.attr
-    local calleesym = lastattr.calleesym
-    if not calleesym and not lastattr.type then
-      -- will be rechecked in next traversal
-      return true
-    end
-    if calleesym and calleesym.noreturn then
-      return true
-    end
-    return false
-  elseif laststat.is_Do then
-    return block_endswith_return(laststat[1])
-  elseif laststat.is_If then
-    local pairs, elseblock = laststat[1], laststat[2]
-    for i=1,#pairs,2 do
-      local block = pairs[i+1]
-      if not block_endswith_return(block) then
-        return false
-      end
-    end
-    if elseblock then
-      return block_endswith_return(elseblock)
-    end
-  elseif laststat.is_Switch then
-    local pairs, elseblock = laststat[2], laststat[3]
-    for i=1,#pairs,2 do
-      local block = pairs[i+1]
-      if not block_endswith_return(block) then
-        return false
-      end
-    end
-    if elseblock then
-      return block_endswith_return(elseblock)
-    end
-  elseif laststat.is_While then
-    local whilecondattr = laststat[1].attr
-    if whilecondattr.comptime and whilecondattr.value == true then -- infinite loop
-      for childnode in laststat:walk_trace_nodes({Do=true,If=true,Switch=true,Block=true,Break=true}, true) do
-        if childnode.is_Break then
-          return false
+function visitors.In(context, node)
+  local retnode = node[1]
+  local exprscope = context.scope:get_up_doexpr_scope()
+  if not exprscope then
+    retnode:raisef("no do expression block found to use `in` statement")
+  end
+  if exprscope.rettypes then
+    local inrettype = exprscope.rettypes[1]
+    assert(inrettype)
+    context:traverse_node(retnode, {desiredtype=inrettype})
+    local rettype = retnode.attr.type
+    if rettype then
+      retnode, rettype = visitor_convert(context, node, 1, inrettype, retnode, rettype)
+      if rettype then
+        local ok, err = inrettype:is_convertible_from(retnode or rettype)
+        assert(ok, err) -- we always expect a successful conversion
+        local retattr = retnode and retnode.attr
+        if retattr and not retattr:can_copy() and
+           not (retattr.scope and retattr.scope:get_up_function_scope() == exprscope) then
+          retnode:raisef("in `in` expression: cannot pass non copyable type '%s' by value",
+            rettype)
         end
       end
-      return true
+    end
+    node.done = retnode.done and true
+  else
+    context:traverse_node(retnode)
+    local retattr = retnode.attr
+    local rettype = retattr.type
+    exprscope:add_return_type(1, retattr.type, retnode)
+    if rettype and rettype.is_type then
+      exprscope:add_return_value(1, retattr.value)
     end
   end
-  return false
 end
 
 function visitors.Do(context, node)
@@ -2511,7 +2583,7 @@ function visitors.DoExpr(context, node)
   repeat
     exprscope = context:push_forked_cleaned_scope(node)
     exprscope.is_doexpr = true
-    exprscope.is_returnbreak = true
+    exprscope.is_resultbreak = true
     context:traverse_node(blocknode)
     local resolutions_count = exprscope:resolve()
     context:pop_scope()
@@ -2520,11 +2592,12 @@ function visitors.DoExpr(context, node)
   local attr = node.attr
   if not node.checked then
     -- this block requires a return
-    if not block_endswith_return(blocknode) then
-      node:raisef("a return statement is missing inside do expression block")
+    local topblock = context:get_visiting_node(1)
+    if not topblock.is_Block and not blocknode:ends_with('In') then
+      node:raisef("a `in` statement is missing inside do expression block")
     end
     local firstnode = blocknode[1]
-    if firstnode.is_Return then -- forward attr from first expression
+    if firstnode and firstnode.is_In then -- forward attr from first expression
       local exprattr = firstnode[1].attr
       attr.sideeffect = exprattr.sideeffect
       attr.comptime = exprattr.comptime
@@ -2539,16 +2612,8 @@ function visitors.DoExpr(context, node)
   if not attr.type then
     local rettypes = exprscope.rettypes
     if rettypes then -- known return type
-      if #rettypes ~= 1 then
-        node:raisef("do expression block can only return one argument")
-      end
       attr.type = rettypes[1]
-    else -- transform into a symbol to force resolution on top scopes
-      local symbol = Symbol.promote_attr(attr, node)
-      symbol:add_possible_type(nil, blocknode)
-      context.scope:add_symbol(attr)
     end
-
     node.done = attr.type and blocknode.done and true
   end
 end
@@ -2642,7 +2707,8 @@ local function visitor_function_returns(context, node, retnodes, ispolyparent)
             if except.isexception(err) then
               except.reraise(err)
             else
-              retnode:raisef('error while preprocessing function return node: %s', err)
+              retnode:raisef('error while preprocessing function return node: %s',
+                context.ppcontext:translate_error(err))
             end
           end
           retnode = retnodes[i] -- the node may be overwritten
@@ -2651,6 +2717,9 @@ local function visitor_function_returns(context, node, retnodes, ispolyparent)
       end
       if retnode then
         context:traverse_node(retnode)
+        if not retnode.attr.value then
+          retnode:raisef('in function return %d: invalid type for function return', i)
+        end
         if retnode.attr.value.is_auto then
           hasauto = true
         end
@@ -2683,7 +2752,7 @@ local function visitor_function_annotations(context, node, annotnodes, blocknode
         blocknode:raisef("body of a function declaration must be empty")
       end
       if attr.codename == 'nelua_main' then
-        context.hookmain = true
+        context.hookmain = attr
       end
     end
 
@@ -2697,6 +2766,9 @@ local function visitor_function_annotations(context, node, annotnodes, blocknode
       if context.entrypoint and context.entrypoint ~= node then
         node:raisef("cannot have more than one function entrypoint")
       end
+      if type and type.is_polyfunction then
+        node:raisef('polymorphic functions cannot be an entrypoint')
+      end
       if not attr.fixedcodename then
         attr.codename = attr.name
       end
@@ -2704,8 +2776,8 @@ local function visitor_function_annotations(context, node, annotnodes, blocknode
       context.entrypoint = node
     end
 
-    if type and type.is_polyfunction and attr.alwayseval then
-      type.alwayseval = true
+    if type and type.is_polyfunction and attr.alwayspoly then
+      type.alwayspoly = true
     end
   end
 end
@@ -2750,16 +2822,27 @@ local function visitor_function_polyevals(context, node, symbol, varnode, type)
         end
         if invarargs then -- replace varargs arguments with IdDecl nodes
           nvarargs = nvarargs + 1
-          local polyevaltype = traits.is_attr(polyevalarg) and polyevalarg.value or polyevalarg
+          local polyargtype
+          local polyargval
+          if traits.is_attr(polyevalarg) then -- should be a type
+            assert(polyevalarg.type.is_type)
+            polyargtype = polyevalarg.type
+            polyargval = polyevalarg.value
+          else
+            polyargtype = polyevalarg
+          end
           local polyargtypesym = Symbol{
             type = primtypes.type,
-            value = polyevaltype,
+            value = polyargtype,
           }
           local argname = '__arg'..nvarargs
-          polyargnode = aster.IdDecl{argname, aster.Id{'auto', pattr={forcesymbol=polyargtypesym}}}
+          polyargnode = aster.IdDecl{argname,
+            aster.Id{'auto', pattr={forcesymbol=polyargtypesym}},
+            pattr={value=polyargval},
+          }
           polyargnodes[j] = polyargnode
           if varargsnodes then
-            varargsnodes[nvarargs] = aster.Id{argname, attr=Attr{type=polyevaltype}}
+            varargsnodes[nvarargs] = aster.Id{argname, attr=Attr{type=polyargtype, value=polyargval}}
           end
         elseif polyargnode then
           local polyargattr = polyargnode.attr
@@ -2825,6 +2908,9 @@ local function resolve_function_type(node, symbol, varnode, varsym, decl, argatt
     end
     attr.value = symbol
   end
+  if symbol and symbol.type then
+    symbol.scope:finish_symbol_resolution(symbol)
+  end
   return type
 end
 
@@ -2865,7 +2951,7 @@ function visitors.FuncDef(context, node, opts)
   if annotnodes then
     for i=1,#annotnodes do
       local annotname = annotnodes[i][1]
-      if annotname == 'polymorphic' then
+      if annotname == 'polymorphic' or annotname == 'alwayspoly' then
         attr.polymorphic = true
       elseif annotname == 'cimport' then
         attr.cimport = true
@@ -2926,8 +3012,11 @@ function visitors.FuncDef(context, node, opts)
     -- enter in the function scope
     funcscope = context:push_forked_cleaned_scope(node)
     funcscope.funcsym = symbol
+    if polysymbol then
+      funcscope.polysym = polysymbol
+    end
     funcscope.is_function = true
-    funcscope.is_returnbreak = true
+    funcscope.is_resultbreak = true
     context:push_forked_state{funcscope = funcscope}
 
     -- traverse the function arguments
@@ -2972,7 +3061,7 @@ function visitors.FuncDef(context, node, opts)
   -- type checking for returns
   if type and defn and type.is_function and rettypes and #rettypes > 0 then
     local canbeempty = tabler.iallfield(rettypes, 'is_nilable')
-    if not canbeempty and not block_endswith_return(blocknode) then
+    if not canbeempty and not blocknode:ends_with('Return') then
       node:raisef("a return statement is missing before function end")
     end
   end
@@ -2999,6 +3088,7 @@ function visitors.Function(context, node)
     symbol.lvalue = true
     symbol.used = true
     symbol.staticstorage = true
+    symbol.anonfunc = true
     symbol.scope:add_symbol(symbol)
   end
 
@@ -3009,7 +3099,7 @@ function visitors.Function(context, node)
     funcscope = context:push_forked_cleaned_scope(node)
     funcscope.funcsym = symbol
     funcscope.is_function = true
-    funcscope.is_returnbreak = true
+    funcscope.is_resultbreak = true
     context:push_forked_state{funcscope = funcscope}
 
     -- traverse the function arguments
@@ -3052,7 +3142,7 @@ function visitors.Function(context, node)
   -- type checking for returns
   if type and rettypes and #rettypes > 0 then
     local canbeempty = tabler.iallfield(rettypes, 'is_nilable')
-    if not canbeempty and not block_endswith_return(blocknode) then
+    if not canbeempty and not blocknode:ends_with('Return') then
       node:raisef("a return statement is missing before function end")
     end
   end
@@ -3113,6 +3203,17 @@ local function override_unary_op(context, node, opname, objnode, objtype)
   return true
 end
 
+local disallowed_deref_ops = {
+  ['ne'] = true,
+  ['eq'] = true,
+  ['or'] = true,
+  ['and'] = true,
+  ['not'] = true,
+  ['deref'] = true,
+  ['ref'] = true,
+}
+
+
 function visitors.UnaryOp(context, node, opts)
   local attr = node.attr
   local opname, argnode = node[1], node[2]
@@ -3136,6 +3237,9 @@ function visitors.UnaryOp(context, node, opts)
   local argtype = argattr.type
   local type
   if argtype then
+    if argtype.is_pointer and argtype.subtype.is_composite and not disallowed_deref_ops[opname] then
+      argtype = argtype.subtype
+    end
     if override_unary_op(context, node, opname, argnode, argtype) then
       return
     end
@@ -3154,8 +3258,12 @@ function visitors.UnaryOp(context, node, opts)
   end
   if opname == 'ref' then
     if argtype then
-      if not argattr.lvalue then
-        node:raisef("in unary operation `%s`: cannot reference rvalues", opname)
+      if not argattr.lvalue and argtype.is_aggregate and
+        (argnode.attr.calleetype == primtypes.type or argnode.is_InitList) then
+        -- allow referencing temporary records/arrays
+        argattr.promotelvalue = true
+      elseif not argattr.lvalue then
+        node:raisef("in unary operation `%s`: cannot reference rvalue of type '%s'", opname, argtype)
       end
       argattr.refed = true
     end
@@ -3189,7 +3297,7 @@ local function override_binary_op(context, node, opname, lnode, rnode, ltype, rt
   else
     mtname = '__' .. opname
   end
-  if mtname == '__eq' and ltype ~= rtype and not ltype.is_stringy == rtype.is_stringy then
+  if mtname == '__eq' and ltype ~= rtype and ltype.is_stringy ~= rtype.is_stringy then
     -- __eq metamethod is called only for same record types (except for stringy types)
     return
   end
@@ -3246,6 +3354,12 @@ function visitors.BinaryOp(context, node, opts)
   local ltype, rtype = lattr.type, rattr.type
   local type
   if ltype and rtype then
+    if ltype.is_pointer and rtype.is_pointer and not disallowed_deref_ops[opname] and
+       ltype.subtype.is_composite and rtype.subtype.is_composite then
+      -- auto dereference for binary operation on pointers
+      ltype = ltype.subtype
+      rtype = rtype.subtype
+    end
     if not wantsboolean and isbinaryconditional and
       (not rtype.is_boolean or not ltype.is_boolean) then
       attr.dynamic_conditional = true
@@ -3285,9 +3399,27 @@ function visitors.BinaryOp(context, node, opts)
 end
 
 function analyzer.analyze(context)
+  -- this is necessary to support calling analyzer multiple times (eg in LSPs),
+  -- previous analyzer may have filled references in builtin symbols and primtypes
+  -- so we cleanup before
+  for k,v in pairs(orig_primtypes) do
+    local primtype = tabler.mirror(primtypes[k], v)
+    if primtype.metafields then
+      tabler.clear(primtype.metafields)
+    end
+  end
+  for k,v in pairs(orig_builtin_attrs) do
+    tabler.mirror(builtin_attrs[k], v)
+  end
+
   -- save current analyzing context
   local old_current_context = analyzer.current_context
   analyzer.current_context = context
+  local _ <close> = defer(function()
+    -- restore old analyzing context
+    analyzer.current_context = old_current_context
+  end)
+
   -- begin tracking analyze time
   local timer
   if config.more_timing then
@@ -3303,7 +3435,13 @@ function analyzer.analyze(context)
   end
   context:push_forked_state{funcscope=context.rootscope}
   -- phase 1 traverse: preprocess
-  preprocessor.preprocess(context, ast)
+  local ppcode = preprocessor.preprocess(context, ast)
+  if config.print_ppcode then
+    if ppcode then
+      console.info(ppcode)
+    end
+    return
+  end
   -- phase 2 traverse: infer and check types
   repeat
     context:traverse_node(ast)
@@ -3337,8 +3475,6 @@ function analyzer.analyze(context)
     callback()
   end
   context:pop_state()
-  -- restore old analyzing context
-  analyzer.current_context = old_current_context
   return context
 end
 

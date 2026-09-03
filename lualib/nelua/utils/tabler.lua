@@ -60,6 +60,26 @@ function tabler.copy(t)
   return ot
 end
 
+-- Shallow copy for table (including metatables).
+function tabler.copymt(t)
+  local ot = {}
+  for i,v in next,t do
+    ot[i] = v
+  end
+  return setmetatable(ot, getmetatable(t))
+end
+
+-- Update a table with shallow copy of children (including metatables).
+function tabler.updatecopymt(dest, src)
+  for k,v in pairs(src) do dest[k] = tabler.copymt(v) end
+  return dest
+end
+
+-- Shallow copy a table and update its elements.
+function tabler.copyupdate(s, t)
+  return tabler.update(tabler.copy(s), t)
+end
+
 -- Check if a field is present in all values of an array table.
 function tabler.iallfield(t, field)
   for i=1,#t do
@@ -101,6 +121,14 @@ function tabler.shallow_compare_nomt(t1, t2)
     return true
   end
   return false
+end
+
+-- Make table `dst` identical to table `src` (including metatables).
+function tabler.mirror(dst, src)
+  if rawequal(dst, src) then
+    return
+  end
+  return setmetatable(tabler.update(tabler.clear(setmetatable(dst, nil)), src), getmetatable(src))
 end
 
 return tabler

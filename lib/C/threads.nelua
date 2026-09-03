@@ -11,14 +11,20 @@ require 'C.time'
 if not pragmas.nogc then
   static_error "multithreading and GC is not supported, please enable pragma 'nogc'"
 end
-if not (ccinfo.is_apple or ccinfo.is_windows) and
-       (ccinfo.is_c11 or ccinfo.is_cpp11) and
-       not ccinfo.stdc_no_threads then -- C11 threads is supported
+if ccinfo.has_c11_threads then -- C11 threads is supported
   cinclude 'threads.h'
+  if ccinfo.is_bsd then
+    linklib 'stdthreads'
+  end
 else -- implement C11 threads using POSIX threads
-  cemitdecl(function(emitter) emitter:add(c11thread_code) end)
+  cinclude(function(emitter) emitter:add(c11thread_code) end)
 end
-cflags '-pthread' -- all implementations we support is using pthread
+-- all implementations we support is using pthread
+if ccinfo.is_gcc and not ccinfo.is_haiku then
+  cflags '-pthread' -- this flag will link pthread, and also fix possible issues on Linux
+else -- must link pthread
+  linklib 'pthread'
+end
 ]]
 
 -- Types
@@ -96,9 +102,10 @@ global C.TSS_DTOR_ITERATIONS: cint <const,cimport,nodecl>
 #include <time.h>
 #include <errno.h>
 #include <pthread.h>
+#include <unistd.h>
 #include <sched.h>
 #include <stdint.h>
-#ifdef __APPLE__
+#if !(defined(__linux__) || defined(_WIN32) || defined(__CYGWIN__))
   #define C11THREADS_NO_TIMED_MUTEX
 #endif
 #ifdef C11THREADS_NO_TIMED_MUTEX
@@ -149,7 +156,15 @@ static inline thrd_t thrd_current(void) {
   return pthread_self();
 }
 static inline int thrd_sleep(const struct timespec *ts_in, struct timespec *rem_out) {
+#ifdef _POSIX_TIMERS
   return nanosleep(ts_in, rem_out) == 0 ? 0 : (errno == EINTR ? -1 : -2);
+#else
+  if(rem_out) {
+    rem_out.tv_sec = 0;
+    rem_out.tv_nsec = 0;
+  }
+  return usleep(ts_in.tv_sec*1000000 + ts_in.tv_nsec/1000) == 0 ? 0 : (errno == EINTR ? -1 : -2);
+#endif
 }
 static inline void thrd_exit(int res) {
   pthread_exit((void*)(uintptr_t)res);
@@ -248,3 +263,5 @@ static inline void call_once(once_flag *flag, void (*func)(void)) {
 }
 #endif
 ]==] ]]
+
+return C

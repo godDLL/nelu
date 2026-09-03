@@ -13,6 +13,7 @@ local memoize = require 'nelua.utils.memoize'
 local except = require 'nelua.utils.except'
 local errorer = require 'nelua.utils.errorer'
 local stringer = require 'nelua.utils.stringer'
+local fs = require 'nelua.utils.fs'
 local types = require 'nelua.types'
 local aster = require 'nelua.aster'
 local typedefs = require 'nelua.typedefs'
@@ -83,8 +84,8 @@ function PPContext:_init(visitors, context)
   self.env = make_ppenv(self)
 end
 
-function PPContext:register_code(chunkname, ppcode)
-  self.codes[chunkname] = ppcode
+function PPContext:register_code(ppchunkname, ppcode)
+  self.codes[ppchunkname] = ppcode
 end
 
 -- Traverses the node `node`, arguments `...` are forwarded to its visitor.
@@ -94,8 +95,8 @@ end
 
 -- Traverses list of nodes `nodes`.
 function PPContext:traverse_nodes(nodes, emitter)
-  for i=1,#nodes do
-    self:traverse_node(nodes[i], emitter, nodes, i)
+  for i,node in ipairs(nodes) do
+    self:traverse_node(node, emitter, nodes, i)
   end
 end
 
@@ -131,6 +132,93 @@ function PPContext:get_registry_index(what)
 end
 
 --[[
+Retrieve preprocessor node in `ppchunkname` at line number `lineno`.
+If `ppchunkname` is omitted then returns the current preprocessor node in the
+current call stack.
+]]
+function PPContext:get_preprocess_node(ppchunkname, lineno)
+  if not ppchunkname and not lineno then -- get current preprocessing node
+    local level = 2
+    repeat
+      local info = debug.getinfo(level, 'Sl')
+      if info and info.source and info.currentline and info.source:find('@ppcode$') then
+        ppchunkname = info.source
+        lineno = info.currentline
+      end
+      level = level + 1
+    until ppchunkname or not info
+  end
+  if not ppchunkname or not lineno then return end
+  local ppcode = self.codes[ppchunkname]
+  if not ppcode then return end
+  local _, linepos = stringer.getline(ppcode, lineno)
+  if not linepos then return end
+  local topcode = ppcode:sub(1,linepos-1)
+  -- search last occurrence of 'ppsrcnoderegid'
+  local nextinit, init = 1, 1
+  while true do
+    local pos, endpos = topcode:find('--ppsrcnoderegid=', nextinit, true)
+    if not pos then break end
+    init = pos
+    nextinit = endpos+1
+  end
+  local pos, endpos, noderegid = topcode:find('^%-%-ppsrcnoderegid%=([0-9]+)\n', init)
+  if not pos then return end
+  -- calculate line offset relative to 'ppsrcnoderegid'
+  local _, nlcount = ppcode:sub(1, endpos):gsub('\n', '')
+  local lineoff = lineno - (nlcount + 1)
+  -- return the preprocess node
+  noderegid = tonumber(noderegid)
+  return self.registry[noderegid], lineoff
+end
+
+--[[
+Retrieve source location for preprocessor chunk with name `ppchunkname` at line number `lineno`.
+If `ppchunkname` is omitted then returns location for the current preprocessor call in the
+current preprocess call stack.
+]]
+function PPContext:get_preprocess_location(ppchunkname, lineno)
+  local ppsrcnode, lineoff = self:get_preprocess_node(ppchunkname, lineno)
+  if not ppsrcnode then return end
+  local nodeloc = ppsrcnode:location()
+  if not nodeloc or not nodeloc.lineno then return end
+  return {
+    srcname = nodeloc.srcname,
+    srccode = nodeloc.srcode,
+    lineno = nodeloc.lineno + lineoff
+  }
+end
+
+--[[
+Translate traceback errors using '@ppcode' to actual source file names.
+This improves readability of preprocess error messages.
+]]
+function PPContext:translate_error(errmsg)
+  errmsg = tostring(errmsg):gsub('([%w_.\\/ -]+:@ppcode):([0-9]+)', function(ppchunkname, lineno)
+    lineno = tonumber(lineno)
+    local ppcode = self.codes[ppchunkname]
+    if not ppcode and ppchunkname:find('^%.%.%.') then
+      local chunksuffix = ppchunkname:sub(4)
+      for name in pairs(self.codes) do
+        if stringer.endswith(name, chunksuffix) then
+          ppchunkname = name
+          break
+        end
+      end
+    end
+    if ppchunkname then
+      local loc = self:get_preprocess_location(ppchunkname, lineno)
+      if loc then
+        lineno = loc.lineno
+        ppchunkname = loc.srcname
+      end
+    end
+    return ppchunkname..':'..lineno..''
+  end)
+  return errmsg
+end
+
+--[[
 Injects string `name` at `dest[destpos]`.
 The node `orignode` is used as reference for source location.
 ]]
@@ -157,22 +245,33 @@ function PPContext.inject_value(self, value, dest, destpos, orignode)
       dest[destpos+i-1] = aster.value(value[i], orignode)
     end
   else -- a single value
-    if valueluatype == 'function' and dest.is_Call then
+    if valueluatype == 'function' and (dest.is_Call or dest.origargs) then
+      -- the dest node will be transformed, thus it will be invalid in the next `inject_value`,
+      -- so we must save the argnodes and use it in the next time
+      local argnodes = dest.origargs
+      if not argnodes then -- first preprocessing for this node
+        argnodes = dest[1]
+        dest.origargs = argnodes
+      end
       -- parse arguments to compile-time values where possible
-      local argnodes = dest[1]
+      argnodes = aster.clone(argnodes) -- must use clone because its attrs will be filled
       self.context:traverse_nodes(argnodes)
       local args = {}
       for i=1,#argnodes do
         args[i] = argnodes[i]:get_simplified_value()
       end
       -- evaluate replacement macro
-      local ret = value(table.unpack(args))
-      if ret == nil then -- no returns, probably a statement replacement
-        local noop = aster.DoExpr{aster.Block{aster.Return{aster.Nil{}}}, pattr={noop=true}}
-        dest:transform(noop)
-      else -- expression replacement
-        dest:transform(aster.value(ret, orignode))
-      end
+      local retnode = aster.DoExpr{aster.Block{
+        preprocess = function(blocknode)
+          self:push_statnodes(blocknode)
+          local ret = value(table.unpack(args))
+          if ret then
+            self:inject_statement(aster.In{aster.value(ret)})
+          end
+          self:pop_statnodes()
+        end
+      }}
+      dest:transform(retnode)
     else
       dest[destpos] = aster.value(value, orignode)
     end
@@ -197,6 +296,22 @@ function PPContext:inject_statement(node, noclone)
   end
   -- analyze the node right away, because we want to have its type information when processing
   self.context:traverse_node(node)
+end
+
+--[[
+Utility for wrapping a statement generated from macros into an AST node.
+]]
+function PPContext:wrap_statement(f)
+  if type(f) ~= 'function' then self:raisef 'pass a macro function when wrapping a statement' end
+  local nodes = {}
+  self:push_statnodes(nodes)
+  f()
+  self:pop_statnodes()
+  if #nodes == 1 then
+    return nodes[1]
+  else
+    return aster.Do{aster.Block(nodes)}
+  end
 end
 
 --[[
@@ -239,6 +354,7 @@ function PPContext:hygienize(func)
   local pragmas = context.pragmas
   return function(...)
     -- restore saved state
+    local oldaddindex = statnodes.addindex
     statnodes.addindex = addindex
     self:push_statnodes(statnodes)
     scope:push_checkpoint(checkpoint)
@@ -259,7 +375,7 @@ function PPContext:hygienize(func)
       oldscope:find_shared_up_scope(scope):delay_resolution()
       addindex = statnodes.addindex
     end
-    statnodes.addindex = nil
+    statnodes.addindex = oldaddindex
     return table.unpack(rets)
   end
 end
@@ -270,23 +386,6 @@ Effectively the same as `generic(memoize(hygienize(func)))`.
 ]]
 function PPContext:generalize(func)
   return self:generic(memoize(self:hygienize(func)))
-end
-
---[[
-Wraps function `func` into a "do expression".
-Useful to create arbitrary substitution of expressions.
-]]
-function PPContext:expr_macro(func)
-  return function(...)
-    local args = table.pack(...)
-    return aster.DoExpr{aster.Block{
-      preprocess = function(blocknode)
-        self:push_statnodes(blocknode)
-        func(table.unpack(args))
-        self:pop_statnodes()
-      end
-    }}
-  end
 end
 
 --[[
@@ -351,11 +450,11 @@ The error message will have a pretty traceback of the error location.
 ]]
 function PPContext:raisef(msg, ...)
   msg = stringer.pformat(msg, ...)
-  local info = debug.getinfo(3)
-  local lineno = info.currentline
-  local code = self.codes[info.source]
-  local src = {content=code, name='preprocessor'}
-  msg = errorer.get_pretty_source_line_errmsg(src, lineno, msg, 'error')
+  local loc = self:get_preprocess_location()
+  if loc.code and loc.lineno then
+    loc.line, loc.linestart, loc.lineend = stringer.getline(loc.srccode, loc.lineno)
+  end
+  msg = errorer.get_pretty_source_pos_errmsg(loc, msg, 'error')
   except.raise(msg, 2)
 end
 
@@ -364,29 +463,61 @@ This is just like Lua's require but it will use the preprocessor
 context environment to load the module, so all preprocessor
 methods are available in the required filed.
 ]]
-function PPContext:require(modname)
+function PPContext:require(reqname)
+  local modname = reqname
+  local reqpath = fs.reqrelpath(reqname, 'lua')
+  if reqpath then
+    local scriptname = fs.scriptname(3)
+    if not scriptname then
+      error("module '"..reqname.."' not found:\n\tfailed to retrieve current script directory")
+    end
+    reqpath = fs.abspath(reqpath, fs.dirname(scriptname))
+    modname = reqpath
+  end
   local mod = package.loaded[modname] -- lookup for a loaded module
   if mod then return mod end -- module already loaded? return it
   local loader, loaderdata
   local loaderrs = {}
   local found = false
-  for _,searcher in ipairs(package.searchers) do
-    loader, loaderdata = searcher(modname)
-    local ty = type(loader)
-    if ty == 'function' then -- module found
+  if reqpath then
+    local contents, err = fs.readfile(reqpath)
+    if contents then
+      loader, err = load(contents, '@'..reqpath)
+    end
+    if err then
+      loaderrs[1] = err
+    elseif type(loader) == 'function' then -- module found
+      loaderdata = reqpath
       found = true
-      break
-    elseif ty == 'string' then -- append search error
-      loaderrs[#loaderrs+1] = loader
+    end
+  else
+    for _,searcher in ipairs(package.searchers) do
+      loader, loaderdata = searcher(modname)
+      local ty = type(loader)
+      if ty == 'function' then -- module found
+        found = true
+        break
+      elseif ty == 'string' then -- append search error
+        loaderrs[#loaderrs+1] = loader
+      end
     end
   end
   if not found then -- module not found
-    error("module '"..modname.."' not found:\n\t"..table.concat(loaderrs, '\n\t'), 2)
+    error("module '"..reqname.."' not found:\n\t"..table.concat(loaderrs, '\n\t'), 2)
   end
+  -- check if module was already loaded by full path
+  local modpath = type(loaderdata) == 'string' and fs.abspath(loaderdata)
+  mod = package.loaded[modpath]
+  if mod then -- already loaded under a different name
+    package.loaded[modname] = mod
+    return mod
+  end
+  -- load the module
   debug.setupvalue(loader, 1, self.env) -- patch _ENV
   mod = loader(modname, loaderdata) -- load the module
   if mod == nil then mod = true end -- module set no value? use true as result
-  package.loaded[modname] = mod -- cache module
+  package.loaded[modname] = mod -- cache module by name
+  if modpath then package.loaded[modpath] = mod end -- cache module by path
   return mod, loaderdata
 end
 

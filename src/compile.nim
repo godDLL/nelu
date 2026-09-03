@@ -19,13 +19,14 @@
 ## stub instead of a real translation unit; C-compile failures are captured from
 ## the compiler's stderr.  Both land in `CompileResult.diagnostics`.
 
-import std/[options, strutils, os, osproc, tables]
+import std/[options, strutils, os, osproc, tables, times]
 import ./cgen
 import ./config
 import ./analyzer
 import ./parser
 import ./ast
 import ./luaengine
+import ./timing
 
 proc outputExtension(kind: OutputKind): string =
   ## File extension for the final artifact of an output mode ("" for a bare
@@ -44,6 +45,8 @@ type
     diagnostics*: seq[string]   ## analyzer / C-compile diagnostics
     exitCode*: int              ## -1 if nothing ran; else the last step's exit code
     output*: string             ## captured run stdout; "" if nothing was run
+    assemblySource*: string     ## gcc -S stdout; populated by --print-assembly
+    runMs*: float = -1.0        ## duration of the run step, in ms (-1 = no run)
 
   ModuleCache* = object
     ## Per-`compile()` invocation cache of resolved module path -> cached C
@@ -54,15 +57,15 @@ type
 proc newModuleCache*: ModuleCache =
   ModuleCache(files: initTable[string, string]())
 
-proc tmpDir(): string =
-  ## Locate (creating if needed) the project's scratch `tmp/` directory.
-  ## Never `/tmp`; always under the project tree.
-  for base in [getCurrentDir(), getAppDir().parentDir()]:
-    let d = base / "tmp"
-    if dirExists(d):
-      return d
-  let d = getCurrentDir() / "tmp"
-  createDir(d)
+proc cacheDir*(): string =
+  ## The build cache, matching the oracle's own layout: `~/.cache/nelu`,
+  ## created if needed.  Every intermediate for a unit (.c, .o, .s, .a, .so)
+  ## and the final binary live here, named after the unit -- so a recompile of
+  ## the same source lands at the same path, and the run step finds the binary
+  ## where the compile step put it.
+  let d = getHomeDir() / ".cache" / "nelu"
+  if not dirExists(d):
+    createDir(d)
   return d
 
 proc resolveModule*(name: string, config: Config, requiringPath: string): string =
@@ -98,9 +101,16 @@ proc resolveModule*(name: string, config: Config, requiringPath: string): string
   if config.paths.len == 0:
     candidates.add getCurrentDir() / segments.join("/") & ".nelua"
     candidates.add getCurrentDir() / segments.join("/") / "init.nelua"
-    candidates.add LibPath / segments.join("/") & ".nelua"
-    candidates.add LibPath / segments.join("/") / "init.nelua"
-  candidates.add getCurrentDir() / "lib" / segments.join("/") & ".nelua"
+    # OUR project `lib/` is this compiler's stdlib -- the mirror of the oracle's
+    # own system-lib default (`/usr/lib/nelua/lib/?.nelua`).  It is the terminal
+    # default: `require 'string'` resolves to our `lib/string.nelua`, which our
+    # own parser can compile.  We do NOT default to the oracle's system lib
+    # (`LibPath`): that is the *oracle's* stdlib, and our compiler cannot compile
+    # it (12 of its 51 modules SIGSEGV our analyzer; string.nelua uses `## if
+    # <typequery>` preprocessor blocks and `auto` multi-returns ours lacks).
+    # Users can still add it explicitly via `--path`.
+    candidates.add getCurrentDir() / "lib" / segments.join("/") & ".nelua"
+    candidates.add getCurrentDir() / "lib" / segments.join("/") / "init.nelua"
   let reqDir = requiringPath.splitFile().dir
   if reqDir.len > 0:
     candidates.add reqDir / segments.join("/") & ".nelua"
@@ -148,7 +158,16 @@ proc compileUnit*(source: string, path: string, config: Config,
   # code generator.  Abort cleanly with the dependency's diagnostics instead.
   var depFailed = false
 
+  # `-t` startup line: printed once, before the very first parse, measuring
+  # process start -> arg parsing -> config setup -> driver dispatch.
+  if timing.stages and timing.t0 != 0.0 and not timing.startupPrinted:
+    timing.startupPrinted = true
+    echo "startup" & " ".repeat(max(0, 13 - "startup".len)) &
+        formatFloat(epochTime() * 1000.0 - timing.t0, ffDecimal, precision = 1) & " ms"
+
+  timing.markStart("parse")
   let ast = parser.parse(source, path)
+  discard timing.markStop("parse")
   if ast != nil:
     for modname in findRequires(ast):
       let depPath = resolveModule(modname, config, path)
@@ -179,7 +198,7 @@ proc compileUnit*(source: string, path: string, config: Config,
     result.success = false
     return
 
-  let cSource = genC(source, path, config.release, false, config)
+  let cSource = genC(source, path, config.release or config.maxPerf, false, config)
   result.cSource = cSource
   result.success = cSource.len > 0 and not cSource.startsWith("/* nelua")
   if not result.success:
@@ -187,7 +206,7 @@ proc compileUnit*(source: string, path: string, config: Config,
     return
 
   let unitname = analyzer.computeUnitname(path)
-  let tdir = tmpDir()
+  let tdir = cacheDir()
   let cfile = tdir / unitname & ".c"
   try:
     writeFile(cfile, cSource)
@@ -218,33 +237,71 @@ proc compile*(source: string, path: string, config: Config = defaultConfig()): C
     return
 
   let unitname = analyzer.computeUnitname(path)
-  let tdir = tmpDir()
+  let tdir = cacheDir()
   let cfile = tdir / unitname & ".c"
 
-  # Output path: -o overrides the destination, otherwise a per-mode default
-  # under tmp/.  The oracle writes every artifact to its cache dir and only
-  # honours -o as the final artifact path; we do the same from our tmp/.
+  # --print-assembly: emit the assembly for this translation unit to stdout and
+  # stop.  This is the stdout form of -Y/--assembly (which writes the .s file):
+  # run the same `gcc -S` step but with `-o -` so the assembly lands on stdout,
+  # captured here rather than written to a file.  Short-circuits before the
+  # outputKind switch and the binary-run step, matching the reference.
+  if config.printAssembly:
+    var asmCmd = config.cc & " -S " & cfile.quoteShell & " -o -"
+    if config.cflags.len > 0:
+      asmCmd.add " " & config.cflags
+    let (asmOut, asmExit) = execCmdEx(asmCmd)
+    result.exitCode = asmExit
+    result.assemblySource = asmOut
+    if asmExit != 0:
+      result.diagnostics.add("nelua: assembly emission failed (cc=" & config.cc &
+        ", exit=" & $asmExit & "):\n" & asmOut)
+    return
+
+  # Output path: -o overrides the destination for object/assembly/library
+  # artifacts.  For a binary the artifact always lands in `tmp/<unitname>` (no
+  # suffix) and main.nim copies it to the -o name: a binary must NOT be executed
+  # when -o is given (the oracle builds but does not run), and the run step is
+  # gated on `config.output.len == 0` below.
   let outExt = outputExtension(config.outputKind)
-  let outPath = if config.output.len > 0: config.output
-                else: tdir / unitname & "." & outExt
+  let outPath =
+    if config.outputKind == okBinary:
+      tdir / unitname
+    elif config.output.len > 0:
+      config.output
+    else:
+      tdir / unitname & "." & outExt
 
   # The emitted TU only *declares* the runtime (struct nltype, nelua_print, ...);
   # their definitions live in `src/runtime.c`, which must be linked in or every
   # program fails to link.  Resolved at compile time so it is correct from any cwd.
   const runtimeC = currentSourcePath().splitFile().dir / "runtime.c"
+  # Optimization tier: -M is the oracle's maximum-performance tier, -r is release,
+  # and the default keeps debug info.  Assembly gets -fverbose-asm -g0 for source
+  # annotations.
+  # OG Nelua runs the same C compiler flags on every tier: `-fwrapv` makes
+  # signed integer overflow wrap (two's complement) instead of being
+  # undefined behaviour, and `-fno-strict-aliasing` stops gcc from reordering
+  # accesses across type-punned stores (our `any` tagged unions and pointer
+  # casts rely on it).  Both are always-on in the oracle, so they are always-on
+  # here too; the tier only varies the optimisation level.
+  let optFlags =
+    if config.maxPerf:   " -fwrapv -fno-strict-aliasing -Ofast -march=native -DNDEBUG -fno-plt -flto=auto"
+    elif config.release: " -fwrapv -fno-strict-aliasing -O2 -DNDEBUG"
+    else:                " -fwrapv -fno-strict-aliasing -g"
+  let asmExtra = if config.outputKind == okAssembly: " -fverbose-asm -g0" else: ""
   var ccCmd: string
   case config.outputKind:
     of okBinary:
-      ccCmd = config.cc & " -o " & outPath.quoteShell & " " & cfile.quoteShell & " " & runtimeC.quoteShell & " -lm"
+      ccCmd = config.cc & optFlags & " -o " & outPath.quoteShell & " " & cfile.quoteShell & " " & runtimeC.quoteShell & " -lm"
     of okObject:
-      ccCmd = config.cc & " -c " & cfile.quoteShell & " -o " & outPath.quoteShell
+      ccCmd = config.cc & optFlags & " -c " & cfile.quoteShell & " -o " & outPath.quoteShell
     of okAssembly:
-      ccCmd = config.cc & " -S " & cfile.quoteShell & " -o " & outPath.quoteShell
+      ccCmd = config.cc & optFlags & " -S " & asmExtra & cfile.quoteShell & " -o " & outPath.quoteShell
     of okStaticLib:
       let obj = tdir / unitname & ".o"
-      ccCmd = config.cc & " -c " & cfile.quoteShell & " -o " & obj.quoteShell
+      ccCmd = config.cc & optFlags & " -c " & cfile.quoteShell & " -o " & obj.quoteShell
     of okSharedLib:
-      ccCmd = config.cc & " -shared -fPIC -o " & outPath.quoteShell & " " & cfile.quoteShell
+      ccCmd = config.cc & optFlags & " -shared -fPIC -o " & outPath.quoteShell & " " & cfile.quoteShell
   if config.cflags.len > 0:
     ccCmd.add " " & config.cflags
   # ldflags only make sense when linking (binary / shared lib); passing them
@@ -252,36 +309,90 @@ proc compile*(source: string, path: string, config: Config = defaultConfig()): C
   if config.ldflags.len > 0 and config.outputKind in {okBinary, okSharedLib}:
     ccCmd.add " " & config.ldflags
 
-  let (ccOut, ccExit) = execCmdEx(ccCmd)
-  if config.verbose:
-    echo ccCmd
-  result.exitCode = ccExit
-  if ccExit != 0:
-    result.diagnostics.add("C compile failed (cc=" & config.cc & ", exit=" & $ccExit & "):\n" & ccOut)
-    return
-
-  # Static library: archive the object we just compiled.
-  if config.outputKind == okStaticLib:
-    let obj = tdir / unitname & ".o"
-    let arCmd = "ar rcs " & outPath.quoteShell & " " & obj.quoteShell
+  # `-c --code` emits C and stops: no gcc, no strip, no run (matches the oracle).
+  if not config.codeOnly:
+    timing.markStart("compile")
+    let (ccOut, ccExit) = execCmdEx(ccCmd)
+    discard timing.markStop("compile")
     if config.verbose:
-      echo arCmd
-    let (arOut, arExit) = execCmdEx(arCmd)
-    if arExit != 0:
-      result.diagnostics.add("ar failed (exit=" & $arExit & "):\n" & arOut)
-      result.exitCode = arExit
+      echo ccCmd
+    result.exitCode = ccExit
+    if ccExit != 0:
+      result.diagnostics.add("C compile failed (cc=" & config.cc & ", exit=" & $ccExit & "):\n" & ccOut)
       return
 
-  # Only a binary is executed; object / assembly / library are artifacts.
-  if config.outputKind == okBinary and config.binary:
-    let (runOut, runExit) = execCmdEx(outPath.quoteShell)
-    result.output = runOut
-    # The oracle reports 255 when the compiled program is killed by a signal
-    # (error/panic/assert all abort via SIGABRT).  On POSIX the shell reports
-    # 128+N for signal N, so map any signal-death exit code (128..159) to 255
-    # to match; normal exit codes (including high ones like os.exit(200))
-    # are propagated unchanged.
-    result.exitCode = if runExit >= 128 and runExit <= 159: 255 else: runExit
+    # Static library: archive the object we just compiled.
+    if config.outputKind == okStaticLib:
+      let obj = tdir / unitname & ".o"
+      let arCmd = "ar rcs " & outPath.quoteShell & " " & obj.quoteShell
+      if config.verbose:
+        echo arCmd
+      let (arOut, arExit) = execCmdEx(arCmd)
+      if arExit != 0:
+        result.diagnostics.add("ar failed (exit=" & $arExit & "):\n" & arOut)
+        result.exitCode = arExit
+        return
+
+    # `-s --strip-bin` strips the linked executable. Only meaningful for a
+    # binary (the oracle never strips object/assembly/library artifacts).
+    if config.stripBin and config.outputKind == okBinary:
+      let stripCmd = "strip " & config.stripflags & " " & outPath.quoteShell
+      if config.verbose:
+        echo stripCmd
+      let (stripOut, stripExit) = execCmdEx(stripCmd)
+      if stripExit != 0:
+        result.diagnostics.add("strip failed (exit=" & $stripExit & "):\n" & stripOut)
+        result.exitCode = stripExit
+        return
+
+    # Flush the buffered `-t` stage group after gcc, before the program runs.
+    timing.flushStages()
+
+    # Only a binary is executed; object / assembly / library are artifacts.
+    # `-o <name>` writes the artifact but does NOT run it (matches the oracle),
+    # so the run is gated on `config.output.len == 0`.
+    if config.outputKind == okBinary and config.binary and config.output.len == 0:
+      if config.debug:
+        # The oracle's `-V -d` reveals the actual GDB invocation: `set confirm
+        # off` + `set breakpoint pending on` so an unresolved `break abort`
+        # (normal programs never call abort) becomes a pending breakpoint
+        # instead of a fatal error; `set print frame-info
+        # source-and-location` for source/line frames; `bt` for the backtrace;
+        # `quit` so gdb -batch returns 0 in all cases.
+        let gdbCmd = config.gdb & " -q " &
+                     "-ex \"set confirm off\" " &
+                     "-ex \"set breakpoint pending on\" " &
+                     "-ex \"set print frame-info source-and-location\" " &
+                     "-ex \"set debuginfod enabled off\" " &
+                     "-ex \"break abort\" -ex \"run\" -ex \"bt\" -ex \"quit\" " &
+                     "--args " & outPath.quoteShell
+        if config.verbose:
+          echo gdbCmd
+        let (gdbOut, gdbExit) = execCmdEx(gdbCmd)
+        result.output = gdbOut
+        # gdb -batch returns 0 even when the inferior aborts; the oracle always
+        # exits 0 for -d.
+        result.exitCode = gdbExit
+      else:
+        timing.markStart("run")
+        # -R/--runner: run the compiled binary through `<runner>` instead of
+        # executing it directly, passing any runargs after the binary path.
+        let runCmd = if config.runner.len > 0:
+                        config.runner & " " & outPath.quoteShell &
+                        (if config.runargs.len > 0: " " & config.runargs.join(" ") else: "")
+                      else:
+                        outPath.quoteShell
+        let (runOut, runExit) = execCmdEx(runCmd)
+        result.runMs = timing.markStop("run")
+        result.output = runOut
+        # The oracle reports 255 when the compiled program is killed by a signal
+        # (error/panic/assert all abort via SIGABRT).  On POSIX the shell reports
+        # 128+N for signal N, so map any signal-death exit code (128..159) to 255
+        # to match; normal exit codes (including high ones like os.exit(200))
+        # are propagated unchanged.
+        result.exitCode = if runExit >= 128 and runExit <= 159: 255 else: runExit
+  else:
+    timing.flushStages()
 
 when isMainModule:
   let src = "print(1 + 2)\n"
@@ -300,8 +411,8 @@ when isMainModule:
   doAssert res.success, "genC must emit a real translation unit (not a diagnostic stub)"
   doAssert res.cSource.len > 0, "cSource must be non-empty"
 
-  # Clean up the transient build artefacts we created in tmp/ (scratch dir).
-  let tdir = tmpDir()
+  # Clean up the transient build artefacts the self-test wrote to the cache.
+  let tdir = cacheDir()
   for f in [tdir / "test.c", tdir / "test"]:
     try:
       removeFile(f)

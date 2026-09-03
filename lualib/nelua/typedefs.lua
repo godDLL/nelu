@@ -70,7 +70,7 @@ primtypes.cchar       = types.IntegralType('cchar', 1)
 primtypes.cschar      = types.IntegralType('cschar', 1)
 primtypes.cshort      = types.IntegralType('cshort', ccinfo.sizeof_short)
 primtypes.cint        = types.IntegralType('cint', ccinfo.sizeof_int)
-primtypes.clong       = types.IntegralType('clong', ccinfo.sizeof_long, false)
+primtypes.clong       = types.IntegralType('clong', ccinfo.sizeof_long)
 primtypes.clonglong   = types.IntegralType('clonglong', ccinfo.sizeof_long_long, false, ccinfo.alignof_long_long)
 primtypes.cptrdiff    = types.IntegralType('cptrdiff', cptrsize)
 primtypes.cuchar      = types.IntegralType('cuchar', 1, true)
@@ -86,8 +86,9 @@ primtypes.cdouble     = primtypes.float64; primtypes.cdouble.is_cdouble = true
 primtypes.cfloat      = primtypes.float32; primtypes.cfloat.is_cfloat = true
 primtypes.cvarargs    = types.CVarargsType('cvarargs')
 primtypes.cvalist     = types.CVaList('cvalist')
-primtypes.cclock_t    = types.IntegralType('cclock_t', ccinfo.sizeof_long, false)
-primtypes.ctime_t     = types.IntegralType('ctime_t', cptrsize, false)
+primtypes.cclock_t    = types.IntegralType('cclock_t', ccinfo.sizeof_long)
+primtypes.ctime_t     = types.IntegralType('ctime_t', cptrsize)
+primtypes.cwchar_t    = types.IntegralType('cwchar_t', ccinfo.sizeof_wchar_t or 4, false)
 
 -- The following types are predefined aliases, but can be customized by the user.
 if cptrsize >= 4 then
@@ -214,18 +215,134 @@ typedefs.promote_unsigned_types = {
   primtypes.uint64
 }
 
+-- List of compile pragmas.
+typedefs.pragmas = {
+  --[[
+  Changes the prefix of generated C functions for the current source unit (current source file).
+  When unset the source relative path will be used as prefix.
+  When set to an empty string, then no prefix will be used,
+  however this may increase the chances of name clashing in the C generated code.
+  This pragma is useful to control function names when generating C libraries.
+  ]]
+  unitname = shaper.string,
+  --[[
+  Changes abort semantics, abort happens on failed assertions or runtime errors.
+  This pragma can be one of the following values:
+  * `'exit'`: the application with call system's `exit(-1)`
+  * `'hooked'`: will call abort handler defined by the application, then you must define
+  `function nelua_abort(): void`
+  * `'trap'`: the application will call an invalid instruction and crash.
+  * `'abort'` or unset, the application will call system's `abort()` (this is the default).
+  ]]
+  abort = shaper.one_of{'exit', 'trap', 'abort'}:is_optional(),
+  --[[
+  Changes how messages are written to stderr when a runtime error occur (panic, assert, check, etc).
+  This pragma can be one of the following values:
+  * `'none'`: the application with call system's `exit(-1)`
+  * `'hooked'`: will call error message handler defined by the application, then you must define
+  `function nelua_write_stderr(msg: cstring, len: usize, flush: boolean): void`
+  * `'stdout'`: messages will be printed to stdout
+  * `'stderr': messages will be printed to stderr (this is the default)
+  ]]
+  writestderr = shaper.one_of{'none', 'hooked', 'stdout', 'stderr'}:is_optional(),
+  --[[
+  Disables the main entry point generation.
+  When set, the function `nelua_main` that initializes global variables and run code from top scope
+  will still be defined, however it won't be called.
+  You will need import it with `<cimport>` and call it manually from another entry point.
+  You may not want to use this pragma, maybe you want to mark another function as the main
+  entry point instead by using the annotation `<entrypoint>` on it.
+  ]]
+  noentrypoint = shaper.optional_boolean,
+  --[[
+  Disables the garbage collector.
+  When this is enabled you will need to manage and deallocate memory manually.
+  ]]
+  nogc = shaper.optional_boolean,
+  --[[
+  Disable entry point generation for the GC.
+  When set, the user will be responsible for initializing the GC in his own entry point.
+  ]]
+  nogcentry = shaper.optional_boolean,
+  --[[
+  Disables use of builtin character classes.
+  When set, the standard library will use lib C APIs to check character classes,
+  (like `islower`, `isdigit`, etc) and the system's current locale will affect some functions
+  string methods in standard library.
+  ]]
+  nobuiltincharclass = shaper.optional_boolean,
+  --[[
+  Disable code generation of runtime checks.
+  When set, the following checks will be disabled:
+  * Numeric narrowing casts checks.
+  * Null pointer dereference.
+  * Out of bounds access.
+  * Division by 0.
+  * All `check()` functions will be converted to no-op.
+  out of bounds access, null pointer deference, etc).
+  ]]
+  nochecks = shaper.optional_boolean,
+  --[[
+  Disables dead code elimination.
+  With this enabled unused functions and variables will always be generated.
+  ]]
+  nodce = shaper.optional_boolean,
+  --[[
+  Disable initialization of variables to zeros by default (create for GLSL codegen).
+  Please care changing this, as it will change the semantics of many code.
+  ]]
+  noinit = shaper.optional_boolean,
+  -- Disable showing the source location in runtime errors (created to have reproducible builds).
+  noerrorloc = shaper.optional_boolean,
+  -- Disable configuration warning in the C code generation (created to minify the C codegen).
+  nocwarnpragmas = shaper.optional_boolean,
+  --[[
+  Disables use of static asserts in the C code generation (created to minify the C codegen).
+  It's recommended to not change this, because whenever there is a disagreement
+  of primitive types sizes you will get a compile error instead of possibly broken code.
+  Such situation can happen when using exotic compilers, architectures or compiler flags.
+  ]]
+  nocstaticassert = shaper.optional_boolean,
+  --[[
+  Disables initial setup of API features in the C code generator (created to minify the C codegen).
+  It's recommend to not change this, because more functions from POSIX, OS and lib C extensions
+  will be available for use in the standard library, improving its quality.
+  ]]
+  nocfeaturessetup = shaper.optional_boolean,
+  -- Disable use of `static` functions and variable in the C code generator (created for GLSL codegen).
+  nocstatic = shaper.optional_boolean,
+  -- Disable use of float suffixes in the C code generator (created for GLSL codegen).
+  nocfloatsuffix = shaper.optional_boolean,
+  -- Disable use of inline functions in the C code generation (created for GLSL codegen).
+  nocinlines = shaper.optional_boolean,
+  -- Disable use typedefs in the C code generation (created for GLSL codegen).
+  noctypedefs = shaper.optional_boolean,
+  -- Disable automatically linkage of libm even when math functions are used (for freestading builds).
+  nolibm = shaper.optional_boolean,
+  -- Mark all variables declarations as volatile.
+  volatile = shaper.optional_boolean,
+  -- Warn about implicit emitted narrowing conversions in the C code generation.
+  warnnarrow = shaper.optional_boolean,
+}
+
 -- List of possible annotations for function types.
 typedefs.function_annots = {
   -- Whether to import the function from C.
   -- If no name is supplied then the function identifier name is used in C,
   -- the function is declared unless 'nodecl' annotation is also used.
   cimport = shaper.shape{shaper.string:is_optional()},
+  -- Whether to export the function in C, declaring it with the 'extern' C qualifier.
+  -- If no name is supplied then compiler will automatically generate a symbol name
+  -- based on the file and function name.
+  cexport = shaper.shape{shaper.string:is_optional()},
   -- C file to include when using the function.
   cinclude = shaper.shape{shaper.string},
   -- Custom name used for the function when generating the C code (implicitly sets `nodce`).
   codename = shaper.shape{shaper.string},
   -- A C qualifier to use when declaring the function. (e.g. 'extern')
   cqualifier = shaper.shape{shaper.string},
+  -- A C qualifier to use when declaring the variable (placed just after C type specifier). (e.g. 'const')
+  cpostqualifier = shaper.shape{shaper.string},
   -- A C attribute to use when declaring the function, it uses '__attribute((...))' in C.
   cattribute = shaper.shape{shaper.string},
   -- Whether the function is deprecated, generating warnings when compiling.
@@ -248,14 +365,12 @@ typedefs.function_annots = {
   -- The compiler uses this to know if it should use a strict evaluation order when calling it.
   nosideeffect = true,
   -- Whether to use the function as the entry point of the application (the C main),
-  -- the entry point is called before evaluating any file and is responsible for calling nelua_main.
+  -- the entry point is called before evaluating any file and is responsible for calling `nelua_main`.
   entrypoint = true,
-  -- Whether to export the function in C, declaring it with the 'extern' C qualifier.
-  cexport = true,
   -- Force a function to be polymorphic so it can be declared on demand.
   polymorphic = true,
-  -- Force a polymorphic function to always be evaluated.
-  alwayseval = true,
+  -- Force a function to always be polymorphic (evaluate a new function for each call).
+  alwayspoly = true,
   -- Mark a function for forward declaration.
   -- This allows to call a function before defining it.
   forwarddecl = true,
@@ -267,12 +382,18 @@ typedefs.variable_annots = {
   -- if no name is supplied then the same variable name is used in C,
   -- the variable is declared unless 'nodecl' annotations is also used.
   cimport = shaper.shape{shaper.string:is_optional()},
+  -- Whether to export the variable in C, declaring it with the 'extern' C qualifier.
+  -- If no name is supplied then the compiler will automatically generate a symbol name
+  -- based on the file and variable name.
+  cexport = shaper.shape{shaper.string:is_optional()},
   -- C file to include when using the variable.
   cinclude = shaper.shape{shaper.string},
   -- Custom name used for the variable when generating the C code (implicitly sets `nodce`).
   codename = shaper.shape{shaper.string},
-  -- A C qualifier to use when declaring the variable. (e.g. 'extern')
+  -- A C qualifier to use when declaring the variable (placed just before C type specifier). (e.g. 'volatile')
   cqualifier = shaper.shape{shaper.string},
+  -- A C qualifier to use when declaring the variable (placed just after C type specifier). (e.g. 'const')
+  cpostqualifier = shaper.shape{shaper.string},
   -- A C attribute to use when declaring the variable.
   cattribute = shaper.shape{shaper.string},
   -- Custom alignment to use with the variable.
@@ -284,7 +405,8 @@ typedefs.variable_annots = {
   static = true,
   -- Whether the compiler should try to use the variable in a register,
   -- it uses the 'register' qualifier in C.
-  register = true,
+  -- If name is supplied, it will associate with the specified register.
+  register = shaper.shape{shaper.string:is_optional()},
   -- Whether to use the '__restrict' qualifier in C.
   restrict = true,
   -- Whether to perform atomic operations on the variable (requires C11).
@@ -300,14 +422,17 @@ typedefs.variable_annots = {
   noinit = true,
   -- Whether the compiler should never omit unused variables.
   nodce = true,
-  -- Whether to export the variable in C, declaring it with the 'extern' C qualifier.
-  cexport = true,
+  -- Weather the GC should not scan the variable for registers even if it contains pointers.
+  nogcscan = true,
   -- Whether the variable should be only available and used at compile time.
   comptime = true,
   -- Whether the variable should be closed by calling '__close' metamethod on scope termination.
   close = true,
   -- Whether the variable is immutable.
   const = true,
+  -- Force a variable to be initialized in the C top scope, even if it contains runtime expressions.
+  -- This is only useful when making some low level OS specific code.
+  ctopinit = true,
 }
 
 -- List of possible annotations for types.
@@ -352,15 +477,20 @@ List of preprocessor directives.
 They inject the AST node 'Directive' when called from the preprocessor.
 ]]
 typedefs.pp_directives = {
-  cinclude = shaper.shape{n=shaper.number, shaper.string},
+  cinclude = shaper.shape{n=shaper.number, shaper.string + shaper.func},
   cemitdecl = shaper.shape{n=shaper.number, shaper.string + shaper.func},
-  cemitdef = shaper.shape{n=shaper.number, shaper.string + shaper.func},
+  cemitdefn = shaper.shape{n=shaper.number, shaper.string + shaper.func},
   cemit = shaper.shape{n=shaper.number, shaper.string + shaper.func},
   cdefine = shaper.shape{n=shaper.number, shaper.string},
   cflags = shaper.shape{n=shaper.number, shaper.string},
   cfile = shaper.shape{n=shaper.number, shaper.string},
-  ldflags = shaper.shape{n=shaper.number, shaper.string},
+  cincdir = shaper.shape{n=shaper.number, shaper.string},
+  linkdir = shaper.shape{n=shaper.number, shaper.string},
   linklib = shaper.shape{n=shaper.number, shaper.string},
+  libpath = shaper.shape{n=shaper.number, shaper.string},
+  ldflags = shaper.shape{n=shaper.number, shaper.string},
+  stripflags = shaper.shape{n=shaper.number, shaper.string},
+  pragma = shaper.shape{n=shaper.number, shaper.table},
   pragmapush = shaper.shape{n=shaper.number, shaper.table},
   pragmapop = shaper.shape{n=shaper.number},
 }
@@ -371,6 +501,7 @@ These functions are documented in `PPContext`.
 ]]
 typedefs.pp_methods = {
   inject_statement = true,
+  wrap_statement = true,
   generic = true,
   concept = true,
   hygienize = true,
@@ -380,13 +511,11 @@ typedefs.pp_methods = {
   static_assert = true,
   after_analyze = true,
   after_inference = true,
-  expr_macro = true,
   require = true,
   -- DEPRECATED aliases
   inject_astnode = 'inject_statement',
   staticerror = 'static_error',
   staticassert = 'static_assert',
-  exprmacro = 'expr_macro'
 }
 
 -- List of exported preprocessor variables that can change while preprocessing.
@@ -397,6 +526,13 @@ typedefs.pp_variables = {
   scope = function(ppcontext) return ppcontext.context.scope end,
   -- Current pragmas.
   pragmas = function(ppcontext) return ppcontext.context.pragmas end,
+  --[[
+  Source location where the current polymorphic function was instantiated.
+  It is a table source origin information (like fields  `srcname` and `lineno`).
+  ]]
+  polysrcloc = function(ppcontext) return ppcontext.context:get_polyeval_location() end,
+  --Source location for the current preprocess node (a table with `srcname` and `lineno` fields).
+  srcloc = function(ppcontext) return ppcontext:get_preprocess_location() end,
 }
 
 -- List of exported preprocessor constants that cannot change while preprocessing.
@@ -409,6 +545,10 @@ typedefs.pp_constants = {
   executor = function() return require 'nelua.utils.executor' end,
   -- Memoize function.
   memoize = function() return require 'nelua.utils.memoize' end,
+  -- Inspect function.
+  inspect = function() return require 'nelua.thirdparty.inspect' end,
+  -- Filesystem module.
+  fs = function() return require 'nelua.utils.fs' end,
   -- Aster module.
   aster = function() return require 'nelua.aster' end,
   -- Version module.
@@ -436,9 +576,13 @@ typedefs.pp_constants = {
 -- List of builtins (converted to a symbol on first usage).
 typedefs.builtin_attrs = {
   likely = {
-    type = types.FunctionType({{name='cond', type=primtypes.boolean}}, primtypes.boolean)},
+    type = types.FunctionType({{name='cond', type=primtypes.boolean}}, primtypes.boolean),
+    noerror = true,
+  },
   unlikely = {
-    type = types.FunctionType({{name='cond', type=primtypes.boolean}}, primtypes.boolean)},
+    type = types.FunctionType({{name='cond', type=primtypes.boolean}}, primtypes.boolean),
+    noerror = true,
+  },
   panic = {
     type = types.FunctionType({{name='message', type=primtypes.string}}),
     noreturn = true, sideeffect = true},
@@ -450,14 +594,13 @@ typedefs.builtin_attrs = {
     sideeffect = true},
   check = {type = primtypes.any},
   assert = {type = primtypes.any},
-  require = {
-    type = types.FunctionType({{name='modname', type=primtypes.string}})},
+  require = {type = types.FunctionType({{name='modname', type=primtypes.string}})},
   print = {type = primtypes.any},
   _G = {type = primtypes.table},
   _VERSION = {type = primtypes.string, value = version.NELUA_VERSION, comptime = true},
 }
 
--- List oSymbols declared in standard library, used to give suggestion on error messages.
+-- List of symbols declared in standard library, used to give suggestion on error messages.
 typedefs.symbol_modules = {
   arg = 'arg',
   coroutine = 'coroutine',

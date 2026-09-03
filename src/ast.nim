@@ -207,6 +207,7 @@ proc newVarDecl*(scope: string, iddecls: seq[Node], inits: seq[Node]): Node =
 proc newAssign*(targets: seq[Node], values: seq[Node]): Node =
   let n = Node(kind: nkAssign, children: targets & values)
   n.isUnpackable = true
+  n.intVal = targets.len
   n
 
 proc newFuncDef*(scope: string, name: Node, args: seq[Node], returns: seq[Node], annotations: seq[Node], body: Node): Node =

@@ -45,7 +45,9 @@ function CContext:_init(visitors, typevisitors)
   self.compileopts = {
     cflags = {},
     ldflags = {},
+    stripflags = {},
     linklibs = {},
+    linkdirs = {},
     cfiles = {},
     incdirs = {},
   }
@@ -72,7 +74,8 @@ function CContext:declname(attr)
   assert(attr._attr and attr.codename)
   if not attr.nodecl and not attr.cimport then
     declname = cdefs.quotename(declname)
-    if attr.shadows and not attr.staticstorage then
+    local cshadows = self.cimports and self.cimports[declname]
+    if (attr.shadows or cshadows) and not attr.staticstorage then
       declname = self:genuniquename(declname)
     end
   end
@@ -183,15 +186,22 @@ then looks for files in the current source file directory.
 function CContext:ensure_include(name)
   local directives = self.directives
   if directives[name] then return end
-  -- normalize include code
-  local inccode = name
+  local inccode
   local searchinc = false
-  if not inccode:find('[#\n]') then
-    if not name:match('^["<].*[>"]$') then
-      inccode = '<'..name..'>'
-      searchinc = true
+  if cdefs.include_hooks[name] then
+    inccode = cdefs.include_hooks[name]
+  else -- normalize include code
+    inccode = name
+    if not inccode:find('[#\n]') then
+      if not name:match('^".*"$') and not name:match('^<.*>$') then
+        inccode = '<'..name..'>'
+        searchinc = true
+      end
+      inccode = '#include '..inccode
     end
-    inccode = '#include '..inccode..'\n'
+    if not inccode:find('\n$') then
+      inccode = inccode..'\n'
+    end
     if directives[inccode] then return end
   end
   -- add include directive
@@ -199,7 +209,7 @@ function CContext:ensure_include(name)
   directives[name] = true
   directives[#directives+1] = inccode
   -- make sure to add the include directory for that file
-  if searchinc and not fs.isabs(name) then
+  if searchinc and not fs.isabspath(name) then
     local dirpath = self:get_visiting_directory()
     if dirpath then
       local filepath = fs.join(dirpath, name)
@@ -211,6 +221,22 @@ function CContext:ensure_include(name)
   end
 end
 
+-- Ensures a C directory is added to include path when compiling.
+function CContext:ensure_cincdir(dirpath)
+  local incdirs = self.compileopts.incdirs
+  if not tabler.ifind(incdirs, dirpath) then
+    table.insert(incdirs, dirpath)
+  end
+end
+
+-- Ensures a library directory is added to library path when linking.
+function CContext:ensure_linkdir(dirpath)
+  local linkdirs = self.compileopts.linkdirs
+  if not tabler.ifind(linkdirs, dirpath) then
+    table.insert(linkdirs, dirpath)
+  end
+end
+
 -- Ensures function `name` from C math library included.
 function CContext:ensure_cmath_func(name, type)
   if type.is_cfloat then
@@ -219,7 +245,11 @@ function CContext:ensure_cmath_func(name, type)
     name = name..'l'
   elseif type.is_float128 then
     name = name..'q'
+  end
+  if type.is_float128 then
     self:ensure_linklib('quadmath')
+  else
+    self:ensure_linklib('m')
   end
   self:ensure_builtin(name)
   return name
@@ -231,7 +261,7 @@ If the file name is not an absolute path, then looks for files in the current so
 ]]
 function CContext:ensure_cfile(filename)
   -- search the file relative to the current source file
-  if not fs.isabs(filename) then
+  if not fs.isabspath(filename) then
     local dirpath = self:get_visiting_directory()
     if dirpath then
       local filepath = fs.join(dirpath, filename)
@@ -252,6 +282,7 @@ end
 function CContext:ensure_linklib(libname)
   local linklibs = self.linklibs
   if linklibs[libname] then return end
+  if libname == 'm' and self.pragmas.nolibm then return end
   linklibs[libname] = true
   linklibs[#linklibs+1] = libname
   table.insert(self.compileopts.linklibs, libname)
@@ -329,7 +360,7 @@ function CContext:define_function_builtin(name, qualifier, ret, args, body)
     heademitter:add_text('(void)')
   end
   -- build qualifier part
-  if not self.pragmas.nostatic then
+  if not self.pragmas.nocstatic then
     declemitter:add_text('static ')
   end
   if qualifier and qualifier ~= '' and

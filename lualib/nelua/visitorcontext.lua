@@ -24,9 +24,11 @@ function VisitorContext:_init(visitors, rootscope)
   self.visitors = visitors
   -- scope
   self.rootscope = rootscope
+  self.reqscopes = {}
   self.scope = rootscope
   self.scopestack = {}
   self.rootpragmas = {}
+  self.libpaths = {}
   -- pragmas
   self.pragmas = self.rootpragmas
   self.pragmastack = {}
@@ -121,6 +123,21 @@ function VisitorContext:push_scope(scope)
 end
 
 --[[
+Get a forked scope for node `node`.
+Fork means that current scope symbols are inherited.
+]]
+function VisitorContext:get_forked_scope(node)
+  local scope = node.scope
+  if scope then
+    return scope
+  else -- node doesn't have a scope yet, create it
+    scope = self.scope:fork(node)
+    node.scope = scope
+  end
+  return scope
+end
+
+--[[
 Pushes a forked scope for node `node`, effectively overriding the current scope.
 Fork means that current scope symbols are inherited.
 ]]
@@ -168,8 +185,9 @@ end
 
 -- Traverses list of nodes `nodes`, arguments `...` are forwarded for each node visitor.
 function VisitorContext:traverse_nodes(nodes, ...)
-  for i=1,#nodes do
-    self:traverse_node(nodes[i], ...)
+  -- NOTE: must loop this way because nodes may be injected while traversing
+  for _,node in ipairs(nodes) do
+    self:traverse_node(node, ...)
   end
 end
 
@@ -216,6 +234,14 @@ function VisitorContext:get_visiting_traceback(level)
     end
   end
   return ss:tostring()
+end
+
+-- Get the first location where the current polymorphic function was evaluated.
+function VisitorContext:get_polyeval_location()
+  local polysrcnode = self.state.inpolyeval and self.state.inpolyeval.srcnode
+  if polysrcnode then
+    return polysrcnode:location()
+  end
 end
 
 -- DEPRECATED, use `get_visiting_node` instead.

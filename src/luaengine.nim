@@ -16,7 +16,7 @@
 ## reference interpreter does.  `resetLuaState()` at the top of `compile()`
 ## isolates each compilation.
 
-import std/[options, strutils]
+import std/[options, strutils, os, streams]
 
 # ---------------------------------------------------------------------------
 # Compile the bundled Lua C sources + the Nelua init layer into this binary.
@@ -297,3 +297,54 @@ proc getLuaEngine*(inputPath = ""): PLuaState =
     gEngine = newLuaEngine(inputPath)
     gEngineReady = true
   result = gEngine.state
+
+proc runScript*(path: string): (string, int) =
+  ## Run a `.lua` file (`-` = stdin) as a plain Lua script for the `--script`
+  ## flag -- the pure-Lua path that bypasses the nelua compiler entirely.
+  ##
+  ## Returns (errorMessage, exitCode).  The script's own stdout flows to the
+  ## process stdout directly (Lua's `print` writes to stdout), so only the
+  ## diagnostic and the exit code are returned from here.
+  ##
+  ## `os.exit` is intercepted.  The reference runs `--script` in a separate
+  ## `nelua-lua` process, so its `os.exit(N)` only kills that child and the
+  ## wrapper propagates N.  We emulate the propagation without terminating our
+  ## own process: `os.exit(N)` is rewritten to raise an error carrying the code,
+  ## which `runChunk` surfaces as a message we parse here.
+  var text: string
+  if path == "-":
+    text = readAll(stdin)
+  else:
+    try:
+      text = readFile(path)
+    except OSError, IOError:
+      return ("nelua: --script: cannot read '" & path & "': " &
+              getCurrentExceptionMsg(), 1)
+
+  let L = getLuaEngine(path)
+
+  # Install the os.exit interceptor.  Must run before the script chunk.
+  let hookErr = runChunk(L,
+    "local _nelua_old_exit = os.exit\n" &
+    "os.exit = function(code) error('NELUA_EXIT:' .. tostring(code or 0)) end",
+    "nelua:script:os.exit")
+  if hookErr.len > 0:
+    return ("nelua: --script: failed to install os.exit hook: " & hookErr, 1)
+
+  let err = runChunk(L, text, path)
+  if err.len > 0:
+    # `os.exit(N)` is rewritten to `error('NELUA_EXIT:' .. tostring(N))`.  Lua
+    # prefixes the raised error with the location it was raised from (e.g.
+    # `[string "nelua:script:os.exit"]:2: NELUA_EXIT:7`), so the marker is not
+    # at the start of the message -- locate it anywhere and parse the code that
+    # follows it.
+    let marker = "NELUA_EXIT:"
+    let pos = err.find(marker)
+    if pos >= 0:
+      let codeStr = err[pos + marker.len ..< err.len]
+      try:
+        return ("", parseInt(codeStr))
+      except ValueError:
+        discard
+    return (err, 1)
+  return ("", 0)
