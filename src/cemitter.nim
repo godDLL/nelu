@@ -126,6 +126,14 @@ proc cCast*(t: Type, expr: string): string =
   ## C cast of `expr` to the C spelling of `t`: `(cType(t))(expr)`.
   if t == nil:
     return expr
+  # A pointer to a zero-length (incomplete) array -- `*[0]byte` -- has no
+  # array spelling in C.  Cast to the element-pointer form directly instead of
+  # routing through `cType`'s pointer branch, so a half-built subtype chain
+  # (nil element type) cannot produce a bogus `(T[])*` cast.
+  if t.kind == tkPointer and t.subtype != nil and t.subtype.kind == tkArray and
+     t.subtype.arraySize <= 0:
+    let et = if t.subtype.subtype != nil: cType(t.subtype.subtype) else: "void"
+    return "(" & et & "*)(" & expr & ")"
   "(" & cType(t) & ")(" & expr & ")"
 
 proc cQualifiers*(attr: Attr): string =

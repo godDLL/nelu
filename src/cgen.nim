@@ -1415,6 +1415,12 @@ proc genKeyIndex(s: var Gen, node: Node): string =
   # children[1] is the base expression.  (The old code read them swapped, which
   # happened to compile for arrays because C's `a[i]` == `i[a]`, but it emitted
   # the unintuitive reversed form and broke record subscripting.)
+  # A subscript must carry both a key and a base; a malformed node (e.g. an
+  # index whose base never resolved) has no children to read, and in a release
+  # build the unchecked seq access below would SIGSEGV the driver.  Bail out
+  # to a no-op rather than dereferencing off the end of the children seq.
+  if node.children.len < 2:
+    return "/*?index*/"
   let key = node.children[0]
   let base = node.children[1]
   let ba = s.ctx.attrOf.getOrDefault(base)
