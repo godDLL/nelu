@@ -259,7 +259,7 @@ proc genPreamble(refs: set[RuntimeHelper]): string =
       s.add "\n"
     if rhPrintNil in refs or rhPrintAny in refs:
       s.add "static void nelua_print_nil(void) {\n"
-      s.add "  fputs(\"(null)\", nl_out);\n"
+      s.add "  fputs(\"nil\", nl_out);\n"
       s.add "}\n"
       s.add "\n"
     if rhPrintPtr in refs:
