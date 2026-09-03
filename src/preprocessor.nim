@@ -92,6 +92,15 @@ var gCapturedBodies: TableRef[string, seq[Node]] = newTable[string, seq[Node]]()
 var gInjectStack: seq[seq[seq[Node]]] = @[]
 var gInjectCurrent = 0
 var gBuiltinsRegistered = false
+## Deferred-splice machinery.  A block collects every `#[expr]#` that appears
+## anywhere inside it (direct children *and* nested inside expressions, but
+## not inside a nested block, which has its own set) into `gBlockSplices`,
+## leaving a sentinel in the tree.  After the block's `##` chunk has run, the
+## driver substitutes each sentinel with the splice's value.  `gInBlockSpliceDeferral`
+## is the toggle; the block saves and restores it so nested blocks are
+## self-contained (this is the `stopAtNestedBlock` boundary).
+var gBlockSplices: seq[Node] = @[]
+var gInBlockSpliceDeferral = false
 
 proc resetPreprocessorState*() =
   ## Clear every per-compilation scratch buffer so the next compilation starts
@@ -101,6 +110,8 @@ proc resetPreprocessorState*() =
   gInjectStack = @[]
   gInjectCurrent = 0
   gBuiltinsRegistered = false
+  gBlockSplices = @[]
+  gInBlockSpliceDeferral = false
 
 proc newPreprocessContext*(source = "", path = ""): PreprocessContext =
   ## Construct a fresh preprocessor context with no defines and an empty
@@ -1357,36 +1368,91 @@ proc constructFrameChunk(frame: LuaFrame, ctx: var PreprocessContext): string =
 # Pass driver
 # ---------------------------------------------------------------------------
 
-proc runPreprocessChunk(ctx: var PreprocessContext, ppNodes: seq[Node]): seq[seq[Node]] =
-  ## Run every `##` node in `ppNodes` as a single Lua chunk, wrapped with
-  ## `__nelua_mark(i)` position markers, and return the nodes each position
-  ## injected (indexed parallel to `ppNodes`).  The caller splices them into
-  ## the block at the matching `##` node.
+proc collectSpliceParts(node: Node, parts: var seq[string], splices: var seq[Node]) =
+  ## Walk `node` (recursively, but stopping at nested blocks) appending a
+  ## `__nelua_spliceN = (expr)` capture line for every `#[expr]#` encountered,
+  ## in source order, and recording the splice nodes in `splices` (parallel).
+  ## Stopping at nested blocks keeps each block's splices in that block's own
+  ## chunk (the `stopAtNestedBlock` boundary).
+  if node == nil:
+    return
+  if node.kind == nkPreprocessExpr:
+    let idx = splices.len
+    splices.add node
+    parts.add "__nelua_splice" & $idx & " = (" & node.str & ")"
+    return
+  if node.kind == nkBlock:
+    return
+  for child in node.children:
+    collectSpliceParts(child, parts, splices)
+
+proc runPreprocessChunk(ctx: var PreprocessContext, chunkParts: seq[string],
+                        ppNodes: seq[Node], splices: seq[Node]):
+                      (seq[seq[Node]], seq[Node]) =
+  ## Run `chunkParts` (already built in source order, with `__nelua_mark(i)`
+  ## position markers for the `##` nodes in `ppNodes` and `__nelua_spliceN =
+  ## (expr)` capture lines for the splices) as a single Lua chunk, and return
+  ## the nodes each `##` position injected (indexed parallel to `ppNodes`)
+  ## and each splice's converted value (indexed parallel to `splices`).
   ##
-  ## Running the nodes as *one* chunk (rather than one invocation per line)
-  ## makes `local` declarations persist across adjacent `##` lines, exactly
-  ## as the reference interpreter does.  `gInjectStack` makes this re-entrant:
-  ## an injected node that is itself a block pushes its own frame.
-  if ppNodes.len == 0:
-    return @[]
+  ## Because the `##` lines and the splice captures are interleaved in source
+  ## order, a splice only sees the `##` effects that precede it textually --
+  ## exactly the reference interpreter's model (a `## local` defined after a
+  ## splice is not visible to it).  Running everything as *one* chunk (rather
+  ## than one invocation per line) makes `local` declarations persist across
+  ## adjacent `##` lines.  `gInjectStack` makes this re-entrant: an injected
+  ## node that is itself a block pushes its own frame.
+  if chunkParts.len == 0:
+    return (@[], @[])
   gInjectStack.add newSeq[seq[Node]](ppNodes.len)
   gInjectCurrent = 0
-  var chunkParts: seq[string] = @[]
-  for i, node in ppNodes:
-    chunkParts.add "__nelua_mark(" & $i & ") " & node.str
   let chunkText = chunkParts.join("\n")
   let L = getLuaEngine(ctx.path)
   registerPreprocessorBuiltins(L)
   gActiveCtx = addr ctx
   let chunkName = "@" & ctx.path & ":ppcode"
-  let errMsg = runChunk(L, chunkText, chunkName)
+  let (errMsg, nres) = runChunkGetResult(L, chunkText, chunkName)
   gActiveCtx = nil
   if errMsg.len > 0:
     gInjectStack.setLen(gInjectStack.len - 1)
     raise PreprocessError(loc: newSourceLoc(ctx.path, ctx.source, 0),
       msg: "error while preprocessing block: " & chunkName & ": " & errMsg)
-  result = gInjectStack[^1]
+  result[0] = gInjectStack[^1]
+  result[1] = newSeq[Node](splices.len)
+  if splices.len > 0 and nres > 0:
+    for i in 0 ..< splices.len:
+      lua_rawgeti(L, -nres, i + 1)     # Lua tables are 1-indexed
+      result[1][i] = luaValueToNode(L, -1)
+      lua_pop(L, 1)
+  lua_settop(L, 0)
   gInjectStack.setLen(gInjectStack.len - 1)
+
+proc runPreprocessChunk(ctx: var PreprocessContext, ppNodes: seq[Node]): seq[seq[Node]] =
+  ## Backward-compatible wrapper used by the standalone-`##` path and the
+  ## self-tests: run `##` nodes with no splices, returning only the injected
+  ## nodes (indexed parallel to `ppNodes`).
+  var chunkParts: seq[string] = @[]
+  for i, node in ppNodes:
+    chunkParts.add "__nelua_mark(" & $i & ") " & node.str
+  let (injected, _) = runPreprocessChunk(ctx, chunkParts, ppNodes, @[])
+  return injected
+
+proc substituteSplices(node: Node, splices: seq[Node], results: seq[Node],
+                        ctx: var PreprocessContext, i: var int): Node =
+  ## Walk `node` (recursively) replacing each splice sentinel -- a node that is
+  ## identity-equal to `splices[i]` -- with `preprocess(results[i], ctx)`.
+  ## Splices are encountered in depth-first source order, matching the order
+  ## they were collected into `splices`, so the parallel index `i` lines up.
+  if node == nil:
+    return nil
+  if i < splices.len and node == splices[i]:
+    inc i
+    let processed = preprocess(results[i - 1], ctx)
+    return if processed != nil: processed else: newNil()
+  if node.children.len > 0:
+    for j in 0 ..< node.children.len:
+      node.children[j] = substituteSplices(node.children[j], splices, results, ctx, i)
+  return node
 
 proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
   ## Walk and rewrite `root`, consuming every directive / preprocessor node.
@@ -1403,10 +1469,21 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
   defer: dec ctx.depth
   case root.kind
   of nkBlock:
+    # Save and reset the deferred-splice list for this block; nested blocks
+    # (reached through the recursive `preprocess` call below) do the same, so
+    # each block collects only the splices that appear directly inside it.
+    let savedSplices = gBlockSplices
+    let savedDeferral = gInBlockSpliceDeferral
+    gBlockSplices = @[]
+    gInBlockSpliceDeferral = true
+    defer:
+      gBlockSplices = savedSplices
+      gInBlockSpliceDeferral = savedDeferral
     var rewritten: seq[Node] = @[]
     var condStack: seq[CondState] = @[]
     var frameStack: seq[LuaFrame] = @[]
     var ppNodes: seq[Node] = @[]
+    var chunkParts: seq[string] = @[]
     for n in root.children:
       if n.kind == nkDirective:
         handleDirective(n, rewritten, condStack, ctx)
@@ -1419,6 +1496,7 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
           # "unbalanced ## block" diagnostic).  Run it as a standalone chunk.
           rewritten.add n
           ppNodes.add n
+          chunkParts.add "__nelua_mark(" & $(ppNodes.len - 1) & ") " & n.str
         else:
           let text = n.str
           let delta = luaBlockDelta(text)
@@ -1431,6 +1509,7 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
               let node = Node(kind: nkPreprocess, str: chunk)
               rewritten.add node
               ppNodes.add node
+              chunkParts.add "__nelua_mark(" & $(ppNodes.len - 1) & ") " & node.str
             elif delta == 0:
               # intermediate (else / elseif): append text to the open frame
               frameStack[^1].parts.add LuaFramePart(isBody: false, text: text)
@@ -1447,9 +1526,14 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
               # standalone ## line
               rewritten.add n
               ppNodes.add n
+              chunkParts.add "__nelua_mark(" & $(ppNodes.len - 1) & ") " & n.str
       elif n.kind == nkPreprocessExpr:
         if condStack.len == 0 or condStack[^1].active:
-          rewritten.add evalSpliceExpr(ctx, n)
+          # Defer evaluation until after this block's `##` chunk has run, and
+          # evaluate it in that same chunk scope (see runPreprocessChunk), so a
+          ## `local` declared earlier in the block is visible to the splice.
+          rewritten.add n
+          collectSpliceParts(n, chunkParts, gBlockSplices)
       elif n.kind == nkPreprocessName:
         ctx.diags.add "#|name|# preprocessor replacement is unsupported in this build; node consumed"
       else:
@@ -1458,12 +1542,30 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
         else:
           if condStack.len == 0 or condStack[^1].active:
             rewritten.add preprocess(n, ctx)
+            # Record any splices nested inside `n` (in source order) for the
+            # block's chunk.  `preprocess` leaves them as sentinels while
+            # deferral is on; this walk collects them and emits their capture
+            # lines interleaved with the `##` lines.
+            collectSpliceParts(n, chunkParts, gBlockSplices)
     if frameStack.len > 0:
       ctx.diags.add "unbalanced ## block: unclosed Lua construct in " & ctx.path
-    if ppNodes.len > 0:
-      let injected = runPreprocessChunk(ctx, ppNodes)
+    if gBlockSplices.len > 0:
+      var ret = "{"
+      for i in 0 ..< gBlockSplices.len:
+        if i > 0: ret.add ", "
+        ret.add "__nelua_splice" & $i
+      ret.add "}"
+      chunkParts.add "return " & ret
+    if ppNodes.len > 0 or gBlockSplices.len > 0:
+      let (injected, spliceResults) = runPreprocessChunk(ctx, chunkParts, ppNodes, gBlockSplices)
+      # Splices have been collected and evaluated; turn deferral off so any
+      # `#[expr]#` still in the tree (e.g. inside an injected `##` node) is
+      # evaluated immediately as a standalone chunk rather than re-deferred
+      # into an already-run chunk.
+      gInBlockSpliceDeferral = false
       var newList: seq[Node] = @[]
       var injIdx = 0
+      var spIdx = 0
       for r in rewritten:
         if injIdx < ppNodes.len and r == ppNodes[injIdx]:
           for inj in injected[injIdx]:
@@ -1472,7 +1574,9 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
               newList.add processed
           inc injIdx
         else:
-          newList.add r
+          # Substitute any splice sentinels nested inside `r` (a splice may
+          # sit deep inside an expression, not just at the top level).
+          newList.add substituteSplices(r, gBlockSplices, spliceResults, ctx, spIdx)
       rewritten = newList
     root.children = rewritten
     return root
@@ -1488,6 +1592,14 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
     discard runPreprocessChunk(ctx, @[root])
     return nil
   of nkPreprocessExpr:
+    # A splice nested inside an expression (e.g. inside a call).  When we are
+    # walking a block that defers splices, leave the node in place as a
+    # sentinel -- `collectSpliceParts` (called by the block walk) records it
+    # and emits its capture line in source order; otherwise (top-level
+    # splice, or a block that is not deferring) evaluate it immediately as a
+    # standalone chunk.
+    if gInBlockSpliceDeferral:
+      return root
     return evalSpliceExpr(ctx, root)
   of nkPreprocessName:
     ctx.diags.add "#|name|# preprocessor replacement is unsupported in this build; node consumed"
