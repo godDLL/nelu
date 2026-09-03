@@ -73,23 +73,24 @@ the bundled `lib/`.
 | M7 | end-to-end compile + run | committed; the --print-ast driver no longer runs genC, so the three emitter SIGSEGVs (a.b:c(1), anonymous function, if/elseif) no longer abort AST dumps |
 | M8 | stdlib compilation | committed |
 | M9 | bootstrap | committed |
-| M10 | beyond-features sprints | committed; latest commit `110630f` ("Parity: build-cache layout, C-compiler flags, arg-order spill, version 0.2.1"). The `f75601a` cycle landed: cgen/analyzer fixes, `--lint` syntax-only, long-string strip; take spec/, lib/, lualib/ into the tree. Since `82cd86b` this cycle also landed: scope_shadow + stepped_for (`69098c3`), unit-scope block locals + Pair dump fix (`ed503c1`), splice Stage 4 steps 5-6 (`6a04582`), closure function-value fixes (`bab3eb3`), 11 oracle-behavior fixes (`dd291fc`, `689a2f7`), plus tetrix_rotation, locals-in-functions, lshift/escapes/floor_div, type-as-value, nilptr-to-pointer, closures/upvalue scoping, pointer print spelling, any phase 2. See NOTE_backlog.md. Later: `fedf44e` numeric-for `<=`/`>`/`>=` bound specifiers; runtime per-TU inlining + libm removal (`src/cgen.nim` preamble now emits only-referenced helpers as `static` per-TU, `src/compile.nim` no longer links `src/runtime.c`, `-lm` emitted only when the preamble pulled in `<math.h>`). |
+| M10 | beyond-features sprints | committed; latest commit `fe6cf7f`. The `f75601a` cycle landed: cgen/analyzer fixes, `--lint` syntax-only, long-string strip; take spec/, lib/, lualib/ into the tree. Since `82cd86b` this cycle also landed: scope_shadow + stepped_for (`69098c3`), unit-scope block locals + Pair dump fix (`ed503c1`), splice Stage 4 steps 5-6 (`6a04582`), closure function-value fixes (`bab3eb3`), 11 oracle-behavior fixes (`dd291fc`, `689a2f7`), plus tetrix_rotation, locals-in-functions, lshift/escapes/floor_div, type-as-value, nilptr-to-pointer, closures/upvalue scoping, pointer print spelling, any phase 2. See NOTE_backlog.md. Later: `fedf44e` numeric-for `<=`/`>`/`>=` bound specifiers; `93fc0e4` runtime per-TU inlining + libm removal (`src/cgen.nim` preamble now emits only-referenced helpers as `static` per-TU, `src/compile.nim` no longer links `src/runtime.c`, `-lm` emitted only when the preamble pulled in `<math.h>`) plus the two `*[0]byte` driver SIGSEGV guards (`cemitter.cCast`, `cgen.genKeyIndex`); `fe6cf7f` wires `--print-ppcode` and tracks the `examples/fuzz/` + `examples/nelu/` corpora. |
 
-The `src/` tree is clean at `93fc0e4`; everything below is committed, not uncommitted.
+The `src/` tree is clean at `fe6cf7f`; everything below is committed, not uncommitted.
 `examples/fuzz/` (51 oracle-verified algorithms) and `examples/nelu/` (53 beyond-oracle
 examples) are both tracked. `examples/` also carries the 154 `-ddx` achievement-tagged
-renames from the `-ddx` devil, integrated 2026-09-03 (107 of them on already-tracked
-files are in HEAD; the 47 in `examples/fuzz/` and `examples/nelu/` were folded into
-those corpora when they were tracked). Our binary reports **v0.2.1** (`src/main.nim`).
+renames from the `-ddx` devil, integrated 2026-09-03 (folded into the `fuzz/` and
+`nelu/` corpora when they were tracked). Our binary reports **v0.2.1** (`src/main.nim`).
 
 Active work (live queue in `NOTE_backlog.md`):
 - **Parser agent** (`src/parser.nim`, `src/preprocessor.nim`, `src/compile.nim`) - P1/N4/N5, the `tkLString` long-string strip, `#|name|#` splice, and the `##[=[ ... ]=]` block parse all landed at `f75601a`. Still queued: P3 `require` as an expression, P2 dotted field type, N2 byte literal `_b`, N1 `goto`/`::label:`, W3 `##` driver wiring, P4 generic instantiation.
 - **Fresh cgen agent** (`src/cgen.nim`, `src/analyzer.nim`, `src/runtime.c`, `src/types.nim`, `src/cgen_types.nim`) - M1/M2/M4 metamethod dispatch landed; this session's parity fixes (array `==`/`!=` element-wise, `#cstring` wraps in `nllen(nlstr(...))`, `#array` constant-fold, `$` -> `"deref"`, nested-record constructor array-field init, method-call arg indexing) landed at `f75601a`. The `5f3d20e` cycle landed: `cstring` now emits `char*` (was `const char*`, matching the oracle), CLI parity (no args prints usage + exit 0, `-V` verbose echoes the gcc line), output modes `-B`/`--object`, `-Y`/`--assembly`, `-A`/`--static-lib`, `-H`/`--shared-lib` with `-o` redirection, `--selftest` removed, and the `inferBinary` nil-operand guard in `sema.nim`. Still queued: M3 `__call` codegen, C5 `<forwarddecl>`, C3 `@union`, N3 `<comptime>` string, W1 float32 `.0`, W2 small-uint wrap, W4 `check()` location; plus the colon method-call `nkColonIndex` SIGSEGV (same C1 root cause).
 - **CLI flag agents (3, DONE & integrated into `110630f`)** - each worked on its own isolated copy under `tmp/2026-09-03-1642-*`: **path-flags** (`-L`/`--add-path`, `--path` system-lib default, the `require "allocators.general"` SIGSEGV, `--config` dump), **output-execution** (`--print-assembly`, `-i`/`--eval`, `-R`/`--runner`, `--script`), **diagnostics** (`-t`/`-T`/`-M`/`-w`/`--no-color`/`--stripflags`/`-d`/`--config`/`--semver`/`--define`/`--pragma`). All three overlap on `cli.nim`/`compile.nim`/`config.nim`/`main.nim`, integrated one at a time, in the order path -> output-execution -> diagnostics.
 - **Correctness agents (2, DONE & integrated into `110630f`)** - **arg-order** (function args evaluate left-to-right like the oracle via a GNU statement-expression spill; drives `fuzz_stack`/`fuzz_queue`) and **multi-assign** (RHS of `a, b = f()` must not reuse the updated `a`; drives `fuzz_fibonacci_iterative`, `fuzz_median_array`, `fuzz_gcd`/`fuzz_lcm`).
-- **Runtime per-TU inlining + libm removal (DONE, integrated; uncommitted)** - isolated copy at `tmp/2026-09-03-2005-runtime-inlining/`; design doc `plan/runtime-per-tu-inlining-design.md`. `src/cgen.nim`'s `RUNTIME_C` extern-declaration block is replaced by `genPreamble(refs)`, which emits a `static` DEFINITION of only the helpers the TU actually calls (tracked in `Gen.refs`); `src/compile.nim` no longer links `src/runtime.c` and emits `-lm` only when the preamble pulled in `<math.h>` (non-math TUs are libm-free). `src/runtime.c` is unchanged -- its bodies were moved verbatim into the preamble. Verified: build clean, all 7 probes byte-identical to baseline, `examples_parity` 2 MATCH / 5 DIFF / 3 SKIP and `wwwcheck` 91 PASS / 5 DIFF unchanged, cc line for a non-math program is `gcc ... -o out prog.c` (no runtime.c, no -lm). Note: `-lm` is kept conditionally -- the design doc's "-lm is a no-op here" claim is false; even the oracle's own generated C fails to link `pow` at the default `-g` tier without it.
+- **Runtime per-TU inlining + libm removal (DONE, integrated, committed `93fc0e4`)** - isolated copy at `tmp/2026-09-03-2005-runtime-inlining/`; design doc `plan/runtime-per-tu-inlining-design.md`. `src/cgen.nim`'s `RUNTIME_C` extern-declaration block is replaced by `genPreamble(refs)`, which emits a `static` DEFINITION of only the helpers the TU actually calls (tracked in `Gen.refs`); `src/compile.nim` no longer links `src/runtime.c` and emits `-lm` only when the preamble pulled in `<math.h>` (non-math TUs are libm-free). `src/runtime.c` is unchanged -- its bodies were moved verbatim into the preamble. Verified: build clean, all 7 probes byte-identical to baseline, `examples_parity` 2 MATCH / 5 DIFF / 3 SKIP and `wwwcheck` 91 PASS / 5 DIFF unchanged, cc line for a non-math program is `gcc ... -o out prog.c` (no runtime.c, no -lm). Note: `-lm` is kept conditionally -- the design doc's "-lm is a no-op here" claim is false; even the oracle's own generated C fails to link `pow` at the default `-g` tier without it.
 - **`www_neg_for` numeric-for bound specifiers (DONE, mine)** - `parseFor` now accepts `<=`/`>`/`>=` as bound specifiers (`tkLe`/`tkGt`/`tkGe`), mapping to cmpop `le`/`gt`/`ge`; the analyzer and cgen already handled all four. `wwwcheck` improved 90/6 -> **91 PASS / 5 DIFF**.
-- **Corpus agents (2, DONE & integrated)** - `examples/fuzz/` (50 algorithms, oracle-verified, verdicts 22 MATCH / 5 DIFF / 21 CRASH / 2 HANG) and `examples/nelu/` (20 beyond-oracle examples, each verified oracle-rejects / ours-accepts). Both are devil harnesses: the breakage they find is the work queue. **`-ddx` devil (DONE & integrated 2026-09-03)** - classified all 220 `examples/*/**` tests (MATCH 129, O-REJ 47, DIFF-fail 8, OUR-REJ 30, SKIP 3) and renamed the 154 passing ones to `-ddx` in live `examples/`; report `plan/devil-ddx-corpus.md`. Its headline finding: **the stdlib is entirely unreachable -- 51/51 `lib/` modules fail through ours**, root cause the `##` splice `in` keyword in `xoshiro256` plus a cascade; this is the single largest takeover blocker and drives the "Stdlib reachability" queue in `NOTE_backlog.md`.
+- **Corpus agents (2, DONE & integrated)** - `examples/fuzz/` (51 algorithms, oracle-verified, verdicts 22 MATCH / 5 DIFF / 21 CRASH / 2 HANG) and `examples/nelu/` (53 beyond-oracle examples, each verified oracle-rejects / ours-accepts). Both are devil harnesses: the breakage they find is the work queue. **`-ddx` devil (DONE & integrated 2026-09-03)** - classified all 220 `examples/*/**` tests (MATCH 129, O-REJ 47, DIFF-fail 8, OUR-REJ 30, SKIP 3) and renamed the 154 passing ones to `-ddx`; report `plan/devil-ddx-corpus.md`. Its headline finding: **the stdlib is entirely unreachable -- 51/51 `lib/` modules fail through ours**, root cause the `##` splice `in` keyword in `xoshiro256` plus a cascade; this is the single largest takeover blocker and drives the "Stdlib reachability" queue in `NOTE_backlog.md`. **`-ffs` devil (running 2026-09-03)** - the inverse of `-ddx`: tags the files the oracle should *not* accept; report `plan/ffs-corpus.md` when it lands. **CLI flag conformance (DONE 2026-09-03)** - characterized all 45 oracle flags over 864 dump + 200 build/run runs; report `tmp/2026-09-03-2252-cli-conformance/plan/cli-conformance.md`, harness `tmp/cli_conformance.py`. Top gaps: `-Y`/`--assembly` malformed gcc line, `--sanitize`/`-S` no-op, `-r`/`--release` doesn't disable runtime checks, stdin `-` unsupported, no `lua` backend. It also corrected `plan/missing-cli-flags.md`, which is stale (most flags it lists as missing are implemented and verified).
+- **`--print-ppcode` wiring (DONE, committed `fe6cf7f`)** - `src/main.nim` now imports the preprocessor and dumps the preprocessed AST on `--print-ppcode`, instead of hard-erroring.
+- **In flight (2026-09-03, late):** **splice B/C/D atomic** (`tmp/2026-09-03-2345-splice-bcd/`) - the core of the stdlib takeover blocker: preprocessor ordering (splices evaluated during the walk while `##` lines run after) plus a `scope` field for `PreprocessContext` plus an analyzer block pre-pass. **`print(nil)` -> `nil`** (`tmp/2026-09-03-2345-print-nil/`) - one-line `nelua_print_nil` fix.
 - **cmp.py [31] Pair dump gap** - DONE: fix landed in `src/parser.nim` (`proc dump` nkPair branch); cmp.py now 39 MATCH / 1 DIFF.
 - **tetrix_rotation** - DONE & committed `82cd86b`; www target MATCH.
 - **Closures / upvalues** - landed across `75f315e` + `bab3eb3`. 7 of 15 probes MATCH the oracle; function-local capture is rejected at analysis with the oracle's exact message.
@@ -108,13 +109,24 @@ nelua-lang/
 |-- NELUA-200.md        # reader reference aid, checked against the oracle
 |-- CONTRIBUTING.md     # untracked
 |-- nim.cfg             # compiler build flags
-|-- tmp/                # scratch: build artefacts, probes, captures. Stays until the user deletes it.
-|-- plan/               # design docs + survey probes (scratch, not tracked)
+|-- tmp/                # scratch: build artefacts, probes, captures. Stays
+|                       #   until the user deletes it. Worth knowing:
+|                       #   NOTE_backlog.md (task queue), m2_corpus/ and
+|                       #   corpus_nelua/ (oracle AST dumps the gates diff
+|                       #   against), the -ddx/-ffs corpus copies, and the
+|                       #   cli_conformance.py harness.
+|-- plan/               # design docs + survey probes are scratch (gitignored);
+|                       #   the gate scripts cmp.py, regress.py,
+|                       #   examples_parity.py ARE tracked.
 |-- src/                # the compiler (what we ship)
 |-- lib/, lualib/       # stdlib + oracle source (read-only reference)
-|-- examples/, tests/, spec/   # oracle's own corpus (read-only reference)
-+-- plan/              # design docs + gates (tracked): cmp.py, regress.py,
-                      #   examples_parity.py
+|-- examples/           # our test corpus, four tiers: top-level (upstream's,
+|                       #   acceptance bar), www/ (ours, feature isolation),
+|                         fuzz/ (ours, algorithm regression), nelu/ (ours,
+|                       #   beyond-oracle Nelu extensions). See
+|                       #   examples/README.md. tests/, spec/ are the oracle's
+|                       #   own, read-only.
+```
 ```
 
 `src/` modules (current):
@@ -135,7 +147,9 @@ nelua-lang/
 | `luaengine.nim` | embedded Lua 5.x VM running `##` blocks (see section 6) |
 | `analyzer.nim` | visitor-based analyzer |
 | `cgen.nim`, `cemitter.nim`, `cgen_types.nim` | AST -> C visitor + C type mapping |
-| `runtime.c` | C runtime the generated code links against |
+| `runtime.c` | C runtime; its helper bodies are copied verbatim into each TU's
+|             |   preamble as `static` definitions, so it is no longer linked
+|             |   (see the runtime per-TU inlining entry above) |
 
 Vendored third-party (read-only, **do not port**): `src/lua/*`, `src/lpeglabel/`,
 `src/rpmalloc/`, `src/luainit.c`.
@@ -166,6 +180,10 @@ in-flight edits):
 | lshift/escapes/floor_div (done, integrated) | `src/cgen.nim`, `src/lexer.nim`, `src/runtime.c` |
 | closures/upvalues + pointer print (done, integrated) | `src/cgen.nim`, `src/analyzer.nim`, `src/runtime.c` |
 | M1 gate + --print-ast driver (mine) | `src/main.nim`, `plan/regress.py`, `plan/cmp.py` |
+| runtime per-TU inlining + libm removal (committed `93fc0e4`) | `src/cgen.nim`, `src/compile.nim` |
+| two `*[0]byte` driver SIGSEGV guards (committed `4d13fb5`) | `src/cemitter.nim`, `src/cgen.nim` |
+| `--print-ppcode` wiring (committed `fe6cf7f`) | `src/main.nim` |
+| `-ddx` achievement corpus + `examples/fuzz/` + `examples/nelu/` tracking (committed `fe6cf7f`) | `examples/`, `README.md`, `examples/README.md` |
 
 **Concurrency: there is no fixed limit on how many agents may run at once.**
 The only constraint is that two agents must never edit the same file at the same
@@ -180,15 +198,17 @@ live queue moves as commits land.
 
 ## 5. How to verify
 
-- **Build:** `nim c -d:release --path:src -o:tmp/nelua src/main.nim`
+- **Build:** `rm -rf /tmp/nimclean && nim c -d:release --path:src -o:tmp/nelua --nimcache:/tmp/nimclean src/main.nim` — a **fresh** nimcache every build (a reused one silently picks up stale modules and produces an inconsistent binary).
 - **Oracle dumps:** `--print-ast` (M1), `--print-analyzed-ast` (M2->M4),
   `--print-ppcode` (preprocessed AST; wired 2026-09-03, replaces the old
   hard error).
 - **Gates:** `python3 plan/cmp.py` (M1 diff floor), `python3 plan/regress.py` (permanent
   regression loop), `python3 plan/examples_parity.py` (end-to-end execution).
-- **End-to-end:** parse -> preprocessor -> analyze -> codegen -> gcc with
-  `src/runtime.c` + `-lm` -> run. The real test is a compiled program producing
-  the right output and exit code 0.
+- **End-to-end:** parse -> preprocessor -> analyze -> codegen -> gcc. The runtime
+  is inlined per-TU as `static` definitions in the C preamble, so `src/runtime.c`
+  is **not** linked; `-lm` is added only when the preamble pulled in `<math.h>`
+  (i.e. the TU uses `^`). The real test is a compiled program producing the right
+  output and exit code 0.
 
 Note: `regress.py` rebuilds `tmp/nelua` whenever any `src/*.nim|*.c` is newer
 than the binary. While any agent is mid-edit on shared `src/`, that rebuild
