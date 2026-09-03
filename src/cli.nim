@@ -10,7 +10,7 @@
 ## arguments (the source files). Unknown flags do not crash: the problem is
 ## reported on stderr and the returned Config carries an error marker.
 
-import std/parseopt
+import std/[parseopt, os]
 import config
 
 type
@@ -26,6 +26,7 @@ const LongNoVal: seq[string] = @[
   "version", "help",
   "print-ast", "print-analyzed-ast", "print-ppcode", "print-code",
   "object", "assembly", "static-lib", "shared-lib",
+  "config",
 ]
 
 proc setOutputKind(c: var Config, k: OutputKind, name: string) =
@@ -96,6 +97,12 @@ proc parseArgs*(args: seq[string]): (Config, seq[string]) =
       of "P": c.pragmas.add(p.val)
       of "D": c.defines.add(p.val)
       of "g": c.generator = p.val
+      of "L":
+        if not dirExists(p.val):
+          c.parseError = "path '" & p.val & "' is not a valid directory"
+          stderr.writeLine("error: " & c.parseError)
+          break
+        c.addAddPath(p.val)
       else:
         c.parseError = "unknown short option: -" & p.key
         stderr.writeLine("nelua: " & c.parseError)
@@ -119,13 +126,20 @@ proc parseArgs*(args: seq[string]): (Config, seq[string]) =
       of "cc": c.cc = p.val
       of "cflags": c.cflags = p.val
       of "ldflags": c.ldflags = p.val
-      of "path": c.paths.add(p.val)
+      of "path": c.addPath(p.val)
+      of "add-path":
+        if not dirExists(p.val):
+          c.parseError = "path '" & p.val & "' is not a valid directory"
+          stderr.writeLine("error: " & c.parseError)
+          break
+        c.addAddPath(p.val)
       of "cache-dir": c.cacheDir = p.val
       of "output": c.output = p.val
       of "object": setOutputKind(c, okObject, "object")
       of "assembly": setOutputKind(c, okAssembly, "assembly")
       of "static-lib": setOutputKind(c, okStaticLib, "static-lib")
       of "shared-lib": setOutputKind(c, okSharedLib, "shared-lib")
+      of "config": c.config = true
       else:
         c.parseError = "unknown option: --" & p.key
         stderr.writeLine("nelua: " & c.parseError)

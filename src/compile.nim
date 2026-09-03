@@ -71,10 +71,12 @@ proc resolveModule*(name: string, config: Config, requiringPath: string): string
   ## Module names use `.` as a path separator (`require 'allocators.general'`
   ## -> `lib/allocators/general.nelua`).  A leading `.` segment means "the
   ## directory of the file doing the requiring" (so `require '.foo'` from
-  ## `tests/a.nelua` finds `tests/foo.nelua`).  Search order: `--path`
-  ## entries, then the project `lib/` dir, then the requiring file's own
-  ## directory, then the current working directory.  Returns "" when no
-  ## candidate exists.
+  ## `tests/a.nelua` finds `tests/foo.nelua`).  Search order: `-L`/`--add-path`
+  ## dirs (first match wins), then `--path` entries (last-wins; any `--path`
+  ## replaces the default entirely), then the default templates (`./?.nelua`,
+  ## `./?/init.nelua`, the system lib dir, and its `init.nelua`), then OUR
+  ## extensions (project `lib/`, the requiring file's dir, cwd).  Returns ""
+  ## when no candidate exists.
   ##
   ## The lexer keeps a string literal's delimiters in its token value, so a
   ## `require 'foo'` name arrives as `'foo'`; strip the surrounding quotes here
@@ -88,8 +90,16 @@ proc resolveModule*(name: string, config: Config, requiringPath: string): string
   if segments.len > 0 and segments[0] == "":
     let base = requiringPath.splitFile().dir
     candidates.add base / segments[1 ..< segments.len].join("/") & ".nelua"
+  for p in config.addPath:
+    candidates.add p / segments.join("/") & ".nelua"
+    candidates.add p / segments.join("/") / "init.nelua"
   for p in config.paths:
     candidates.add p / segments.join("/") & ".nelua"
+  if config.paths.len == 0:
+    candidates.add getCurrentDir() / segments.join("/") & ".nelua"
+    candidates.add getCurrentDir() / segments.join("/") / "init.nelua"
+    candidates.add LibPath / segments.join("/") & ".nelua"
+    candidates.add LibPath / segments.join("/") / "init.nelua"
   candidates.add getCurrentDir() / "lib" / segments.join("/") & ".nelua"
   let reqDir = requiringPath.splitFile().dir
   if reqDir.len > 0:

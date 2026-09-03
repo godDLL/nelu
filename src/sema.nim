@@ -148,6 +148,8 @@ proc commonType*(a, b: Type): Type =
 proc inferUnary*(op: string, rhs: Type): (Type, Conversion) =
   let n = normalizeUnaryOp(op)
   let ident = Conversion(kind: ckIdentity)
+  if rhs == nil:
+    return (nil, Conversion(kind: ckNone))
   case n:
     of "not":
       (BuiltinTypes["boolean"], ident)

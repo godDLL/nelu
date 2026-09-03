@@ -73,13 +73,16 @@ the bundled `lib/`.
 | M7 | end-to-end compile + run | committed; the --print-ast driver no longer runs genC, so the three emitter SIGSEGVs (a.b:c(1), anonymous function, if/elseif) no longer abort AST dumps |
 | M8 | stdlib compilation | committed |
 | M9 | bootstrap | committed |
-| M10 | beyond-features sprints | committed; latest `5f3d20e` ("Parity: CLI shell use, output modes, cstring spelling, inferBinary guard"). The `f75601a` cycle landed: cgen/analyzer fixes, `--lint` syntax-only, long-string strip; take spec/, lib/, lualib/ into the tree. Since `82cd86b` this cycle also landed: scope_shadow + stepped_for (`69098c3`), unit-scope block locals + Pair dump fix (`ed503c1`), splice Stage 4 steps 5-6 (`6a04582`), closure function-value fixes (`bab3eb3`), 11 oracle-behavior fixes (`dd291fc`, `689a2f7`), plus tetrix_rotation, locals-in-functions, lshift/escapes/floor_div, type-as-value, nilptr-to-pointer, closures/upvalue scoping, pointer print spelling, any phase 2. See NOTE_backlog.md. |
+| M10 | beyond-features sprints | committed; latest feature commit `5f3d20e` ("Parity: CLI shell use, output modes, cstring spelling, inferBinary guard"), with `1bca5f3` ("Docs: refresh stale coordination docs to current state") on top. The `f75601a` cycle landed: cgen/analyzer fixes, `--lint` syntax-only, long-string strip; take spec/, lib/, lualib/ into the tree. Since `82cd86b` this cycle also landed: scope_shadow + stepped_for (`69098c3`), unit-scope block locals + Pair dump fix (`ed503c1`), splice Stage 4 steps 5-6 (`6a04582`), closure function-value fixes (`bab3eb3`), 11 oracle-behavior fixes (`dd291fc`, `689a2f7`), plus tetrix_rotation, locals-in-functions, lshift/escapes/floor_div, type-as-value, nilptr-to-pointer, closures/upvalue scoping, pointer print spelling, any phase 2. See NOTE_backlog.md. |
 
-The `src/` tree is clean at `5f3d20e`; everything below is committed, not uncommitted. (The docs-agent refresh of NELU-2K/NELUA-200/README/language-review sits uncommitted pending review.)
+The `src/` tree is clean at `1bca5f3`; everything below is committed, not uncommitted. (The `examples/fuzz/` and `examples/nelu/` corpora, plus `DEVIL.md`, are uncommitted work-in-progress from the corpus agents.)
 
 Active work (live queue in `NOTE_backlog.md`):
 - **Parser agent** (`src/parser.nim`, `src/preprocessor.nim`, `src/compile.nim`) - P1/N4/N5, the `tkLString` long-string strip, `#|name|#` splice, and the `##[=[ ... ]=]` block parse all landed at `f75601a`. Still queued: P3 `require` as an expression, P2 dotted field type, N2 byte literal `_b`, N1 `goto`/`::label:`, W3 `##` driver wiring, P4 generic instantiation.
 - **Fresh cgen agent** (`src/cgen.nim`, `src/analyzer.nim`, `src/runtime.c`, `src/types.nim`, `src/cgen_types.nim`) - M1/M2/M4 metamethod dispatch landed; this session's parity fixes (array `==`/`!=` element-wise, `#cstring` wraps in `nllen(nlstr(...))`, `#array` constant-fold, `$` -> `"deref"`, nested-record constructor array-field init, method-call arg indexing) landed at `f75601a`. The `5f3d20e` cycle landed: `cstring` now emits `char*` (was `const char*`, matching the oracle), CLI parity (no args prints usage + exit 0, `-V` verbose echoes the gcc line), output modes `-B`/`--object`, `-Y`/`--assembly`, `-A`/`--static-lib`, `-H`/`--shared-lib` with `-o` redirection, `--selftest` removed, and the `inferBinary` nil-operand guard in `sema.nim`. Still queued: M3 `__call` codegen, C5 `<forwarddecl>`, C3 `@union`, N3 `<comptime>` string, W1 float32 `.0`, W2 small-uint wrap, W4 `check()` location; plus the colon method-call `nkColonIndex` SIGSEGV (same C1 root cause).
+- **CLI flag agents (3, in flight)** - each on its own isolated copy under `tmp/2026-09-03-1642-*`: **path-flags** (`-L`/`--add-path`, `--path` system-lib default, the `require "allocators.general"` SIGSEGV, `--config` dump), **output-execution** (`--print-assembly`, `-i`/`--eval`, `-R`/`--runner`, `--script`), **diagnostics** (`-t`/`-T`/`-M`/`-w`/`--no-color`/`--stripflags`/`-d`/`--config`/`--semver`/`--define`/`--pragma`). All three overlap on `cli.nim`/`compile.nim`/`config.nim`/`main.nim`, so they integrate one at a time, in the order path -> output-execution -> diagnostics.
+- **Correctness agents (2, in flight)** - **arg-order** (function args evaluate right-to-left like the oracle; drives `fuzz_stack`/`fuzz_queue`) and **multi-assign** (RHS of `a, b = f()` must not reuse the updated `a`; drives `fuzz_fibonacci_iterative`, `fuzz_median_array`, `fuzz_gcd`/`fuzz_lcm`).
+- **Corpus agents (2, DONE)** - `examples/fuzz/` (50 algorithms, oracle-verified, verdicts 22 MATCH / 5 DIFF / 21 CRASH / 2 HANG) and `examples/nelu/` (20 beyond-oracle examples, each verified oracle-rejects / ours-accepts). Both are devil harnesses: the breakage they find is the work queue.
 - **cmp.py [31] Pair dump gap** - DONE: fix landed in `src/parser.nim` (`proc dump` nkPair branch); cmp.py now 39 MATCH / 1 DIFF.
 - **tetrix_rotation** - DONE & committed `82cd86b`; www target MATCH.
 - **Closures / upvalues** - landed across `75f315e` + `bab3eb3`. 7 of 15 probes MATCH the oracle; function-local capture is rejected at analysis with the oracle's exact message.
@@ -157,13 +160,14 @@ in-flight edits):
 | closures/upvalues + pointer print (done, integrated) | `src/cgen.nim`, `src/analyzer.nim`, `src/runtime.c` |
 | M1 gate + --print-ast driver (mine) | `src/main.nim`, `plan/regress.py`, `plan/cmp.py` |
 
-**Concurrency: never launch more than 2 agents at once** (user cap: up to 4
-design/research, 2 impl). Files edited by multiple agents race - queue the
-rest and re-check ownership before launching. The table above is a snapshot
-of where each piece of work landed; the ownership it records is by commit,
-not by an in-flight agent. Always re-read `git status` and `NOTE_backlog.md`
-before starting a new impl agent, because the live queue moves as commits
-land and two impl agents editing the same file race.
+**Concurrency: there is no fixed limit on how many agents may run at once.**
+The only constraint is that two agents must never edit the same file at the same
+time: impl agents work on isolated copies (section 3.7 of AGENT.md) so they
+cannot collide on `src/`, and design/research agents are read-only on the live
+tree. The table above is a snapshot of where each piece of work landed; the
+ownership it records is by commit, not by an in-flight agent. Always re-read
+`git status` and `NOTE_backlog.md` before starting a new impl agent, because the
+live queue moves as commits land.
 
 ---
 

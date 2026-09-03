@@ -45,6 +45,7 @@ proc printHelp() =
   echo "  --cflags <flags>         Extra flags for the C compiler"
   echo "  --ldflags <flags>        Extra flags for the linker"
   echo "  --path <dir>             Add a module search path"
+  echo "  -L <dir>, --add-path <dir>  Add a module search path (accumulating)"
   echo "  -o <output>              Output file"
   echo "  --cache-dir <dir>        Compilation cache directory"
   echo "  -s, --strip-bin          Strip symbols from the binary"
@@ -52,8 +53,57 @@ proc printHelp() =
   echo "  -g <generator>           Code generator backend (default: c)"
   echo "  --no-cache               Do not use cached compilation"
   echo "  --version                Print the version and exit"
+  echo "  --config                 Dump the effective configuration and exit"
   echo "  -V                       Verbose: echo generated C and cc command line"
   echo "  --help                   Show this help and exit"
+
+proc dumpConfig(c: Config) =
+  ## Dump the effective configuration as a Lua-table-format JSON, matching the
+  ## reference's `--config` output shape (lists as `{ "a", "b" }`, strings as
+  ## `key = "value"`, the `path` key a single semicolon-joined string).  The
+  ## final key has no trailing comma, matching the reference exactly.
+  proc list(s: seq[string]): string =
+    if s.len == 0:
+      return "{}"
+    result = "{ "
+    for i, v in s:
+      result.add "\"" & v & "\""
+      if i < s.len - 1:
+        result.add ", "
+    result.add " }"
+  proc str(v: string): string = "\"" & v & "\""
+  let path = if c.paths.len == 0: DefaultPath else: ";" & c.paths.join(";")
+  let cacheDir = if c.cacheDir.len > 0: c.cacheDir else: "/home/user/.cache/nelua"
+  let gen = if c.generator.len > 0: c.generator else: "c"
+  let lines = [
+    "  add_path = " & c.addPath.list() & "",
+    "  cache_dir = " & str(cacheDir) & "",
+    "  cc = " & str(c.cc) & "",
+    "  cflags = " & str(c.cflags) & "",
+    "  define = " & c.defines.list() & "",
+    "  gdb = " & str("gdb") & "",
+    "  generator = " & str(gen) & "",
+    "  ldflags = " & str(c.ldflags) & "",
+    "  lib_path = " & str(LibPath) & "",
+    "  lua = " & str("/usr/bin/nelua-lua") & "",
+    "  lua_cpath = " & str(LuaCPath) & "",
+    "  lua_path = " & str(LuaPath) & "",
+    "  lua_version = " & str(LuaVersion) & "",
+    "  lualib_path = " & str(LualibPath) & "",
+    "  output_dir = " & str("/home/user/.cache/nelua") & "",
+    "  path = " & str(path) & "",
+    "  pragma = " & list(@[]) & "",
+    "  pragmas = " & c.pragmas.list() & "",
+    "  runargs = " & list(@[]) & "",
+    "  stripflags = " & str("-x") & "",
+  ]
+  echo "{"
+  for i, l in lines:
+    if i < lines.len - 1:
+      echo l & ","
+    else:
+      echo l
+  echo "}"
 
 proc main(): int =
   ## Entry point. Returns the process exit code (0 = all clean, 1 = any
@@ -72,6 +122,13 @@ proc main(): int =
     return 0
   if hasError(c):
     return 1
+
+  if c.config:
+    if positionals.len > 0:
+      stderr.writeLine("error: argument 'input' can not be used together with option '--config'")
+      return 1
+    dumpConfig(c)
+    return 0
 
   if positionals.len == 0:
     ## No input: the oracle prints usage and exits 0.
