@@ -1,0 +1,7 @@
+local Point = @record{ x: integer, y: integer }
+function Point:clone(): *Point
+  return self
+end
+local p = Point{ x = 3, y = 4 }
+local q = p:clone()
+print(q.x, q.y)

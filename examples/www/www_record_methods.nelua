@@ -1,0 +1,12 @@
+local Point = @record{ x: integer, y: integer }
+function Point:sum(): integer
+  return self.x + self.y
+end
+function Point:neg()
+  self.x = -self.x
+  self.y = -self.y
+end
+local p = Point{ x = 3, y = 4 }
+print(p:sum())
+p:neg()
+print(p.x, p.y)

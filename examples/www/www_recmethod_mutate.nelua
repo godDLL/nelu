@@ -1,0 +1,11 @@
+local Point = @record{ x: integer, y: integer }
+function Point:scale(s: integer)
+  self.x = self.x * s
+  self.y = self.y * s
+end
+local p = Point{ x = 3, y = 4 }
+p:scale(2)
+print(p.x, p.y)
+local q = Point{ x = 1, y = 1 }
+q:scale(10)
+print(q.x, q.y)

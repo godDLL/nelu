@@ -1,0 +1,4 @@
+local a: [3]integer = { 1, 2, 3 }
+local b: [3]integer = { 1, 2, 3 }
+local c: [3]integer = { 1, 2, 4 }
+print(a == b, a == c)

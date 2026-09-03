@@ -1,0 +1,4 @@
+global nums: [3]integer = { 1, 2, 3 }
+print(nums[0], nums[1], nums[2])
+nums[0] = 99
+print(nums[0])

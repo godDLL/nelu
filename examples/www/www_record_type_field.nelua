@@ -1,0 +1,4 @@
+global Color: type = @byte
+local Piece = @record{ color: Color, x: integer }
+local p = Piece{ color = 5, x = 3 }
+print(p.color, p.x)

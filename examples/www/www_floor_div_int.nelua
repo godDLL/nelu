@@ -1,0 +1,2 @@
+local d: integer = -7 // 2
+print(d)

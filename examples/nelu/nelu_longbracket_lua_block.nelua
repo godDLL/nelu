@@ -1,0 +1,5 @@
+-- ##[[ ... ]] multi-line Lua block form
+##[[
+x = 7
+]]
+print(#[x]#)

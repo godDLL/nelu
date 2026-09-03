@@ -1,0 +1,9 @@
+-- 2.5c C emitter SIGSEGV on if/elseif chains
+local x: integer = 2
+if x == 1 then
+  print("one")
+elseif x == 2 then
+  print("two")
+else
+  print("other")
+end

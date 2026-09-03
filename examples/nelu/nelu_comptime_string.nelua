@@ -1,0 +1,3 @@
+-- 3.3 <comptime> on a string global evaluates the string as a number
+global _VERSION: string <comptime> = "1.0"
+print(_VERSION)

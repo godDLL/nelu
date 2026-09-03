@@ -112,6 +112,58 @@ or `tmp/`:
   cases MATCH byte-for-byte; every non-null case now emits the oracle's `0x...` format.
   See `plan/pointer-printing-design.md`.
 
+### 1.7 Session work (2026-08-30) -- uncommitted in the working tree
+
+Each row below was verified against a fresh `nim c -d:release --path:src -o:tmp/nelua_test
+src/main.nim` build of the live working tree, not taken on trust from the board.
+
+- **Metamethod-dispatch family (M1-M4) -- cgen agent, `src/cgen.nim`.** A shared
+  `genMetaCall` helper plus dispatch sites in the `#` operator, the `print()` arm,
+  the call expression, and `[]` indexing. Verified: **M1 `__len` via `#` MATCHES**
+  (`5` vs `5`) and **M2 `__tostring` via `print()` MATCHES** (`Vec` vs `Vec`).
+  Still open: **M3 `__call` via `r(...)`** prints `(null)` where the oracle prints
+  `17`; **M4 `__index` via `r[i]`** has the dispatch landed but its probe dies on
+  the `{data = a}` array-field-init mis-lowering, a separate documented finding.
+  The `genKeyIndex` key/base swap (children[0]=key, children[1]=base) also landed
+  here. This is the finding ranked 1 of 25 in `plan/devil-advocate-findings.md`
+  CONSOLIDATED RANKING; it is now mostly closed and the ranking should be
+  re-derived, not re-litigated.
+- **C1 partial fix -- `src/analyzer.nim`.** An `analyzeCall` `nkDotIndex` branch
+  (static/method-call + indirect-call) plus a `calleeType != nil` nil-guard.
+  **This does NOT fix C1.** Verified: `self.x = self.x * s` still SIGSEGVs
+  (exit 139) against the fresh build, while `/usr/bin/nelua` prints `6`. The
+  landed change stops the static-method-call crash (a different path); the
+  assignment path in `analyzeAssign` (`src/analyzer.nim:1844`) that C1 actually
+  is remains untouched. C1 stays OPEN. Recorded here because the board briefly
+  claimed otherwise and this is the correction.
+- **P1 / N4 / N5 parses -- parser agent, `src/parser.nim`.** P1 colon method on a
+  type-keyword receiver (`function string:destroy()`): `lib/string.nelua` now
+  parses past line 46 (it dies later at line 940, the already-documented
+  `#|argname|#` name-splice gap). N4 `facultative(string)` type-function-call
+  param: parses, but the analyzer resolution to an optional/nullable string is
+  not yet working (C compile fails). N5 typed `for i: T = 0, <N do` exclusive
+  bound: **MATCHes the oracle** (`10`, exit 0). All three are marked COMPLETE
+  with a "verify end-to-end" note in `plan/our-improvements.md`; that framing
+  holds for P1 and N4 (parse landed, end-to-end pending) and is fully closed for
+  N5.
+- **Dependency-failure guard -- `src/compile.nim`.** A `require` whose dependency
+  did not compile now aborts the unit instead of SIGSEGVing in `genC`. Not a
+  parity fix; robustness.
+- **`T?` and `cond` re-framing (durable triage rule).** Confirmed again this
+  session: the oracle never *runs* a program using `T?` or `cond`, so neither
+  is a parity target. They are Nelu-extension-or-drop candidates. The rule is
+  in `post-reimpl-continue-nelu.md` "The parity/extension split": **working
+  code must work; we do not care whether failing code fails the same.** The
+  docs no longer frame these as divergences to close.
+- **25 confirmed findings, three Devil's advocate runs (9 + 8 + 8).** All in
+  `plan/devil-advocate-findings.md`, with a CONSOLIDATED RANKING treated as
+  authoritative. The metamethod family (M1-M4) ranks 1 of 25 by stdlib-file
+  breadth; as noted above, M1 and M2 are now fixed in the tree.
+- **NASM investigation -- in flight, do not write it.** A research agent is
+  surveying `src/runtime.c`, `src/cgen.nim`, `src/cemitter.nim` and the
+  build/link path for concrete opportunities to move part of our machinery to
+  NASM. Report will land in `plan/nasm-opportunities.md`.
+
 ---
 
 ## 2. Queued beyond 0.2.0 (designed, not landed)
@@ -143,9 +195,12 @@ The bar is the same as `NELUA-200.md` section 0, mirrored:
 - **Oracle is the referee** for the parity half. When our output differs from
   `/usr/bin/nelua`, say whether it is our bug or a deliberate Nelu divergence *from the
   oracle's output* - never "match" by ignoring a difference.
-- **Gates:** `plan/cmp.py` (M1 AST floor), `plan/regress.py` (M2 + M1), and
-  `plan/examples_parity.py` (end-to-end). Nelu work must not regress these; re-run only
-  when `src/` is quiescent.
+- **Gates:** what each gate measures, its corpus, pass bar, and the deliberate
+  strict-vs-report-only exit-code split are in `plan/GATES.md` (single source of
+  truth -- read it before interpreting any gate output). The scripts are
+  `plan/cmp.py`, `plan/regress.py`, `plan/examples_parity.py`, and
+  `tmp/wwwcheck.py`. Nelu work must not regress these; re-run only when `src/`
+  is quiescent.
 
 ---
 

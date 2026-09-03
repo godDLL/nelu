@@ -1,0 +1,25 @@
+local x = 5
+if x > 0 then
+  print('pos')
+elseif x == 0 then
+  print('zero')
+else
+  print('neg')
+end
+local i = 0
+while i < 3 do
+  i = i + 1
+end
+print('while', i)
+local s = 0
+for j = 1, 5 do
+  s = s + j
+end
+print('for15', s)
+local sum = 0
+for j = 1, 10 do
+  if j == 4 then continue end
+  if j > 8 then break end
+  sum = sum + j
+end
+print('bc', sum)

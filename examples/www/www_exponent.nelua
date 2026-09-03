@@ -1,0 +1,4 @@
+local a = 2 ^ 10
+local b = 2.0 ^ 10.0
+local c = 2 ^ (0/4)
+print(a, b, c)

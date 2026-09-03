@@ -1,0 +1,6 @@
+-- P3.4 multiple returns in main: oracle rejects, we accept (Nelu extension)
+local function divmod(a: integer, b: integer): integer, integer
+  return a / b, a % b
+end
+local q, r = divmod(17, 5)
+print(q, r)

@@ -1,0 +1,6 @@
+-- 1.5 typed for with exclusive < upper bound (DONE in live tree; verify)
+local sum: uint32 = 0
+for i: uint32 = 0, <10 do
+  sum = sum + i
+end
+print(sum)

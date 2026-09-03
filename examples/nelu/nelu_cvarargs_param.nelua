@@ -1,0 +1,2 @@
+local function snprintf(s: cstring, maxlen: csize, format: cstring, ...: cvarargs): cint <cimport,cinclude'<stdio.h>'> end
+print("declared")

@@ -1,0 +1,2 @@
+local c = 'a'
+print(c, #c)

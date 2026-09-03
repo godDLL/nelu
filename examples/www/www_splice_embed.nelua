@@ -1,0 +1,3 @@
+## local x = 7
+global v: integer = #[x]#
+print(v)

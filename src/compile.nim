@@ -114,6 +114,12 @@ proc compileUnit*(source: string, path: string, config: Config,
   result.output = ""
   # Mark in-progress before recursing so a circular require cannot loop.
   cache.files[path] = ""
+  # A dependency that failed to compile must abort this unit too.  Without this
+  # guard the driver proceeds to `genC` on this unit, which re-resolves the
+  # require through `analyze`, gets a dependency result whose `root` is nil
+  # (the dependency did not parse), and SIGSEGVs walking `root.children` in the
+  # code generator.  Abort cleanly with the dependency's diagnostics instead.
+  var depFailed = false
 
   let ast = parser.parse(source, path)
   if ast != nil:
@@ -134,6 +140,11 @@ proc compileUnit*(source: string, path: string, config: Config,
       result.diagnostics &= depRes.diagnostics
       if not depRes.success:
         result.diagnostics.add "require '" & modname & "': dependency '" & depPath & "' did not compile"
+        depFailed = true
+
+  if depFailed:
+    result.success = false
+    return
 
   let cSource = genC(source, path, config.release, false, config)
   result.cSource = cSource

@@ -108,6 +108,9 @@ def norm_m1(tokens):
         out.append((kind, scalar))
     return out
 
+# cmp: 40-case token-level AST diff, oracle vs ours.  Report-only: exit 0
+# always, even with diffs (see plan/GATES.md).
+print("cmp: 40-case token-level AST diff (oracle vs ours) -- report-only, exit 0 always")
 fails=0
 for n,c in cases:
     mo,me=mine(c); oo,oe=oracle(c)

@@ -1,0 +1,4 @@
+local Inner = @record{ v: integer }
+local Outer = @record{ inner: Inner, name: string }
+local o = Outer{ inner = Inner{ v = 7 }, name = 'hi' }
+print(o.inner.v, o.name)

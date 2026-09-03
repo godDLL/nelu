@@ -553,6 +553,7 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
       # is never passed through analyzeExpr, so its attr was left empty.
       let md = sym.typ.methods["__call"]
       ca.typ = sym.typ
+      ca.codename = sym.codename
       ca.name = nm
       ca.lvalue = true
       ca.used = true
@@ -1021,6 +1022,30 @@ proc hasAnnotation(iddecl: Node, name: string): bool =
       return true
   return false
 
+proc applyFuncAnnotations(a, na: var Attr, node: Node) =
+  ## Read the `<cimport>/<cinclude>/<cexport>/<inline>/...` annotations that
+  ## sit as direct children of an `nkFuncDef` node and stamp them onto the
+  ## funcdef attr `a` and its name/iddecl attr `na` (the oracle sets both).
+  ## Without this a cimport like `function printf(...) <cimport,cinclude
+  ## '<stdio.h>'> end` is lowered to an empty-bodied definition that shadows
+  ## the real libc symbol, so `printf(...)` returns garbage.
+  for c in node.children:
+    if c.kind != nkAnnotation: continue
+    case c.str
+    of "cimport": a.cimport = true; na.cimport = true
+    of "cexport": a.cexport = true; na.cexport = true
+    of "inline": a.isInline = true; na.isInline = true
+    of "const": a.isConst = true; na.isConst = true
+    of "nodecl": a.nodecl = true; na.nodecl = true
+    of "noinit": a.noinit = true; na.noinit = true
+    of "close": a.isClose = true; na.isClose = true
+    of "volatile": a.isVolatile = true; na.isVolatile = true
+    of "cinclude":
+      if c.children.len > 0 and c.children[0].kind == nkId:
+        a.cinclude = c.children[0].str
+        na.cinclude = c.children[0].str
+    else: discard
+
 proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
   var iddecls: seq[Node] = @[]
   var inits: seq[Node] = @[]
@@ -1376,7 +1401,15 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
   if isMethod:
     selfDecl = newIdDecl("self", nil)
     node.children = @[nameNode, selfDecl] & node.children[1 ..< node.children.len]
+  # A `<cimport>` funcdef binds to an external C symbol by its raw name (the
+  # oracle emits `printf(...)` not `tmp_unit_printf(...)`), so its codename is
+  # just the function's nelua name, not the mangled unit prefix.
+  var isCimport = false
+  for c in node.children:
+    if c.kind == nkAnnotation and c.str == "cimport":
+      isCimport = true; break
   let codename = if specCodename != "": specCodename
+                 elif isCimport: nameStr
                  elif isMethod: recordType.name & "_" & methodName
                  else: ctx.unitname & "_" & nameStr
   let symName = if specCodename != "": specCodename else: methodName
@@ -1432,6 +1465,7 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
   na.staticstorage = true
   na.typ = ftype
   na.used = true
+  applyFuncAnnotations(a, na, node)
   var nd = ctx.getDump(node)
   nd.funcdeclared = true
   nd.funcdefined = true
@@ -1913,6 +1947,18 @@ proc analyzeAssign(ctx: var AnalyzerContext, node: Node) =
           if iddecl != nil:
             let da = ctx.getAttr(iddecl)
             da.typ = rtypes[i]
+        elif sym.kind == skType and i < rtypes.len and rtypes[i] != nil and
+             rtypes[i].kind in {tkRecord, tkUnion} and sym.typ != nil and
+             sym.typ.kind == rtypes[i].kind:
+          # C5: forwarddecl type redefinition `R = @record{...}`.  Adopt the
+          # new definition's fields/methods into the existing type object so
+          # earlier references (e.g. `S`'s field `r: R`) see the completed type
+          # and cgen emits one typedef with the real fields -- instead of an
+          # empty struct plus a bogus runtime `R = (struct R)();` assignment
+          # to a typedef name.
+          sym.typ.fields = rtypes[i].fields
+          sym.typ.methods = rtypes[i].methods
+          ta.typ = rtypes[i]
       discard analyzeExpr(ctx, t)
     else:
       discard analyzeExpr(ctx, t)

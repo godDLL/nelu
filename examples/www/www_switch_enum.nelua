@@ -1,0 +1,10 @@
+local EditState = @enum{ A = 0, B, C, D }
+local function name(e: EditState): string
+  switch e
+  case EditState.A then return 'A'
+  case EditState.B then return 'B'
+  case EditState.C, EditState.D then return 'CD'
+  else return '?'
+  end
+end
+print(name(EditState.B), name(EditState.D))

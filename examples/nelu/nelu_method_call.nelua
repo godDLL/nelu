@@ -1,0 +1,7 @@
+-- 2.5b C emitter SIGSEGV on method calls
+local Vec = @record{ x: integer }
+function Vec:norm(): number
+  return 0.0
+end
+local v = Vec{ x = 1 }
+print(v:norm())

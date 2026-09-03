@@ -253,6 +253,7 @@ proc genMetaCall(s: var Gen, recv: Node, methodName: string,
 proc cDecl(t: Type, name: string): string
 proc genKeyIndex(s: var Gen, node: Node): string
 proc genInitList(s: var Gen, node: Node): string
+proc genArrayInitFromExpr(s: var Gen, src: string, at: Type): string
 proc genLvalue(s: var Gen, node: Node): string
 proc genStmt(s: var Gen, node: Node)
 proc genStmts(s: var Gen, node: Node)
@@ -775,6 +776,13 @@ proc genCall(s: var Gen, node: Node): string =
     let ct = cType(ca.calleeType)
     let argstr = if args.len > 0: argstrs[0] else: "void"
     return "(" & ct & ")(" & argstr & ")"
+  # M3: calling a record value `r(...)` dispatches through its `__call`
+  # metamethod instead of emitting `<var>(args)` (which C rejects -- a struct
+  # is not a function).  Constructors (`Rect{...}`) are typed tkMetatype here,
+  # so they are unaffected; builtins like `print` are tkAny/tkFunction.
+  if ca != nil and ca.typ != nil and ca.typ.kind == tkRecord and
+     ca.typ.methods.hasKey("__call"):
+    return s.genMetaCall(caller, "__call", args)
   case caller.kind
   of nkId:
     let cn = if ca != nil and ca.codename != "": ca.codename else: cIdent(caller.str)
@@ -994,9 +1002,13 @@ proc genInitListBraces(s: var Gen, node: Node, et: Type): string =
     if et != nil and et.kind in {tkRecord, tkUnion} and c.kind == nkPair:
       let ft = fieldOf(et, c.str)
       let child = c.children[0]
-      if ft != nil and ft.kind == tkArray and child.kind == nkInitList:
-        parts.add "." & cIdent(c.str) & " = " &
-          s.genInitListBraces(child, ft.subtype)
+      if ft != nil and ft.kind == tkArray:
+        if child.kind == nkInitList:
+          parts.add "." & cIdent(c.str) & " = " &
+            s.genInitListBraces(child, ft.subtype)
+        else:
+          parts.add "." & cIdent(c.str) & " = " &
+            s.genArrayInitFromExpr(s.genExpr(child), ft)
       else:
         let val = s.genExpr(child)
         let vt = s.ctx.attrOf.getOrDefault(child)
@@ -1014,6 +1026,20 @@ proc genInitListBraces(s: var Gen, node: Node, et: Type): string =
         parts.add s.coerce(val, vt, et)
   return "{" & parts.join(", ") & "}"
 
+proc genArrayInitFromExpr(s: var Gen, src: string, at: Type): string =
+  ## Emit a brace-enclosed element-by-element initializer for an array field
+  ## being initialized from an array-typed expression (a variable, a field, a
+  ## call result).  C cannot copy arrays -- `.data = a` where `a` is an array
+  ## is ill-formed in a compound literal -- so each element is read individually
+  ## (`{ a[0], a[1], ... }`).  The source is expected to be an lvalue that
+  ## decays to an element pointer (the common case); a non-lvalue source is
+  ## evaluated once per element, which is correct but may repeat side effects.
+  let n = if at.arraySize > 0: at.arraySize else: 1
+  var els: seq[string] = @[]
+  for i in 0 ..< n:
+    els.add src & "[" & $i & "]"
+  return "{" & els.join(", ") & "}"
+
 proc genInitList(s: var Gen, node: Node): string =
   let a = s.ctx.attrOf.getOrDefault(node)
   let ptype = if a != nil: a.typ else: nil
@@ -1023,13 +1049,20 @@ proc genInitList(s: var Gen, node: Node): string =
     for c in node.children:
       if c.kind == nkPair:
         let ft = fieldOf(ptype, c.str)
-        if ft != nil and ft.kind == tkArray and c.children.len > 0 and
-           c.children[0].kind == nkInitList:
-          ## An array field inside a record compound literal must be given a
-          ## bare brace-enclosed initializer (`.v = { ... }`); a cast compound
-          ## literal (`.v = (uint32_t[N]){ ... }`) is ill-formed in C.
-          parts.add "." & cIdent(c.str) & " = " &
-            s.genInitListBraces(c.children[0], ft.subtype)
+        if ft != nil and ft.kind == tkArray and c.children.len > 0:
+          if c.children[0].kind == nkInitList:
+            ## An array field inside a record compound literal must be given a
+            ## bare brace-enclosed initializer (`.v = { ... }`); a cast compound
+            ## literal (`.v = (uint32_t[N]){ ... }`) is ill-formed in C.
+            parts.add "." & cIdent(c.str) & " = " &
+              s.genInitListBraces(c.children[0], ft.subtype)
+          else:
+            ## An array field initialized from an array-typed expression (a
+            ## variable, a field, a call result): C cannot copy arrays, so emit
+            ## a brace-enclosed element-by-element copy.
+            let val = s.genExpr(c.children[0])
+            parts.add "." & cIdent(c.str) & " = " &
+              s.genArrayInitFromExpr(val, ft)
         else:
           let val = s.genExpr(c.children[0])
           let vt = s.ctx.attrOf.getOrDefault(c.children[0]).typ
@@ -1047,10 +1080,14 @@ proc genInitList(s: var Gen, node: Node): string =
     for c in node.children:
       if c.kind == nkPair:
         let ft = fieldOf(ptype, c.str)
-        if ft != nil and ft.kind == tkArray and c.children.len > 0 and
-           c.children[0].kind == nkInitList:
-          parts.add "." & cIdent(c.str) & " = " &
-            s.genInitListBraces(c.children[0], ft.subtype)
+        if ft != nil and ft.kind == tkArray and c.children.len > 0:
+          if c.children[0].kind == nkInitList:
+            parts.add "." & cIdent(c.str) & " = " &
+              s.genInitListBraces(c.children[0], ft.subtype)
+          else:
+            let val = s.genExpr(c.children[0])
+            parts.add "." & cIdent(c.str) & " = " &
+              s.genArrayInitFromExpr(val, ft)
         else:
           let val = s.genExpr(c.children[0])
           let vt = s.ctx.attrOf.getOrDefault(c.children[0]).typ
@@ -1081,8 +1118,9 @@ proc genLvalue(s: var Gen, node: Node): string =
       return baseStr & "->" & cIdent(node.str)
     return baseStr & "." & cIdent(node.str)
   of nkKeyIndex:
-    let baseStr = s.genExpr(node.children[0])
-    let keyStr = s.genExpr(node.children[1])
+    # children[0]=key, children[1]=base (see genKeyIndex).
+    let baseStr = s.genExpr(node.children[1])
+    let keyStr = s.genExpr(node.children[0])
     return baseStr & "[" & keyStr & "]"
   else:
     return s.genExpr(node)
@@ -1287,8 +1325,15 @@ proc genAssign(s: var Gen, node: Node) =
   let ntargets = s.ctx.assignTargets.getOrDefault(node, 1)
   var targets: seq[string] = @[]
   var ttypes: seq[Type] = @[]
+  var typeTargets: seq[bool] = @[]   ## C5: a reassignment to a type binding
+                                    ## (`R = @record{...}`) is a compile-time
+                                    ## type redefinition, not a runtime
+                                    ## assignment -- the target is a C typedef
+                                    ## name, so emitting `R = ...` is invalid C.
   for i in 0 ..< ntargets:
     let t = node.children[i]
+    let sym = s.ctx.symOf.getOrDefault(t)
+    typeTargets.add sym != nil and sym.kind == skType
     targets.add s.genLvalue(t)
     ttypes.add s.ctx.attrOf.getOrDefault(t).typ
   var values: seq[string] = @[]
@@ -1306,9 +1351,11 @@ proc genAssign(s: var Gen, node: Node) =
       let tmp = "__mr" & $s.mrCounter
       s.line tag & " " & tmp & " = " & s.genCall(callNode) & ";"
       for i in 0 ..< ntargets:
+        if typeTargets[i]: continue
         s.line targets[i] & " = " & tmp & ".field" & $i & ";"
       return
   for i in 0 ..< min(targets.len, values.len):
+    if typeTargets[i]: continue
     s.line targets[i] & " = " & s.coerce(values[i], vtypes[i], ttypes[i]) & ";"
 
 proc genIf(s: var Gen, node: Node) =
@@ -1578,7 +1625,13 @@ proc genForwardDecl(s: var Gen, node: Node) =
     let retType = if ftype.returns.len == 1: ftype.returns[0] else: nil
     decl = cFuncDecl(retType, codename, paramStr)
   if a != nil and a.cimport:
-    s.line "extern " & decl & ";"
+    # When the same annotation set carries a `<cinclude>`, the system header
+    # already declares the symbol; emitting our own `extern` here re-declares
+    # it with our (possibly incompatible) parameter types and conflicts, e.g.
+    # `const char*` vs the header's `char *__restrict`.  The oracle skips the
+    # redundant declaration entirely and relies on the include, so do the same.
+    if a.cinclude.len == 0:
+      s.line "extern " & decl & ";"
     return
   s.line decl & ";"
 
@@ -1614,7 +1667,10 @@ proc genFuncDef(s: var Gen, node: Node) =
   if a != nil and a.isInline: attrs &= "__attribute__((always_inline)) inline "
   if a != nil and a.cexport: attrs &= "__attribute__((visibility(\"default\"))) "
   if a != nil and a.cimport:
-    s.line "extern " & decl & ";"
+    # See genForwardDecl: a `<cinclude>` in the same annotation set already
+    # declares the symbol, so do not emit a conflicting `extern` re-declaration.
+    if a.cinclude.len == 0:
+      s.line "extern " & decl & ";"
     return
   s.line attrs & decl & " {"
   s.push

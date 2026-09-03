@@ -1,0 +1,6 @@
+local Point = @record{ x: integer, y: integer }
+local p = Point{ x = 3, y = 4 }
+local q: *Point = &p
+local r = $q
+r.x = 99
+print(p.x, q.x)

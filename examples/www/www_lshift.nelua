@@ -1,0 +1,2 @@
+local big: integer = 1 << 60
+print(big, big >> 60)

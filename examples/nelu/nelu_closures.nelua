@@ -1,0 +1,9 @@
+-- P3.2 closures/upvalues: oracle rejects, we accept (Nelu extension)
+local function makeadder(n: integer): function(integer): integer
+  local function add(x: integer): integer
+    return x + n
+  end
+  return add
+end
+local f = makeadder(10)
+print(f(5))

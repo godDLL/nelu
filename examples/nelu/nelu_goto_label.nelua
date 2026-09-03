@@ -1,0 +1,6 @@
+-- 1.1 goto + ::label: as a statement (parseBlock breaks on tkColonColon)
+local x: integer = 0
+::done::
+x = x + 1
+if x < 5 then goto done end
+print(x)

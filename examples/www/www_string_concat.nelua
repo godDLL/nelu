@@ -1,0 +1,4 @@
+local a = 'hello' .. ' ' .. 'world'
+print(a)
+local b = 'n=' .. 42
+print(b)

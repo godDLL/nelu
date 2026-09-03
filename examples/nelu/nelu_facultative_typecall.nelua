@@ -1,0 +1,4 @@
+-- 1.4 facultative(string) type-function-call (DONE in live tree; verify)
+function assert(v: boolean, message: facultative(string)) end
+assert(true, "ok")
+print("ok")

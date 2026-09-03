@@ -1,0 +1,2 @@
+local E = @enum{ A, B, C }
+print(E.A, E.B, E.C)

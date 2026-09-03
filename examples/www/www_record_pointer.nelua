@@ -1,0 +1,8 @@
+local Point = @record{ x: integer, y: integer }
+function Point:inc()
+  self.x = self.x + 1
+end
+local p = Point{ x = 1, y = 2 }
+local q: *Point = &p
+q:inc()
+print(p.x, p.y)

@@ -1,0 +1,7 @@
+-- 6.1 cond keyword: oracle has no cond, we accept it (Nelu extension)
+local x: integer = 2
+cond
+  x == 1 then print("one")
+  x == 2 then print("two")
+  else print("other")
+end

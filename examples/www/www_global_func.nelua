@@ -1,0 +1,4 @@
+global helper(n: integer): integer
+  return n * 2
+end
+print(helper(5))

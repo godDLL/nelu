@@ -1,0 +1,5 @@
+local Piece = @record{ x: integer, size: integer }
+local Board = @record{ cells: [2][2]uint8 }
+local Game = @record{ board: Board, cur: Piece, score: integer }
+local g = Game{ board = Board{ cells = {{1,0},{0,0}} }, cur = Piece{ x = 3, size = 2 }, score = 100 }
+print(g.board.cells[0][0], g.cur.x, g.score)

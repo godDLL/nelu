@@ -82,34 +82,65 @@ proc error*(p: Parser, msg: string): ParseError =
 
 # --- annotations -----------------------------------------------------------
 
-proc parseAnnotation*(p: var Parser): Node =
+proc parseAnnotationPart(s: string): Node =
+  ## Parse a single comma-less annotation part: `name`, `name'value'`, or
+  ## `name=value`.  Returns an nkAnnotation whose `str` is the name and whose
+  ## children carry the value (if any).  Returns nil for empty input.
+  var s = s.strip()
+  if s == "": return nil
+  let qpos = s.find('\'')
+  if qpos >= 0:
+    let name = s[0 ..< qpos].strip()
+    let rest = s.substr(qpos + 1)
+    let endq = rest.find('\'')
+    let value = if endq >= 0: rest[0 ..< endq] else: rest
+    return newAnnotation(name, @[newId(value)])
+  let eq = s.find('=')
+  if eq >= 0:
+    let k = s[0 ..< eq].strip()
+    let v = s.substr(eq + 1).strip()
+    return newAnnotation(k, @[newId(v)])
+  return newAnnotation(s, @[])
+
+proc parseAnnotation*(p: var Parser): seq[Node] =
+  ## Oracle PEG: `annots <-| '<' @Annotation (',' @Annotation)* @'>'` -- each
+  ## comma-separated part is its OWN annotation node (so `<cimport,cinclude
+  ## '<stdio.h>'>` yields a `cimport` node and a `cinclude` node, not one bundled
+  ## node).  Commas inside a quoted `name'value'` do not split.
   let t = p.advance()
   let text = t.value[1 ..< t.value.len - 1]
-  let parts = text.split(',')
-  var name = ""
-  var args: seq[Node] = @[]
-  for i, part in parts:
-    let s = part.strip()
-    if s == "": continue
-    if i == 0:
-      name = s
+  var nodes: seq[Node] = @[]
+  var i = 0
+  var start = 0
+  var quote = '\0'
+  while i <= text.len:
+    if i < text.len:
+      let c = text[i]
+      if quote != '\0':
+        if c == '\\': inc i, 2; continue
+        if c == quote: quote = '\0'
+        inc i; continue
+      if c == '"' or c == '\'': quote = c
+      if c == ',':
+        let n = parseAnnotationPart(text[start ..< i])
+        if n != nil: nodes.add n
+        start = i + 1
+      inc i
     else:
-      let eq = s.find('=')
-      if eq >= 0:
-        let k = s[0 ..< eq].strip()
-        let v = s.substr(eq + 1).strip()
-        args.add newPair(k, newId(v))
-      else:
-        args.add newId(s)
-  return newAnnotation(name, args)
+      let n = parseAnnotationPart(text[start ..< i])
+      if n != nil: nodes.add n
+      break
+  return nodes
 
 proc parseAnnotations*(p: var Parser): seq[Node] =
   var anns: seq[Node] = @[]
   while p.check(tkAnnotation):
-    anns.add p.parseAnnotation()
+    anns &= p.parseAnnotation()
   return anns
 
 # --- type expressions -------------------------------------------------------
+
+proc parsePrimary*(p: var Parser): Node
 
 proc parseType*(p: var Parser): Node =
   let t = p.tok
@@ -232,6 +263,21 @@ proc parseType*(p: var Parser): Node =
     base = sub
     for sz in countdown(sizes.len - 1, 0):
       base = newArrayType(base, sizes[sz])
+  of tkHashLBrack:
+    # `#[expr]#` compile-time splice used as a type, e.g.
+    # `(@#[integer]#)(x)`.  The splice's raw inner text is captured by
+    # `parsePrimary` as an `nkPreprocessExpr`; wrap it as a type node.
+    let splice = p.parsePrimary()
+    base = if splice != nil: newType(splice) else: nil
+  of tkAt:
+    # `@` is a type splice / cast in *expression* position (see parsePrimary),
+    # but the reference rejects it at the start of a type expression with
+    # "expected a type expression" -- `@pointer`, `@integer` and even
+    # `@#[integer]#` are all invalid as annotation types.  Raise rather than
+    # return nil so the tokens do not leak out and get reparsed as a
+    # dangling expression (which produced a spurious MATCH-vs-DIFF on the
+    # `@pointer[integer]` corpus case).
+    raise ParseError(loc: t.loc, msg: "expected a type expression")
   else:
     return nil
   if base == nil: return nil
@@ -278,9 +324,12 @@ proc parseFunctionLiteral*(p: var Parser): Node =
   var args: seq[Node] = @[]
   if not p.check(tkRParen):
     while true:
-      if p.check(tkDots):
-        args.add newVarargsType("varautos")
+      if p.check(tkDotDot):
         p.advance()
+        var vkind = ""
+        if p.match(tkColon):
+          vkind = p.advance().value
+        args.add newVarargsType(vkind)
       else:
         let id = p.advance().value
         let atype = if p.match(tkColon): p.parseType() else: nil
@@ -332,6 +381,24 @@ proc parseTable*(p: var Parser): Node =
   p.expect(tkRBrace, "expected '}' to close table")
   return newInitList(elems)
 
+proc parsePreprocessName*(p: var Parser): Node =
+  ## Parse a `#|name|#` splice placeholder into an `nkPreprocessName` node.
+  ## Returns `nil` when the current token sequence is not a `#|name|#` splice,
+  ## so callers can fall back to ordinary identifier parsing.
+  if p.tok.kind != tkHash: return nil
+  if p.peek(1).kind != tkBor: return nil
+  let nameTok = p.peek(2)
+  if nameTok.kind != tkIdent: return nil
+  if p.peek(3).kind != tkBor: return nil
+  if p.peek(4).kind != tkHash: return nil
+  discard p.advance()  ## `#`
+  discard p.advance()  ## `|`
+  let name = nameTok.value
+  discard p.advance()  ## name
+  discard p.advance()  ## `|`
+  discard p.advance()  ## `#`
+  return Node(kind: nkPreprocessName, str: name)
+
 proc parsePrimary*(p: var Parser): Node =
   let t = p.tok
   case t.kind
@@ -340,11 +407,19 @@ proc parsePrimary*(p: var Parser): Node =
     return newNumber(t.value)
   of tkString:
     p.advance()
-    return newString(t.value)
+    var litType = "string"
+    # Typed string literal: `'A'_b`, `"x"_u8`.  The lexer emits the suffix as
+    # a separate identifier; fold it onto the string when it is attached with
+    # no whitespace in between (the oracle rejects a spaced `'A' _b`).
+    if p.tok.kind == tkIdent and p.tok.value[0] == '_' and
+       p.tok.loc.offset == t.loc.offset + t.loc.length:
+      litType = p.tok.value
+      p.advance()
+    return newString(t.value, litType)
   of tkLString:
     p.advance()
     return newString(t.value, "lstring")
-  of tkDots:
+  of tkDotDot:
     p.advance()
     return newVarargs()
   of tkIdent:
@@ -399,7 +474,21 @@ proc parsePrimary*(p: var Parser): Node =
       return newNilptr()
     of "function":
       return p.parseFunctionLiteral()
+    of "require":
+      ## `require 'module'` may appear in expression position (e.g.
+      ## `local s = require 'string'`); the reference lowers it to a call on
+      ## the builtin `require`, so emit an `nkId` here and let `parsePostfix`
+      ## build the call from the following string argument.
+      p.advance()
+      return newId("require")
     else:
+      # A type keyword used as a static-method receiver, e.g.
+      # `string.copy(s)`.  Accepted *only* when immediately followed by `.` so
+      # the `parsePostfix` loop builds the dot-index; bare type keywords are
+      # still rejected as general expression primaries.
+      if isTypeKeyword(t.value) and p.peek(1).kind == tkDot:
+        p.advance()
+        return newId(t.value)
       raise ParseError(loc: t.loc, msg: "unexpected keyword '" & t.value & "'")
   else:
     raise ParseError(loc: t.loc, msg: "unexpected token")
@@ -419,7 +508,7 @@ proc parsePostfix*(p: var Parser): Node =
         p.advance()
         if not p.check(tkRParen):
           while true:
-            if p.check(tkDots):
+            if p.check(tkDotDot):
               args.add newVarargs()
               p.advance()
             else:
@@ -443,7 +532,7 @@ proc parsePostfix*(p: var Parser): Node =
       p.advance()
       if not p.check(tkRParen):
         while true:
-          if p.check(tkDots):
+          if p.check(tkDotDot):
             args.add newVarargs()
             p.advance()
           else:
@@ -466,6 +555,12 @@ proc parseUnary*(p: var Parser): Node =
     p.advance()
     return newUnaryOp("-", p.parseUnary())
   if t.kind == tkHash:
+    # `#` is the `len` operator, but `#|name|#` is a preprocessor splice
+    # placeholder that can appear in expression position.  Check for the
+    # splice first; if it is not a splice, treat `#` as `len`.
+    let pp = p.parsePreprocessName()
+    if pp != nil:
+      return Node(kind: nkId, str: "", children: @[pp])
     p.advance()
     return newUnaryOp("#", p.parseUnary())
   if t.kind == tkKeyword and t.value == "not":
@@ -481,6 +576,12 @@ proc parseUnary*(p: var Parser): Node =
     ## `opband`->'band', disambiguated by position.
     p.advance()
     return newUnaryOp("&", p.parseUnary())
+  if t.kind == tkIdent and t.value == "$":
+    ## `$` is the dereference operator. The lexer has no dedicated token for
+    ## it (it falls through to tkIdent with value "$"); nelua identifiers
+    ## cannot contain '$', so this is unambiguous.
+    p.advance()
+    return newUnaryOp("deref", p.parseUnary())
   return p.parsePower()
 
 proc parsePower*(p: var Parser): Node =
@@ -499,8 +600,25 @@ proc parseMul*(p: var Parser): Node =
     let t = p.tok
     if t.kind == tkMul: p.advance(); left = newBinaryOp(left, "*", p.parseUnary())
     elif t.kind == tkDiv: p.advance(); left = newBinaryOp(left, "/", p.parseUnary())
-    elif t.kind == tkIdiv: p.advance(); left = newBinaryOp(left, "//", p.parseUnary())
-    elif t.kind == tkMod: p.advance(); left = newBinaryOp(left, "%", p.parseUnary())
+    elif t.kind == tkIdiv:
+      # The lexer folds `///` (truncate division) into `tkIdiv` + `tkDiv`
+      # because it has no dedicated token.  Recognize the pair here so the
+      # oracle's `///` operator (AST `BinaryOp .. "tdiv"`) is accepted.
+      if p.peek(1).kind == tkDiv:
+        discard p.advance()  # consume `//`
+        discard p.advance()  # consume the trailing `/`
+        left = newBinaryOp(left, "tdiv", p.parseUnary())
+      else:
+        p.advance(); left = newBinaryOp(left, "//", p.parseUnary())
+    elif t.kind == tkMod:
+      # The lexer folds `%%%` (truncate modulo) into three `tkMod` tokens.
+      # Recognize the triple so the oracle's `%%%` operator (AST
+      # `BinaryOp .. "tmod"`) is accepted.
+      if p.peek(1).kind == tkMod and p.peek(2).kind == tkMod:
+        discard p.advance(); discard p.advance(); discard p.advance()
+        left = newBinaryOp(left, "tmod", p.parseUnary())
+      else:
+        p.advance(); left = newBinaryOp(left, "%", p.parseUnary())
     else: break
   return left
 
@@ -524,7 +642,16 @@ proc parseShift*(p: var Parser): Node =
   while true:
     let t = p.tok
     if t.kind == tkShl: p.advance(); left = newBinaryOp(left, "<<", p.parseConcat())
-    elif t.kind == tkShr: p.advance(); left = newBinaryOp(left, ">>", p.parseConcat())
+    elif t.kind == tkShr:
+      # The lexer folds `>>>` (arithmetic shift right) into `tkShr` + `tkGt`.
+      # Recognize the pair so the oracle's `>>>` operator (AST
+      # `BinaryOp .. "asr"`) is accepted.
+      if p.peek(1).kind == tkGt:
+        discard p.advance()  # consume `>>`
+        discard p.advance()  # consume the trailing `>`
+        left = newBinaryOp(left, "asr", p.parseConcat())
+      else:
+        p.advance(); left = newBinaryOp(left, ">>", p.parseConcat())
     else: break
   return left
 
@@ -603,7 +730,7 @@ proc canStartExpr*(p: Parser): bool =
   ## expressions" rather than "unexpected keyword".
   let t = p.tok
   case t.kind
-  of tkNumber, tkString, tkLString, tkIdent, tkDots, tkLParen, tkLBrace, tkAt,
+  of tkNumber, tkString, tkLString, tkIdent, tkDotDot, tkLParen, tkLBrace, tkAt,
       tkMinus, tkHash, tkBxor, tkBand:
     return true
   of tkKeyword:
@@ -617,6 +744,10 @@ proc parseSwitchBlock*(p: var Parser): Node =
   ## or `end` -- in addition to the usual block terminators.  `case` is not a
   ## keyword, so `parseBlock` would not stop for it and would misparse the
   ## following clause as part of this body.
+  ##
+  ## Labels (`::name::`) are *not* clause terminators: a `goto` target may
+  ## live inside a case/else body (the stdlib's `string.pack` does exactly
+  ## this), so they are parsed as ordinary statements here.
   var stmts: seq[Node] = @[]
   while true:
     let t = p.tok
@@ -624,7 +755,6 @@ proc parseSwitchBlock*(p: var Parser): Node =
     if t.kind == tkKeyword and (t.value == "end" or t.value == "else" or t.value == "elseif" or t.value == "until"):
       break
     if t.kind == tkIdent and t.value == "case": break
-    if t.kind == tkColonColon: break
     let s = p.parseStatement()
     if s != nil: stmts.add s
     if p.match(tkSemi): discard
@@ -668,14 +798,40 @@ proc parseSwitch*(p: var Parser): Node =
   return newSwitch(expr, cases, elseBlock)
 
 proc parseIdDecl*(p: var Parser): Node =
-  let name = p.advance().value
+  var name: Node
+  var nameStr: string
+  var nameIsSplice = false
+  let ppName = p.parsePreprocessName()
+  if ppName != nil:
+    name = ppName
+    nameStr = ppName.str
+    nameIsSplice = true
+  else:
+    name = newId(p.advance().value)
+    nameStr = name.str
+  var isDotted = false
+  # Dotted declaration names: `global io.stderr`, `Rect.field`, `a.b.c`.  Build
+  # a dot-index chain (as `parseFuncName` does for `.`/`:` postfixes) and record
+  # the full dotted string on the node, matching the reference AST shape where
+  # a dotted name carries its dot-index node as `children[0]`.
+  while p.check(tkDot):
+    isDotted = true
+    discard p.advance()                   ## consume '.'
+    let field = p.advance().value
+    name = newDotIndex(field, name)
+    nameStr &= "." & field
   var typeexpr: Node = nil
   if p.match(tkColon):
     typeexpr = p.parseOptionalType()
   var children: seq[Node] = @[]
+  # A `#|name|#` splice name carries its `nkPreprocessName` node as
+  # `children[0]` (the reference dumps it there, unlike a plain identifier
+  # whose spelling lives only in `str`).
+  if isDotted or nameIsSplice:
+    children.add name
   if typeexpr != nil: children.add typeexpr
   children &= p.parseAnnotations()
-  return Node(kind: nkIdDecl, str: name, children: children)
+  return Node(kind: nkIdDecl, str: nameStr, children: children)
 
 proc parseFuncName*(p: var Parser): Node =
   var name = newId(p.advance().value)
@@ -697,9 +853,12 @@ proc parseFuncDef*(p: var Parser, scope: string): Node =
   var args: seq[Node] = @[]
   if not p.check(tkRParen):
     while true:
-      if p.check(tkDots):
-        args.add newVarargsType("varautos")
+      if p.check(tkDotDot):
         p.advance()
+        var vkind = ""
+        if p.match(tkColon):
+          vkind = p.advance().value
+        args.add newVarargsType(vkind)
       else:
         args.add p.parseIdDecl()
       if not p.match(tkComma): break
@@ -888,6 +1047,29 @@ proc parseDirective*(p: var Parser): Node =
     inc p.pos
   return newDirective(name, children)
 
+proc stripLongBrackets(s: string): string =
+  ## Remove the `[=`*`[` opener and `]`=`*`]` closer of a Lua long-string token,
+  ## returning the inner text (the shape the reference `--print-ast` emits for a
+  ## `##[[ ... ]]` block).  Only strips a well-formed long string; otherwise
+  ## returns `s` unchanged.
+  if s.len < 4 or s[0] != '[':
+    return s
+  var level = 0
+  var i = 1
+  while i < s.len and s[i] == '=':
+    inc level; inc i
+  if i >= s.len or s[i] != '[':
+    return s
+  let openLen = level + 2
+  if s.len < 2 * openLen or s[s.len - 1] != ']':
+    return s
+  for k in 0 ..< level:
+    if s[s.len - 2 - k] != '=':
+      return s
+  if s[s.len - openLen] != ']':
+    return s
+  result = s[openLen ..< s.len - openLen]
+
 proc parsePreprocess*(p: var Parser): Node =
   ## Parse a `##`-line at statement position into an `nkPreprocess` node.
   ##
@@ -896,7 +1078,18 @@ proc parsePreprocess*(p: var Parser): Node =
   ## interpreter's `--print-ast` emits.  The M6 preprocessor feeds this text to
   ## the embedded Lua interpreter at compile time.  A trailing line comment
   ## (`-- ...`) is trimmed, matching `restOfLine`.
+  ##
+  ## A `##[[ ... ]]` / `##[=[ ... ]=]` multi-line block is folded by the lexer
+  ## into a single `tkLString` token; its body is the inner Lua text (brackets
+  ## stripped).  Such a block is self-contained, so its node is flagged
+  ## (`boolVal = true`) for the preprocessor to run it as a standalone chunk,
+  ## bypassing the `luaBlockDelta` framing that would otherwise mis-frame a
+  ## body that happens to contain `for`/`if`/`end`.
   let hashTok = p.advance()             ## consume `##`
+  if p.tok.kind == tkLString:
+    let body = stripLongBrackets(p.tok.value)
+    p.advance()                          ## consume the `tkLString`
+    return Node(kind: nkPreprocess, str: body, boolVal: true)
   let start = hashTok.loc.offset + 2    ## text right after the `##` chars
   let nl = p.source.find('\n', start)
   let raw = if nl < 0: p.source[start .. ^1] else: p.source[start .. nl - 1]
@@ -931,7 +1124,11 @@ proc parseStatement*(p: var Parser): Node =
         discard p.advance()
         return p.parseFuncDef("local")
       return p.parseVarDecl("local")
-    of "global": return p.parseVarDecl("global")
+    of "global":
+      if p.peek(1).kind == tkKeyword and p.peek(1).value == "function":
+        discard p.advance()
+        return p.parseFuncDef("global")
+      return p.parseVarDecl("global")
     of "function": return p.parseFuncDef("")
     of "if": return p.parseIf()
     of "while": return p.parseWhile()

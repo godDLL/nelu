@@ -1,0 +1,5 @@
+local k = 0
+repeat
+  k = k + 1
+  print('r', k)
+until k >= 3

@@ -1,0 +1,7 @@
+-- P1.3 VERIFY table literal side effects
+local function f(): integer
+  print("side effect")
+  return 1
+end
+local t = { f(), f() }
+print(t[1], t[2])

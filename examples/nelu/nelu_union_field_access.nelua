@@ -1,0 +1,5 @@
+-- 3.2 @union field access and print is broken
+local U = @union{ a: integer, b: cstring }
+local u: U
+u.a = 5
+print(u.a)

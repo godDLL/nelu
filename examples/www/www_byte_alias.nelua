@@ -1,0 +1,3 @@
+global Bytes = @byte
+local b: Bytes = 65
+print(b)

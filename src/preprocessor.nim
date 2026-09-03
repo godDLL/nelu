@@ -1411,33 +1411,42 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
       if n.kind == nkDirective:
         handleDirective(n, rewritten, condStack, ctx)
       elif n.kind == nkPreprocess:
-        let text = n.str
-        let delta = luaBlockDelta(text)
-        if frameStack.len > 0:
-          if delta < 0:
-            # closer: append closer text, finalize the frame, emit the chunk
-            frameStack[^1].parts.add LuaFramePart(isBody: false, text: text)
-            let frame = frameStack.pop()
-            let chunk = constructFrameChunk(frame, ctx)
-            let node = Node(kind: nkPreprocess, str: chunk)
-            rewritten.add node
-            ppNodes.add node
-          elif delta == 0:
-            # intermediate (else / elseif): append text to the open frame
-            frameStack[^1].parts.add LuaFramePart(isBody: false, text: text)
-          else:
-            # nested opener inside an open frame
-            frameStack.add LuaFrame(parts: @[
-              LuaFramePart(isBody: false, text: text)])
+        if n.boolVal:
+          # A `##[[ ... ]]` / `##[=[ ... ]=]` self-contained Lua block.  Its
+          # body is a complete chunk and may contain `for`/`if`/`end`, so it
+          # must NOT be subjected to the `luaBlockDelta` framing below (which
+          # would treat it as an opener and either never run it or emit an
+          # "unbalanced ## block" diagnostic).  Run it as a standalone chunk.
+          rewritten.add n
+          ppNodes.add n
         else:
-          if delta > 0:
-            # opener with no enclosing frame: start one
-            frameStack.add LuaFrame(parts: @[
-              LuaFramePart(isBody: false, text: text)])
+          let text = n.str
+          let delta = luaBlockDelta(text)
+          if frameStack.len > 0:
+            if delta < 0:
+              # closer: append closer text, finalize the frame, emit the chunk
+              frameStack[^1].parts.add LuaFramePart(isBody: false, text: text)
+              let frame = frameStack.pop()
+              let chunk = constructFrameChunk(frame, ctx)
+              let node = Node(kind: nkPreprocess, str: chunk)
+              rewritten.add node
+              ppNodes.add node
+            elif delta == 0:
+              # intermediate (else / elseif): append text to the open frame
+              frameStack[^1].parts.add LuaFramePart(isBody: false, text: text)
+            else:
+              # nested opener inside an open frame
+              frameStack.add LuaFrame(parts: @[
+                LuaFramePart(isBody: false, text: text)])
           else:
-            # standalone ## line
-            rewritten.add n
-            ppNodes.add n
+            if delta > 0:
+              # opener with no enclosing frame: start one
+              frameStack.add LuaFrame(parts: @[
+                LuaFramePart(isBody: false, text: text)])
+            else:
+              # standalone ## line
+              rewritten.add n
+              ppNodes.add n
       elif n.kind == nkPreprocessExpr:
         if condStack.len == 0 or condStack[^1].active:
           rewritten.add evalSpliceExpr(ctx, n)

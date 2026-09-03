@@ -1,0 +1,6 @@
+local function noop(): void
+  print('in')
+  return
+end
+noop()
+print('after')

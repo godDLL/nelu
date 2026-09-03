@@ -1,0 +1,4 @@
+local a: [3]integer = { 10, 20, 30 }
+for v in a do
+  print(v)
+end
