@@ -1,0 +1,10 @@
+-- Sum of decimal digits of an integer.
+local function digit_sum(n: integer): integer
+  local s = 0
+  while n > 0 do
+    s = s + n % 10
+    n = n // 10
+  end
+  return s
+end
+print(digit_sum(12345))

@@ -1,0 +1,9 @@
+-- Josephus problem: survivor position among n people, skipping k.
+local function josephus(n: integer, k: integer): integer
+  local result = 0
+  for i = 2, n do
+    result = (result + k) % i
+  end
+  return result + 1
+end
+print(josephus(7, 3))

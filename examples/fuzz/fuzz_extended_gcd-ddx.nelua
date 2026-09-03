@@ -1,0 +1,10 @@
+-- Extended Euclidean algorithm returning gcd and Bezout coefficients.
+local function extended_gcd(a: integer, b: integer): (integer, integer, integer)
+  if b == 0 then
+    return a, 1, 0
+  end
+  local g, x, y = extended_gcd(b, a % b)
+  return g, y, x - (a // b) * y
+end
+local g, x, y = extended_gcd(48, 18)
+print(g, x, y)

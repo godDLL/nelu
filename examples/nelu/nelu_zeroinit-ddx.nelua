@@ -1,0 +1,4 @@
+-- Nelu: `<zeroinit>` requests zero-initialization of storage.  The oracle
+-- rejects the annotation; ours accepts it and the buffer reads back as 0.
+global buf: [4]integer <zeroinit>
+print(buf[1])

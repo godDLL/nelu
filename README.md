@@ -76,10 +76,11 @@ the bundled `lib/`.
 | M10 | beyond-features sprints | committed; latest commit `110630f` ("Parity: build-cache layout, C-compiler flags, arg-order spill, version 0.2.1"). The `f75601a` cycle landed: cgen/analyzer fixes, `--lint` syntax-only, long-string strip; take spec/, lib/, lualib/ into the tree. Since `82cd86b` this cycle also landed: scope_shadow + stepped_for (`69098c3`), unit-scope block locals + Pair dump fix (`ed503c1`), splice Stage 4 steps 5-6 (`6a04582`), closure function-value fixes (`bab3eb3`), 11 oracle-behavior fixes (`dd291fc`, `689a2f7`), plus tetrix_rotation, locals-in-functions, lshift/escapes/floor_div, type-as-value, nilptr-to-pointer, closures/upvalue scoping, pointer print spelling, any phase 2. See NOTE_backlog.md. Later: `fedf44e` numeric-for `<=`/`>`/`>=` bound specifiers; runtime per-TU inlining + libm removal (`src/cgen.nim` preamble now emits only-referenced helpers as `static` per-TU, `src/compile.nim` no longer links `src/runtime.c`, `-lm` emitted only when the preamble pulled in `<math.h>`). |
 
 The `src/` tree is clean at `93fc0e4`; everything below is committed, not uncommitted.
-(The `examples/fuzz/` and `examples/nelu/` corpora, plus `DEVIL.md`, are uncommitted
-work-in-progress from the corpus agents; `examples/` also now carries the 154 `-ddx`
-achievement-tagged renames from the `-ddx` devil, integrated 2026-09-03.) Our binary
-reports **v0.2.1** (`src/main.nim`).
+`examples/fuzz/` (51 oracle-verified algorithms) and `examples/nelu/` (53 beyond-oracle
+examples) are both tracked. `examples/` also carries the 154 `-ddx` achievement-tagged
+renames from the `-ddx` devil, integrated 2026-09-03 (107 of them on already-tracked
+files are in HEAD; the 47 in `examples/fuzz/` and `examples/nelu/` were folded into
+those corpora when they were tracked). Our binary reports **v0.2.1** (`src/main.nim`).
 
 Active work (live queue in `NOTE_backlog.md`):
 - **Parser agent** (`src/parser.nim`, `src/preprocessor.nim`, `src/compile.nim`) - P1/N4/N5, the `tkLString` long-string strip, `#|name|#` splice, and the `##[=[ ... ]=]` block parse all landed at `f75601a`. Still queued: P3 `require` as an expression, P2 dotted field type, N2 byte literal `_b`, N1 `goto`/`::label:`, W3 `##` driver wiring, P4 generic instantiation.
@@ -180,7 +181,9 @@ live queue moves as commits land.
 ## 5. How to verify
 
 - **Build:** `nim c -d:release --path:src -o:tmp/nelua src/main.nim`
-- **Oracle dumps:** `--print-ast` (M1), `--print-analyzed-ast` (M2->M4).
+- **Oracle dumps:** `--print-ast` (M1), `--print-analyzed-ast` (M2->M4),
+  `--print-ppcode` (preprocessed AST; wired 2026-09-03, replaces the old
+  hard error).
 - **Gates:** `python3 plan/cmp.py` (M1 diff floor), `python3 plan/regress.py` (permanent
   regression loop), `python3 plan/examples_parity.py` (end-to-end execution).
 - **End-to-end:** parse -> preprocessor -> analyze -> codegen -> gcc with

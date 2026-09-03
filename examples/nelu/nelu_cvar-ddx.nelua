@@ -1,0 +1,5 @@
+-- Nelu: `<cvar>` marks a global as a C-side variable.  The oracle rejects
+-- the annotation; ours accepts it and the global behaves as written.
+global counter: integer <cvar> = 3
+counter = counter + 1
+print(counter)

@@ -1,0 +1,8 @@
+-- Greatest common divisor via Euclid's algorithm.
+local function gcd(a: integer, b: integer): integer
+  while b ~= 0 do
+    a, b = b, a % b
+  end
+  return a
+end
+print(gcd(48, 18))

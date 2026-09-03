@@ -1,0 +1,7 @@
+-- Nelu: `<cimport>` pulls a real C function out of the C library and
+-- compiles the call against it.  The oracle rejects the `<cimport>`
+-- annotation; ours skips the nelua body and links the libc symbol.
+local function sqrt(x: double): double <cimport>
+  return 0.0
+end
+print(sqrt(16.0))

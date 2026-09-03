@@ -1,0 +1,15 @@
+-- Majority vote using the Boyer-Moore algorithm.
+local a: [7]integer = {3, 2, 3, 4, 3, 2, 3}
+local candidate = a[0]
+local count = 0
+for i = 0, #a - 1 do
+  if count == 0 then
+    candidate = a[i]
+    count = 1
+  elseif a[i] == candidate then
+    count = count + 1
+  else
+    count = count - 1
+  end
+end
+print(candidate)

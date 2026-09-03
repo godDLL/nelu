@@ -1,0 +1,32 @@
+require 'string'
+-- Quicksort using Lomuto partition scheme on a fixed-size array.
+local a: [8]integer = {3, 1, 4, 1, 5, 9, 2, 6}
+
+local function partition(lo: integer, hi: integer): integer
+  local pivot = a[hi]
+  local i = lo
+  for j = lo, hi - 1 do
+    if a[j] < pivot then
+      a[i], a[j] = a[j], a[i]
+      i = i + 1
+    end
+  end
+  a[i], a[hi] = a[hi], a[i]
+  return i
+end
+
+local function quicksort(lo: integer, hi: integer)
+  if lo < hi then
+    local p = partition(lo, hi)
+    quicksort(lo, p - 1)
+    quicksort(p + 1, hi)
+  end
+end
+
+quicksort(0, #a - 1)
+local s = ""
+for i = 0, #a - 1 do
+  if i > 0 then s = s .. " " end
+  s = s .. tostring(a[i])
+end
+print(s)

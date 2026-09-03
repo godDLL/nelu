@@ -1,0 +1,16 @@
+-- Fibonacci: memoized recursion using a module-level table.
+local memo: [30]integer
+
+local function fibonacci(n: integer): integer
+  if n <= 1 then
+    return n
+  end
+  if memo[n] ~= 0 then
+    return memo[n]
+  end
+  local r = fibonacci(n - 1) + fibonacci(n - 2)
+  memo[n] = r
+  return r
+end
+
+print(fibonacci(10))

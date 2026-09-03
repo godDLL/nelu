@@ -1,0 +1,9 @@
+-- Exponentiation: iterative multiplication loop.
+local function power(base: integer, exp: integer): integer
+  local r: integer = 1
+  for i = 1, exp do
+    r = r * base
+  end
+  return r
+end
+print(power(2, 10))

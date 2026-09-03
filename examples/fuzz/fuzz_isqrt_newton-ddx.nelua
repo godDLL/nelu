@@ -1,0 +1,11 @@
+-- Integer square root via Newton's method.
+local function isqrt(n: integer): integer
+  local x = n
+  local y = (x + 1) // 2
+  while y < x do
+    x = y
+    y = (x + n // x) // 2
+  end
+  return x
+end
+print(isqrt(12345))

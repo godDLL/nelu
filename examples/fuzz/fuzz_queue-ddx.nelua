@@ -1,0 +1,23 @@
+-- Queue implemented as a record with enqueue/dequeue methods.
+local Queue = @record{
+  data: [8]integer,
+  head: integer,
+  tail: integer
+}
+
+function Queue:enqueue(v: integer)
+  self.data[self.tail] = v
+  self.tail = self.tail + 1
+end
+
+function Queue:dequeue(): integer
+  local v = self.data[self.head]
+  self.head = self.head + 1
+  return v
+end
+
+local q: Queue
+q:enqueue(1)
+q:enqueue(2)
+q:enqueue(3)
+print(q:dequeue(), q:dequeue(), q:dequeue())

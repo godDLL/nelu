@@ -1,0 +1,13 @@
+-- Find the maximum and minimum of a fixed-size array.
+local a: [8]integer = {3, 1, 4, 1, 5, 9, 2, 6}
+local mx = a[0]
+local mn = a[0]
+for i = 1, #a - 1 do
+  if a[i] > mx then
+    mx = a[i]
+  end
+  if a[i] < mn then
+    mn = a[i]
+  end
+end
+print(mx, mn)

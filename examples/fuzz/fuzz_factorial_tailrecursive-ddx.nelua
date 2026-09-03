@@ -1,0 +1,8 @@
+-- Factorial: tail-recursive with accumulator.
+local function factorial(n: integer, acc: integer): integer
+  if n <= 1 then
+    return acc
+  end
+  return factorial(n - 1, acc * n)
+end
+print(factorial(10, 1))

@@ -1,0 +1,5 @@
+-- Power-of-two check using bitwise AND on uint32 values.
+local function is_pow2(x: uint32): boolean
+  return x ~= 0 and (x & (x - 1)) == 0
+end
+print(is_pow2(64), is_pow2(63))

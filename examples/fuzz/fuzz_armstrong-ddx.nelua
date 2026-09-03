@@ -1,0 +1,19 @@
+-- Armstrong (narcissistic) number check for 153.
+local n = 153
+local tmp = n
+local digits: [3]integer
+local count = 0
+while tmp > 0 do
+  digits[count] = tmp % 10
+  count = count + 1
+  tmp = tmp // 10
+end
+local sum = 0
+for i = 0, count - 1 do
+  local p = 1
+  for j = 1, count do
+    p = p * digits[i]
+  end
+  sum = sum + p
+end
+print(sum == n)

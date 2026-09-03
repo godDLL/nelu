@@ -1,0 +1,8 @@
+-- Reverse a string by building it backwards.
+require 'string'
+local s = "nelua"
+local r = ""
+for i = #s, 1, -1 do
+  r = r .. string.sub(s, i, i)
+end
+print(r)

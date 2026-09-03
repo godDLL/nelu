@@ -1,0 +1,13 @@
+require 'iterators'
+-- Simple 32-bit checksum (one-at-a-time variant) over a byte array.
+local function checksum(data: [6]uint8): uint32
+  local h: uint32 = 0
+  for _, b in ipairs(data) do
+    h = h + b
+    h = h + h << 10
+    h = h ~ (h >> 6)
+  end
+  return h
+end
+local input: [6]uint8 = {104, 101, 108, 108, 111, 33}
+print(checksum(input))

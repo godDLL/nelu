@@ -1,0 +1,9 @@
+-- Factorial: iterative product loop.
+local function factorial(n: integer): integer
+  local r: integer = 1
+  for i = 2, n do
+    r = r * i
+  end
+  return r
+end
+print(factorial(10))

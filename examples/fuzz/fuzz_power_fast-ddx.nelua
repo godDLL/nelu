@@ -1,0 +1,15 @@
+-- Exponentiation: fast binary exponentiation.
+local function power(base: integer, exp: integer): integer
+  local r: integer = 1
+  local b = base
+  local e = exp
+  while e > 0 do
+    if e % 2 == 1 then
+      r = r * b
+    end
+    b = b * b
+    e = e // 2
+  end
+  return r
+end
+print(power(3, 13))

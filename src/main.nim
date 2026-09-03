@@ -12,6 +12,7 @@ import config
 import compile
 import parser
 import analyzer
+import preprocessor
 import luaengine
 import osproc
 import timing
@@ -277,7 +278,28 @@ proc main(): int =
       var ar = analyzer.analyze(source, input)
       echo dumpAnaled(ar.ctx, ar.root)
     elif c.printPpcode:
-      stderr.writeLine("nelua: --print-ppcode is not supported in this build (the preprocessor is not wired into the compile driver)")
+      ## Preprocessing dump: parse, run the M6 preprocessor over the tree,
+      ## echo the resulting AST.  `parser.parse` prints its own parse
+      ## diagnostic and returns nil on a ParseError, so a malformed program
+      ## is reported and nothing is dumped (matching `--print-ast`).  A
+      ## PreprocessError (a `##` chunk that errors, an unbalanced `##` block,
+      ## `#error`, `static_assert(false)`) is caught and reported to stderr
+      ## with a non-zero exit instead of crashing the driver.
+      var ast = parser.parse(source, input)
+      if ast != nil:
+        var pctx = preprocessor.newPreprocessContext(source, input)
+        try:
+          ast = preprocessor.preprocess(ast, pctx)
+        except PreprocessError as e:
+          stderr.writeLine(e.msg)
+          failed = true
+          ast = nil
+        for d in pctx.diags:
+          stderr.writeLine(d)
+        if pctx.diags.len > 0:
+          failed = true
+        if ast != nil:
+          echo parser.dump(ast)
     elif c.printCode:
       echo res.cSource
     elif c.codeOnly:

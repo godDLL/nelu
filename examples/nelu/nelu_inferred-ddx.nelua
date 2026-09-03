@@ -1,0 +1,6 @@
+-- Nelu: `<inferred>` hints that a function's type is inferred.  The oracle
+-- rejects the annotation; ours accepts it and runs the body.
+local function identity(x: integer): integer <inferred>
+  return x
+end
+print(identity(5))

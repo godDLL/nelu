@@ -1,0 +1,50 @@
+require 'string'
+-- Merge sort on a fixed-size array using a temporary buffer.
+local a: [8]integer = {3, 1, 4, 1, 5, 9, 2, 6}
+local tmp: [8]integer
+
+local function merge(lo: integer, mid: integer, hi: integer)
+  local i = lo
+  local j = mid + 1
+  local k = lo
+  while i <= mid and j <= hi do
+    if a[i] <= a[j] then
+      tmp[k] = a[i]
+      i = i + 1
+    else
+      tmp[k] = a[j]
+      j = j + 1
+    end
+    k = k + 1
+  end
+  while i <= mid do
+    tmp[k] = a[i]
+    i = i + 1
+    k = k + 1
+  end
+  while j <= hi do
+    tmp[k] = a[j]
+    j = j + 1
+    k = k + 1
+  end
+  for i = lo, hi do
+    a[i] = tmp[i]
+  end
+end
+
+local function mergesort(lo: integer, hi: integer)
+  if lo < hi then
+    local mid = (lo + hi) // 2
+    mergesort(lo, mid)
+    mergesort(mid + 1, hi)
+    merge(lo, mid, hi)
+  end
+end
+
+mergesort(0, #a - 1)
+local s = ""
+for i = 0, #a - 1 do
+  if i > 0 then s = s .. " " end
+  s = s .. tostring(a[i])
+end
+print(s)
