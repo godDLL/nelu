@@ -21,6 +21,17 @@ type
     source*: string
     path*: string
 
+## Type keywords that may appear as a static-method receiver (`string.copy(s)`).
+## Only the concrete primitive value types are listed: a type keyword is accepted
+## as an expression primary *solely* when immediately followed by `.` (so the
+## `parsePostfix` loop can build the dot-index); bare type keywords remain
+## rejected as general expression primaries.
+proc isTypeKeyword*(s: string): bool =
+  case s
+  of "integer", "number", "string", "boolean", "isize", "usize",
+      "cchar", "cshort", "cint", "clong", "cfloat", "cdouble":
+    result = true
+
 proc newParser*(source: string, path: string = ""): Parser =
   Parser(tokens: tokenize(source, path), pos: 0, source: source, path: path)
 
@@ -224,6 +235,19 @@ proc parseType*(p: var Parser): Node =
   else:
     return nil
   if base == nil: return nil
+  # Generic type instantiation: `facultative(isize)`, `sequence(number)`.
+  # A bare type identifier followed by `(...)` is a type-level call, producing
+  # a `nkGenericType` node (the shape the reference `--print-ast` emits).
+  if base.kind == nkId and p.check(tkLParen):
+    discard p.advance()  ## consume '('
+    var args: seq[Node] = @[]
+    if not p.check(tkRParen):
+      while true:
+        let arg = p.parseType()
+        if arg != nil: args.add arg
+        if not p.match(tkComma): break
+    p.expect(tkRParen, "expected ')' after generic type arguments")
+    base = newGenericType(base.str, args)
   var types: seq[Node] = @[base]
   while p.match(tkBor):
     let nxt = p.parseType()
@@ -743,7 +767,11 @@ proc parseRepeat*(p: var Parser): Node =
 
 proc parseFor*(p: var Parser): Node =
   p.advance()
-  let first = p.advance().value
+  # The loop variable may carry a type annotation, e.g.
+  # `for i:isize=0,<n do`.  Parse it as an `IdDecl` (which reads the optional
+  # `:type`) so the annotation is preserved in the AST, matching the
+  # reference's `ForNum { IdDecl { "i", Id { "isize" } }, ... }` shape.
+  let firstDecl = p.parseIdDecl()
   if p.check(tkAssign):
     p.advance()
     let beginv = p.parseExpr()
@@ -764,8 +792,8 @@ proc parseFor*(p: var Parser): Node =
     p.expectKeyword("do", "expected 'do' in for")
     let body = p.parseBlock()
     p.expectKeyword("end", "expected 'end' to close for")
-    return newForNum(newIdDecl(first), beginv, cmpop, endv, step, body)
-  var iddecls: seq[Node] = @[newIdDecl(first)]
+    return newForNum(firstDecl, beginv, cmpop, endv, step, body)
+  var iddecls: seq[Node] = @[firstDecl]
   while p.match(tkComma):
     iddecls.add newIdDecl(p.advance().value)
   p.expectKeyword("in", "expected 'in' in for")

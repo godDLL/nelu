@@ -748,8 +748,10 @@ proc analyzeDotIndex(ctx: var AnalyzerContext, node: Node): Type =
   var rt: Type = nil
   if bt != nil and bt.kind == tkRecord:
     rt = bt
+  elif bt != nil and bt.kind == tkUnion:
+    rt = bt
   elif bt != nil and bt.kind == tkPointer and bt.subtype != nil and
-       bt.subtype.kind == tkRecord:
+       bt.subtype.kind in {tkRecord, tkUnion}:
     rt = bt.subtype
   elif bt != nil and bt.kind == tkEnum:
     rt = bt
@@ -766,6 +768,15 @@ proc analyzeDotIndex(ctx: var AnalyzerContext, node: Node): Type =
         a.calleeSym = m.sym
         a.codename = m.codename
         a.typ = m.ftype
+    elif rt.kind == tkUnion:
+      # C3: a `@union` field access `u.a` was falling through to `any` (the
+      # analyzer only handled tkRecord here), so the RHS of `u.a = 5` was
+      # wrapped as `nlany_from_int(5)` and assigned to an `int64_t` field --
+      # invalid C.  Resolve the field type like a record field.
+      for f in rt.fields:
+        if f.name == node.str:
+          a.typ = f.typ
+          break
     elif rt.kind == tkEnum:
       for ef in rt.enumFields:
         if ef.name == node.str:
@@ -1387,6 +1398,17 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
     let at = if atype != nil: atype else: BuiltinTypes["any"]
     ftype.args.add at
     aparts.add arg.str & ": " & neluaTypeName(at)
+  # C8: a trailing `...: cvarargs` / `...: cvalist` param is a C variadic slot
+  # (an nkVarargsType node, not an nkIdDecl).  Record it on the ftype so the C
+  # declaration emits `...`; without this the param is silently dropped and a
+  # cimport like `printf(format, ...)` is declared with one parameter.
+  var vaNode: Node = nil
+  for c in node.children:
+    if c.kind == nkVarargsType:
+      vaNode = c; break
+  if vaNode != nil:
+    let vt = if vaNode.str == "cvalist": BuiltinTypes["cvalist"] else: BuiltinTypes["cvarargs"]
+    ftype.args.add vt
   for r in returns:
     let rt = analyzeTypeExpr(ctx, r, false)
     if rt != nil:

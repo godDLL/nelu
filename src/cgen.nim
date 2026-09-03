@@ -180,6 +180,17 @@ static inline void nelua_assert_line(bool cond, nlstring msg) {
 static inline void nelua_print_float(float v) {
   char buf[64];
   snprintf(buf, sizeof buf, "%.7g", (double)v);
+  /* Mirror the suffix logic in nelua_print_double (src/runtime.c): %.7g drops
+     the trailing ".0" for integral values, so the oracle's print_float would
+     render `75.0` as `75`.  Re-append ".0" when the buffer has no decimal
+     point and no exponent -- except for the bare inf/nan words, which the
+     oracle prints as-is. */
+  if (strcmp(buf, "inf") != 0 && strcmp(buf, "-inf") != 0 &&
+      strcmp(buf, "nan") != 0 && strcmp(buf, "-nan") != 0 &&
+      strchr(buf, '.') == NULL && strchr(buf, 'e') == NULL &&
+      strchr(buf, 'E') == NULL) {
+    strcat(buf, ".0");
+  }
   fputs(buf, nl_out);
 }
 """
@@ -237,6 +248,8 @@ proc genUnaryOp(s: var Gen, node: Node): string
 proc genCall(s: var Gen, node: Node): string
 proc genCallMethod(s: var Gen, node: Node): string
 proc genDotIndex(s: var Gen, node: Node): string
+proc genMetaCall(s: var Gen, recv: Node, methodName: string,
+                 argNodes: seq[Node] = @[]): string
 proc cDecl(t: Type, name: string): string
 proc genKeyIndex(s: var Gen, node: Node): string
 proc genInitList(s: var Gen, node: Node): string
@@ -402,6 +415,14 @@ proc hasArrayField(t: Type): bool =
 proc coerce(s: var Gen, expr: string, fromT: Type, toT: Type): string =
   if fromT == nil or toT == nil: return expr
   if fromT == toT: return expr
+  # A nelua string literal assigned to a `cstring` (const char*) lowers to the
+  # bare C string literal.  The literal is emitted as `nlstr("...")` by genExpr
+  # and `convert` reports no conversion (ckNone), so the generic path cast it
+  # to `(const char*)(nlstr("..."))` -- invalid C, since nlstring is a struct.
+  # Unwrap the nlstr(...) wrapper and hand back the inner literal.
+  if toT.isCstring and fromT.kind == tkString and
+     expr.startsWith("nlstr(") and expr.endsWith(")"):
+    return expr["nlstr(".len ..< expr.len - 1]
   let conv = convert(fromT, toT, false)
   case conv.kind
   of ckIdentity:
@@ -493,6 +514,14 @@ proc realType(s: var Gen, node: Node): Type =
       return bt.subtype.subtype
     if bt != nil and bt.kind == tkArray and bt.subtype != nil:
       return bt.subtype
+    # M4: a record with an `__index` metamethod resolves to that method's
+    # return type (the analyzer types the index as `any`, but the emitted C
+    # expression is the metamethod call, so the print/any arm must know the
+    # real type to wrap it correctly).
+    if bt != nil and bt.kind == tkRecord and bt.methods.hasKey("__index"):
+      let md = bt.methods["__index"]
+      if md.ftype != nil and md.ftype.returns.len > 0:
+        return md.ftype.returns[0]
     return BuiltinTypes["any"]
   of nkParen:
     if node.children.len > 0: return s.realType(node.children[0])
@@ -550,6 +579,12 @@ proc genExpr(s: var Gen, node: Node): string =
     # mangled codename instead of leaking annotation text into the C output.
     if a != nil and a.comptime and a.value != "" and
        (a.typ == nil or a.typ.kind != tkFunction):
+      # A comptime string/cstring value is stored as the raw stripped content
+      # (e.g. "1.0" -> `1.0`); re-wrap it as a C `nlstr(...)` literal so it
+      # lowers to `nlstr("1.0")` instead of leaking the bare text into the C
+      # output (which turned `print(_VERSION)` into `nelua_print_string(1.0)`).
+      if a.typ != nil and a.typ.kind in {tkString, tkCstring}:
+        return "nlstr(" & cStringLit(a.value) & ")"
       return a.value
     return cn
   of nkParen:
@@ -649,6 +684,10 @@ proc genUnaryOp(s: var Gen, node: Node): string =
   of "#":
     if rt != nil and rt.kind == tkString: return "(" & rstr & ".size)"
     if rt != nil and rt.kind == tkArray: return "nlarrlen(" & rstr & ")"
+    # M1: a record with a `__len` metamethod dispatches through it instead of
+    # the string-length helper (which expects nlstring and rejects records).
+    if rt != nil and rt.kind == tkRecord and rt.methods.hasKey("__len"):
+      return s.genMetaCall(rhs, "__len", @[])
     return "nllen(" & rstr & ")"
   of "not": return "(!" & rstr & ")"
   of "~": return "(~" & rstr & ")"     ## bnot
@@ -710,7 +749,13 @@ proc genCall(s: var Gen, node: Node): string =
     let aes = s.genExpr(arg)
     let at = s.ctx.attrOf.getOrDefault(arg).typ
     let pt = if calleeType != nil and i < calleeType.args.len: calleeType.args[i] else: at
-    argstrs.add s.coerce(aes, at, pt)
+    # C8: a `...: cvarargs` slot is a C variadic tail; varargs arguments are
+    # passed through uncoerced (C applies its own promotion rules).  Coercing
+    # to the cvarargs type itself would emit `(...)(42)`, which is invalid C.
+    if pt != nil and pt.kind == tkCvarargs:
+      argstrs.add aes
+    else:
+      argstrs.add s.coerce(aes, at, pt)
   # C4: record/enum constructor `Rect{ x = 1 }` -> compound literal
   # `((struct <tag>){ .x = 1, .y = 2 })`.
   let na = s.ctx.attrOf.getOrDefault(node)
@@ -754,6 +799,13 @@ proc genCall(s: var Gen, node: Node): string =
           # prints `MASK.UPPER` -> `2147483648`, not `nil`).
           if ht.kind == tkEnum:
             ht = if ht.subtype != nil: ht.subtype else: BuiltinTypes["integer"]
+          # W2: C promotes integers smaller than `int` inside arithmetic, so
+          # `200u8 + 100u8` computes as the `int` 300 and prints 300.  The
+          # oracle's typed print helper takes the small type and wraps
+          # implicitly (44); cast the argument to its own small type so the
+          # value wraps before it reaches the wide print helper.
+          if ht != nil and ht.isIntegral and size(ht) > 0 and size(ht) < 4:
+            argStr = "(" & cType(ht) & ")(" & argStr & ")"
           case ht.kind
           of tkInteger, tkInt8, tkInt16, tkInt32, tkInt64, tkInt128,
              tkIsize, tkByte, tkCchar, tkCschar, tkCshort, tkCint,
@@ -770,8 +822,15 @@ proc genCall(s: var Gen, node: Node): string =
             helper = "nelua_print_float"; passArg = true
           of tkNumber, tkFloat64, tkFloat128, tkCdouble, tkClongdouble:
             helper = "nelua_print_double"; passArg = true
-          of tkString, tkCstring:
+          of tkString:
             helper = "nelua_print_string"; passArg = true
+          of tkCstring:
+            # A cstring is a `const char*`; nelua_print_string takes an
+            # `nlstring`, so wrap it via nlstr (which measures the length at
+            # runtime).  The oracle prints cstrings through a dedicated
+            # char*-taking helper; the observable output is the same.
+            helper = "nelua_print_string"; passArg = true
+            argStr = "nlstr(" & aes & ")"
           of tkBoolean: helper = "nelua_print_bool"; passArg = true
           of tkNilptr, tkPointer: helper = "nelua_print_ptr"; passArg = true
           of tkAny:
@@ -782,6 +841,15 @@ proc genCall(s: var Gen, node: Node): string =
             # `any` value (already `nlany`) coerces to itself and is unchanged.
             helper = "nelua_print_any"; passArg = true
             argStr = s.coerce(aes, s.realType(arg), BuiltinTypes["any"])
+          of tkRecord:
+            # M2: a record with a `__tostring` metamethod is printed by calling
+            # it and printing the resulting string; a record without one falls
+            # back to the default `(null)` print, matching the oracle.
+            if ht.methods.hasKey("__tostring"):
+              helper = "nelua_print_string"; passArg = true
+              argStr = s.genMetaCall(arg, "__tostring", @[])
+            else:
+              helper = "nelua_print_nil"; passArg = false
           else: helper = "nelua_print_nil"; passArg = false
         let call = if passArg: helper & "(" & argStr & ")" else: helper & "()"
         if i > 0: lines.add "nelua_print_sep(); " & call & ";"
@@ -834,6 +902,44 @@ proc genCallMethod(s: var Gen, node: Node): string =
     allargs.add s.coerce(aes, at, pt)
   return cn & "(" & allargs.join(", ") & ")"
 
+proc genMetaCall(s: var Gen, recv: Node, methodName: string,
+                 argNodes: seq[Node] = @[]): string =
+  ## Emit a colon-method call `recv:methodName(args)` resolved through the
+  ## receiver record's `methods` table.  This is the shared helper for the
+  ## metamethod-dispatch paths (`#`, `[]`, `print`, `(...)`) where the oracle
+  ## consults the record's metafield instead of the default operator/builtin
+  ## behaviour.  Direct `recv:methodName()` calls go through genCallMethod;
+  ## this helper is for cases where the call site is an operator/builtin, not
+  ## an nkCallMethod node, so it re-derives the receiver type and coerces the
+  ## arguments against the method's own ftype (args[0] is the implicit self).
+  let ra = s.ctx.attrOf.getOrDefault(recv)
+  let rt = if ra != nil: ra.typ else: nil
+  let md = if rt != nil: rt.methods.getOrDefault(methodName) else: MethodDesc()
+  let cn = if md.sym != nil: md.codename
+            elif rt != nil and rt.name != "": rt.name & "_" & methodName
+            else: "nil"
+  let recvStr = s.genExpr(recv)
+  var allargs: seq[string] = @[]
+  if md.ftype != nil and md.ftype.args.len > 0:
+    let p0 = md.ftype.args[0]
+    if p0 != nil and p0.kind == tkPointer:
+      # The implicit `self` param is `*Record`.  A value receiver is passed
+      # by address; a receiver that is already that pointer is unchanged.
+      if rt != nil and rt.kind == tkPointer and rt == p0:
+        allargs.add recvStr
+      else:
+        allargs.add "(&" & recvStr & ")"
+    else:
+      allargs.add recvStr
+  else:
+    allargs.add recvStr
+  for i, arg in argNodes:
+    let aes = s.genExpr(arg)
+    let at = s.ctx.attrOf.getOrDefault(arg).typ
+    let pt = if md.ftype != nil and i + 1 < md.ftype.args.len: md.ftype.args[i+1] else: at
+    allargs.add s.coerce(aes, at, pt)
+  return cn & "(" & allargs.join(", ") & ")"
+
 proc genDotIndex(s: var Gen, node: Node): string =
   let base = node.children[0]
   let ba = s.ctx.attrOf.getOrDefault(base)
@@ -851,7 +957,12 @@ proc genDotIndex(s: var Gen, node: Node): string =
   return baseStr & "." & field
 
 proc genKeyIndex(s: var Gen, node: Node): string =
-  let base = node.children[0]
+  # newKeyIndex stores (key, base): children[0] is the index expression,
+  # children[1] is the base expression.  (The old code read them swapped, which
+  # happened to compile for arrays because C's `a[i]` == `i[a]`, but it emitted
+  # the unintuitive reversed form and broke record subscripting.)
+  let key = node.children[0]
+  let base = node.children[1]
   let ba = s.ctx.attrOf.getOrDefault(base)
   let bt = if ba != nil: ba.typ else: nil
   if bt != nil and bt.kind == tkTable:
@@ -859,7 +970,11 @@ proc genKeyIndex(s: var Gen, node: Node): string =
     s.unsupportedMsg = "table indexing is not implemented"
     return "/*table*/"
   let baseStr = s.genExpr(base)
-  let keyStr = s.genExpr(node.children[1])
+  let keyStr = s.genExpr(key)
+  # M4: a record with an `__index` metamethod dispatches through it instead of
+  # a direct subscript (which is invalid on a struct).
+  if bt != nil and bt.kind == tkRecord and bt.methods.hasKey("__index"):
+    return s.genMetaCall(base, "__index", @[key])
   return baseStr & "[" & keyStr & "]"
 
 proc genInitListBraces(s: var Gen, node: Node, et: Type): string =
@@ -1450,6 +1565,11 @@ proc genForwardDecl(s: var Gen, node: Node) =
   for j, arg in args:
     let at = if j < ftype.args.len: ftype.args[j] else: BuiltinTypes["any"]
     params.add cDecl(at, cIdent(arg.str))
+  # C8: a C variadic `...: cvarargs` slot has no C declarator (it is not an
+  # nkIdDecl, so funcArgList skips it); emit the bare `...` so a cimport like
+  # `printf(format, ...)` declares its variadic tail.
+  if ftype.args.len > args.len:
+    params.add "..."
   let paramStr = params.join(", ")
   var decl: string
   if ftype.returns.len > 1:
@@ -1469,12 +1589,20 @@ proc genFuncDef(s: var Gen, node: Node) =
   let codename = if a != nil and a.codename != "": a.codename else: cIdent(node.children[0].str)
   let cinclude = if a != nil: a.cinclude else: ""
   if cinclude.len > 0:
-    s.line "#include \"" & cinclude & "\""
+    # The `<cinclude '<...>'>` value already carries its own delimiters (the
+    # oracle stores `<stdio.h>` and emits `#include <stdio.h>`), so emit it
+    # verbatim rather than wrapping it in extra quotes.
+    s.line "#include " & cinclude
   let args = funcArgList(node)
   var params: seq[string] = @[]
   for j, arg in args:
     let at = if j < ftype.args.len: ftype.args[j] else: BuiltinTypes["any"]
     params.add cDecl(at, cIdent(arg.str))
+  # C8: a C variadic `...: cvarargs` slot has no C declarator (it is not an
+  # nkIdDecl, so funcArgList skips it); emit the bare `...` so a cimport like
+  # `printf(format, ...)` declares its variadic tail.
+  if ftype.args.len > args.len:
+    params.add "..."
   let paramStr = params.join(", ")
   var decl: string
   if ftype.returns.len > 1:
