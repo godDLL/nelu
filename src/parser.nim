@@ -991,17 +991,17 @@ proc parseFor*(p: var Parser): Node =
     let body = p.parseBlock()
     p.expectKeyword("end", "expected 'end' to close for")
     return newForNum(firstDecl, beginv, cmpop, endv, step, body)
-  var iddecls: seq[Node] = @[firstDecl]
+  # `for ... in` (iterator for) is not supported.  The oracle rejects every
+  # `for ... in` form, and ours SIGSEGVs in the C generator (genCall in
+  # cgen.nim) when the iterator expression's type resolves to nil.  Reject
+  # it here as a parse error so the compiler exits 1 with a diagnostic
+  # instead of crashing.  Only the numeric `for i = a, b do ... end` form
+  # (handled above) is valid.  Consume the loop-variable list first so the
+  # diagnostic points at the `in` keyword that distinguishes this form.
   while p.match(tkComma):
-    iddecls.add newIdDecl(p.advance().value)
-  p.expectKeyword("in", "expected 'in' in for")
-  var exprs: seq[Node] = @[p.parseExpr()]
-  while p.match(tkComma):
-    exprs.add p.parseExpr()
-  p.expectKeyword("do", "expected 'do' in for")
-  let body = p.parseBlock()
-  p.expectKeyword("end", "expected 'end' to close for")
-  return newForIn(iddecls, exprs, body)
+    discard p.advance()
+  raise p.error("expected '=' in for loop; the 'for ... in' iterator form " &
+                "is not supported")
 
 proc parseReturn*(p: var Parser): Node =
   p.advance()
