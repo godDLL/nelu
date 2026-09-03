@@ -74,16 +74,19 @@ a verdict tag, not part of the program; the file content is unchanged.
 - **`-ffs`** — files the oracle should *not* accept (the oracle rejects them).
   Tagged by the `-ffs` devil (report `plan/ffs-corpus.md`), which classified all
   220 `examples/*/**` files: ACCEPT 138, REJECT 47, SKIP 3 (plus 2 that abort at
-  runtime by design, not a rejection). **25 files renamed to `-ffs` and integrated
-  into the live tree 2026-09-03** (content-identical renames, verified with
-  `cmp`). The other 22 REJECTs already carry `-ddx` (ours runs them *and* the oracle
-  rejects them) and were **not** double-tagged: they stay `-ddx`, recorded as an
-  overlap in the report. A file may legitimately carry both tags; the overlap is
-  reported, not silently resolved.
+  runtime by design, not a rejection). **25 files renamed to `-ffs` and 22 more
+  renamed to `-ddx-ffs`, all integrated into the live tree 2026-09-03**
+  (content-identical renames, verified with `cmp`). The 25 clean ones were
+  oracle-rejects that did not already carry `-ddx`; the 22 overlap ones already
+  carried `-ddx` (ours runs them *and* the oracle rejects them) and now carry
+  both tags. See "Tagging" below for why both tags on one file is intended.
 
-A file can legitimately carry both tags (a Nelu extension the oracle rejects is
-both "ours runs it" and "OG should not accept"); that is recorded as an overlap
-in the report, not silently resolved.
+A file can legitimately carry both tags: a Nelu extension the oracle rejects is
+both "ours runs it" and "OG should not accept". Those are the 22 OVERLAP files,
+and they are **not** left single-tagged -- they carry both, as `-ddx-ffs`
+(`foo-ddx.nelua` -> `foo-ddx-ffs.nelua`). The suffix order is deliberate:
+`-ddx` (ours runs it) precedes `-ffs` (oracle rejects it), and both are verdict
+tags, not part of the program; the file content is unchanged.
 
 ## Why the split matters
 
