@@ -399,6 +399,8 @@ proc parsePreprocessName*(p: var Parser): Node =
   discard p.advance()  ## `#`
   return Node(kind: nkPreprocessName, str: name)
 
+proc stripLongBrackets(s: string): string   # forward, see below (parsePrimary use)
+
 proc parsePrimary*(p: var Parser): Node =
   let t = p.tok
   case t.kind
@@ -418,7 +420,15 @@ proc parsePrimary*(p: var Parser): Node =
     return newString(t.value, litType)
   of tkLString:
     p.advance()
-    return newString(t.value, "lstring")
+    ## A Lua long string `[[\n...]]` carries its `[=`*`[` opener and `]`=`*`]`
+    ## closer inside the token value.  Strip them (the shape the reference
+    ## `--print-ast` emits) and drop the single leading newline that Lua
+    ## semantics always removes right after the opener -- otherwise `[[\nfoo]]`
+    ## round-trips as `[[\nfoo]]` instead of `foo` and `#s` counts the
+    ## delimiters (23 where the oracle reports 18).
+    let body = stripLongBrackets(t.value)
+    let cleaned = if body.len > 0 and body[0] == '\n': body[1..^1] else: body
+    return newString(cleaned, "lstring")
   of tkDotDot:
     p.advance()
     return newVarargs()
@@ -834,6 +844,12 @@ proc parseIdDecl*(p: var Parser): Node =
   return Node(kind: nkIdDecl, str: nameStr, children: children)
 
 proc parseFuncName*(p: var Parser): Node =
+  ## A function name is either a `#|name|#` preprocessor splice placeholder
+  ## (carried as an `nkPreprocessName` node, matching the reference AST) or an
+  ## ordinary identifier optionally followed by `.field` / `:field` suffixes.
+  let ppName = p.parsePreprocessName()
+  if ppName != nil:
+    return ppName
   var name = newId(p.advance().value)
   while true:
     if p.match(tkDot):
@@ -848,7 +864,13 @@ proc parseFuncDef*(p: var Parser, scope: string): Node =
   p.expectKeyword("function", "expected 'function'")
   var name = p.parseFuncName()
   if scope == "local":
-    name = newIdDecl(name.str, nil)
+    if name.kind == nkPreprocessName:
+      ## A `#|name|#` splice function name is wrapped in an `nkIdDecl` that
+      ## carries the splice node as `children[0]`, exactly the shape the
+      ## reference `--print-ast` emits (`IdDecl { PreprocessName { "name" } }`).
+      name = Node(kind: nkIdDecl, str: name.str, children: @[name])
+    else:
+      name = newIdDecl(name.str, nil)
   p.expect(tkLParen, "expected '(' after function name")
   var args: seq[Node] = @[]
   if not p.check(tkRParen):

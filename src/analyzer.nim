@@ -944,6 +944,14 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
     # A4: colon-method call `recv:m(args)`. node.str is the method name,
     # node.children[^1] is the receiver expression; the rest are args.
     let recv = node.children[^1]
+    # A4: colon-method call `recv:m(args)`.  The args must be analyzed too --
+    # `analyzeCall` does this for `nkCall`, but the colon-method path never
+    # walked them, so an arg like `&b2` got no type attr and codegen
+    # SIGSEGVed on the nil type.  Analyze them before the receiver so their
+    # types resolve against the current scope.
+    let args = node.children[0 ..< node.children.len - 1]
+    for arg in args:
+      discard analyzeExpr(ctx, arg)
     let rt = analyzeExpr(ctx, recv)
     var mtype: Type = nil
     var msym: Symbol = nil
@@ -1126,13 +1134,14 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
     # dropped; resolve it here and record it on the symbol so a later `x: T`
     # in a type position dereferences it.  Without this `local x: T = 0`
     # resolves T to `type` and prints `nil` instead of `0`.
-    if vtype == BuiltinTypes["type"] and i < inits.len and not isTypeBinding:
+    if vtype == BuiltinTypes["type"] and i < inits.len:
       let ct = analyzeTypeExpr(ctx, inits[i])
       if ct != nil:
         let tv = typeValueKey(inits[i], ct)
         sym.value = tv
         a.value = tv
-        a.isTypeBinding = true
+        if not isTypeBinding:
+          a.isTypeBinding = true
     if not isTypeBinding:
       a.lvalue = true
       a.staticstorage = true
@@ -1397,8 +1406,19 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
       recordType = rsym.typ
       isMethod = true
       methodName = nameNode.str
+  elif nameNode.kind == nkDotIndex:
+    # A6b: static dot-method `Record.method(args)`.  `function Record.m(x)`
+    # defines a method on the record with NO implicit `self` (unlike the
+    # colon form); the call site `Record.m(5)` resolves through the same
+    # `methods` table the colon methods use.
+    let recNameNode = nameNode.children[0]
+    let rsym = ctx.lookup(recNameNode.str)
+    if rsym != nil and rsym.typ != nil and rsym.typ.kind == tkRecord:
+      recordType = rsym.typ
+      isMethod = true
+      methodName = nameNode.str
   var selfDecl: Node = nil
-  if isMethod:
+  if isMethod and nameNode.kind == nkColonIndex:
     selfDecl = newIdDecl("self", nil)
     node.children = @[nameNode, selfDecl] & node.children[1 ..< node.children.len]
   # A `<cimport>` funcdef binds to an external C symbol by its raw name (the

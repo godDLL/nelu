@@ -253,6 +253,7 @@ proc genMetaCall(s: var Gen, recv: Node, methodName: string,
 proc cDecl(t: Type, name: string): string
 proc genKeyIndex(s: var Gen, node: Node): string
 proc genInitList(s: var Gen, node: Node): string
+proc genInitListBraces(s: var Gen, node: Node, et: Type): string
 proc genArrayInitFromExpr(s: var Gen, src: string, at: Type): string
 proc genLvalue(s: var Gen, node: Node): string
 proc genStmt(s: var Gen, node: Node)
@@ -669,8 +670,27 @@ proc genBinaryOp(s: var Gen, node: Node): string =
   of ">": return "(" & lstr & " > " & rstr & ")"
   of "<=": return "(" & lstr & " <= " & rstr & ")"
   of ">=": return "(" & lstr & " >= " & rstr & ")"
-  of "==": return "(" & lstr & " == " & rstr & ")"
-  of "~=": return "(" & lstr & " != " & rstr & ")"
+  of "==":
+    ## Array `==` is element-wise (C compares array names as pointers, which
+    ## is always false).  For a bounded array emit a short-circuiting chain of
+    ## element comparisons; the oracle does the same.
+    if lt != nil and lt.kind == tkArray and lt.arraySize > 0 and
+       rt != nil and rt.kind == tkArray and rt.arraySize > 0:
+      let n = min(lt.arraySize, rt.arraySize)
+      var els: seq[string] = @[]
+      for i in 0 ..< n:
+        els.add "(" & lstr & "[" & $i & "] == " & rstr & "[" & $i & "])"
+      return "(" & els.join(" && ") & ")"
+    return "(" & lstr & " == " & rstr & ")"
+  of "~=":
+    if lt != nil and lt.kind == tkArray and lt.arraySize > 0 and
+       rt != nil and rt.kind == tkArray and rt.arraySize > 0:
+      let n = min(lt.arraySize, rt.arraySize)
+      var els: seq[string] = @[]
+      for i in 0 ..< n:
+        els.add "(" & lstr & "[" & $i & "] != " & rstr & "[" & $i & "])"
+      return "(" & els.join(" || ") & ")"
+    return "(" & lstr & " != " & rstr & ")"
   of "and": return "(" & lstr & " && " & rstr & ")"
   of "or": return "(" & lstr & " || " & rstr & ")"
   else: return "/*op " & node.str & "*/"
@@ -684,7 +704,12 @@ proc genUnaryOp(s: var Gen, node: Node): string =
   of "-": return "(-" & rstr & ")"
   of "#":
     if rt != nil and rt.kind == tkString: return "(" & rstr & ".size)"
-    if rt != nil and rt.kind == tkArray: return "nlarrlen(" & rstr & ")"
+    if rt != nil and rt.kind == tkCstring: return "nllen(nlstr(" & rstr & "))"
+    if rt != nil and rt.kind == tkArray:
+      ## `#array` on a bounded array is a compile-time constant (the declared
+      ## element count); there is no runtime `nlarrlen` symbol, so fold it.
+      if rt.arraySize > 0: return $rt.arraySize
+      return "0"
     # M1: a record with a `__len` metamethod dispatches through it instead of
     # the string-length helper (which expects nlstring and rejects records).
     if rt != nil and rt.kind == tkRecord and rt.methods.hasKey("__len"):
@@ -692,7 +717,7 @@ proc genUnaryOp(s: var Gen, node: Node): string =
     return "nllen(" & rstr & ")"
   of "not": return "(!" & rstr & ")"
   of "~": return "(~" & rstr & ")"     ## bnot
-  of "$": return "(*" & rstr & ")"     ## deref
+  of "deref": return "(*" & rstr & ")"
   of "&": return "(&" & rstr & ")"     ## ref
   else: return "/*uop " & node.str & "*/"
 
@@ -767,7 +792,19 @@ proc genCall(s: var Gen, node: Node): string =
     var parts: seq[string] = @[]
     for pair in initList.children:
       if pair.kind == nkPair:
-        parts.add "." & cIdent(pair.str) & " = " & s.genExpr(pair.children[0]) & ","
+        let ft = fieldOf(ct, pair.str)
+        let child = pair.children[0]
+        if ft != nil and ft.kind == tkArray and child.kind == nkInitList:
+          ## An array field inside a record constructor must be given a bare
+          ## brace-enclosed initializer (`.v = { ... }`); a cast compound literal
+          ## (`.v = (uint32_t[N]){ ... }`) is ill-formed in C.
+          parts.add "." & cIdent(pair.str) & " = " &
+            s.genInitListBraces(child, ft.subtype) & ","
+        elif ft != nil and ft.kind == tkArray:
+          parts.add "." & cIdent(pair.str) & " = " &
+            s.genArrayInitFromExpr(s.genExpr(child), ft) & ","
+        else:
+          parts.add "." & cIdent(pair.str) & " = " & s.genExpr(child) & ","
     return "((struct " & tag & "){ " & parts.join(" ") & " })"
   # C1: type cast `(T)(e)` -> `(cType(T))(e)`.  The caller attr carries the
   # target type (bound by the analyzer); there is no callee symbol to call, so
@@ -903,10 +940,12 @@ proc genCallMethod(s: var Gen, node: Node): string =
   else:
     allargs.add recvStr
   let calleeType = s.ctx.attrOf.getOrDefault(node).calleeType
+  # calleeType.args[0] is the implicit `self`; the explicit args start at [1].
   for i, arg in args:
     let aes = s.genExpr(arg)
     let at = s.ctx.attrOf.getOrDefault(arg).typ
-    let pt = if calleeType != nil and i < calleeType.args.len: calleeType.args[i] else: at
+    let ai = if calleeType != nil and i + 1 < calleeType.args.len: i + 1 else: i
+    let pt = if calleeType != nil and ai < calleeType.args.len: calleeType.args[ai] else: at
     allargs.add s.coerce(aes, at, pt)
   return cn & "(" & allargs.join(", ") & ")"
 

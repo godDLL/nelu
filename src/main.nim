@@ -84,8 +84,15 @@ proc main(): int =
     ## generator (genC in compile.nim:138): the emitter segfaults on valid
     ## constructs (method calls, anonymous functions, if/elseif) and would
     ## abort the dump.  The oracle's --print-ast also does not codegen.
+    ##
+    ## `--lint` is syntax-only too: the reference checks only that the source
+    ## parses, and deliberately does NOT run the preprocessor, analyzer or
+    ## codegen (a `## error(...)` line or an unresolved `#[x]#` splice is
+    ## accepted by `--lint`; only a real parse error fails it).  Without this
+    ## `--lint` drove the full compile pipeline and aborted on the unresolved
+    ## splices in `lib/detail/xoshiro256.nelua`, a `require` of `lib/math.nelua`.
     let needsCompile = not (c.printAst or c.printAnalyzedAst or
-                            c.analyze or c.printPpcode)
+                            c.analyze or c.printPpcode or c.lint)
     let res = if needsCompile: compile(source, input, c)
               else: CompileResult(success: true)
     for d in res.diagnostics:
@@ -112,8 +119,13 @@ proc main(): int =
       else:
         echo res.cSource
     elif c.lint:
-      # Errors only, no codegen. Diagnostics were already printed above.
-      discard
+      # Syntax check only, matching the reference.  `parser.parse` prints the
+      # diagnostic itself and returns nil on a ParseError; anything that does
+      # not parse is a lint failure.  Preprocessor/analyzer/codegen are NOT
+      # run, so unresolved `#[expr]#` splices and `##` directives are accepted.
+      let ast = parser.parse(source, input)
+      if ast == nil:
+        failed = true
     elif c.analyze:
       var ar = analyzer.analyze(source, input)
       echo dumpAnaled(ar.ctx, ar.root)
