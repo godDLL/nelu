@@ -72,7 +72,14 @@ a verdict tag, not part of the program; the file content is unchanged.
   (report `plan/devil-ddx-corpus.md`), which classified all 220 `examples/*/**`
   files: MATCH 129, O-REJ 47, DIFF-fail 8, OUR-REJ 30, SKIP 3.
 - **`-ffs`** — files the oracle should *not* accept (the oracle rejects them).
-  Tagged by a separate devil; report `plan/ffs-corpus.md` when it lands.
+  Tagged by the `-ffs` devil (report `plan/ffs-corpus.md`), which classified all
+  220 `examples/*/**` files: ACCEPT 138, REJECT 47, SKIP 3 (plus 2 that abort at
+  runtime by design, not a rejection). **25 files renamed to `-ffs` and integrated
+  into the live tree 2026-09-03** (content-identical renames, verified with
+  `cmp`). The other 22 REJECTs already carry `-ddx` (ours runs them *and* the oracle
+  rejects them) and were **not** double-tagged: they stay `-ddx`, recorded as an
+  overlap in the report. A file may legitimately carry both tags; the overlap is
+  reported, not silently resolved.
 
 A file can legitimately carry both tags (a Nelu extension the oracle rejects is
 both "ours runs it" and "OG should not accept"); that is recorded as an overlap
