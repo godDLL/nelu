@@ -189,6 +189,13 @@ proc inferBinary*(op: string, l, r: Type): (Type, Conversion, Conversion) =
   let o = normalizeBinaryOp(op)
   let ident = Conversion(kind: ckIdentity)
   let none = Conversion(kind: ckNone)
+  ## A binary op whose operand failed to resolve (nil type) has no valid
+  ## result.  Return nil rather than dereferencing a nil type here and
+  ## SIGSEGVing -- the caller (analyzeBinaryOp) already tolerates a nil rtype,
+  ## so an upvalue read inside `x + 1` exits with the diagnostic instead of
+  ## crashing the whole compilation.
+  if l == nil or r == nil:
+    return (nil, none, none)
   case o:
     of "+", "-", "*":
       if l.isIntegral and r.isIntegral:

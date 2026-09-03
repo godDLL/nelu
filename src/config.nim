@@ -26,9 +26,18 @@ type
     sanitize*: bool             ## --sanitize
     generator*: string          ## -g
     noCache*: bool              ## --no-cache
+    verbose*: bool              ## -V -- verbose: echo generated C and cc command line
+    outputKind*: OutputKind     ## which final artifact to produce
     version*: bool              ## --version
     help*: bool                 ## --help
     parseError*: string         ## non-empty when CLI parsing failed
+
+  OutputKind* = enum
+    okBinary      ## -b --binary (default): link an executable and run it
+    okObject      ## -B --object: compile to a relocatable .o
+    okAssembly    ## -Y --assembly: emit assembly .s
+    okStaticLib   ## -A --static-lib: archive into a .a
+    okSharedLib   ## -H --shared-lib: link into a .so
 
 proc defaultConfig*: Config =
   ## The default configuration: gcc as the C compiler, binary output enabled.

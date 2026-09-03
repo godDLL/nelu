@@ -18,13 +18,26 @@ type
     ## Raised to signal a command-line usage error. The CLI layer itself
     ## reports the problem and stores the message on the Config instead.
 
-const ShortNoVal = {'r', 'b', 'c', 'a', 'l', 's', 'h', 'v'}
+const ShortNoVal = {'r', 'b', 'c', 'a', 'l', 's', 'h', 'v', 'V',
+                    'B', 'Y', 'A', 'H'}
 const LongNoVal: seq[string] = @[
   "release", "binary", "code", "analyze", "lint",
   "strip-bin", "sanitize", "no-cache",
   "version", "help",
   "print-ast", "print-analyzed-ast", "print-ppcode", "print-code",
+  "object", "assembly", "static-lib", "shared-lib",
 ]
+
+proc setOutputKind(c: var Config, k: OutputKind, name: string) =
+  ## Set the output mode, rejecting conflicts.  The output modes are a
+  ## choice group (the oracle lists them as `([-b] | [-B] | [-Y] | [-A] |
+  ## [-H])`), so passing more than one is a usage error rather than a
+  ## last-one-wins silently.
+  if c.outputKind != okBinary:
+    c.parseError = "output mode conflicts with the already-set output mode"
+    stderr.writeLine("nelua: --" & name & ": " & c.parseError)
+  else:
+    c.outputKind = k
 
 proc parseArgs*(args: seq[string]): (Config, seq[string]) =
   ## Parse args into a Config and the leftover positional arguments.
@@ -74,7 +87,12 @@ proc parseArgs*(args: seq[string]): (Config, seq[string]) =
       of "s", "strip-bin": c.stripBin = true
       of "h", "help": c.help = true
       of "v", "version": c.version = true
+      of "V": c.verbose = true
       of "o", "output": c.output = p.val
+      of "B": setOutputKind(c, okObject, "object")
+      of "Y": setOutputKind(c, okAssembly, "assembly")
+      of "A": setOutputKind(c, okStaticLib, "static-lib")
+      of "H": setOutputKind(c, okSharedLib, "shared-lib")
       of "P": c.pragmas.add(p.val)
       of "D": c.defines.add(p.val)
       of "g": c.generator = p.val
@@ -104,6 +122,10 @@ proc parseArgs*(args: seq[string]): (Config, seq[string]) =
       of "path": c.paths.add(p.val)
       of "cache-dir": c.cacheDir = p.val
       of "output": c.output = p.val
+      of "object": setOutputKind(c, okObject, "object")
+      of "assembly": setOutputKind(c, okAssembly, "assembly")
+      of "static-lib": setOutputKind(c, okStaticLib, "static-lib")
+      of "shared-lib": setOutputKind(c, okSharedLib, "shared-lib")
       else:
         c.parseError = "unknown option: --" & p.key
         stderr.writeLine("nelua: " & c.parseError)

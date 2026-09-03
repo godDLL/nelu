@@ -28,6 +28,10 @@ proc printHelp() =
   echo "Options:"
   echo "  -r, --release            Release build (optimize, disable checks)"
   echo "  -b, --binary             Produce a binary (default)"
+  echo "  -B, --object             Compile to a relocatable object (.o)"
+  echo "  -Y, --assembly          Emit assembly (.s)"
+  echo "  -A, --static-lib         Archive into a static library (.a)"
+  echo "  -H, --shared-lib         Link into a shared library (.so)"
   echo "  -c, --code               Emit C and stop"
   echo "  -a, --analyze            Analyze only, no codegen"
   echo "  --lint                   Check for syntax errors only"
@@ -48,6 +52,7 @@ proc printHelp() =
   echo "  -g <generator>           Code generator backend (default: c)"
   echo "  --no-cache               Do not use cached compilation"
   echo "  --version                Print the version and exit"
+  echo "  -V                       Verbose: echo generated C and cc command line"
   echo "  --help                   Show this help and exit"
 
 proc main(): int =
@@ -67,6 +72,11 @@ proc main(): int =
     return 0
   if hasError(c):
     return 1
+
+  if positionals.len == 0:
+    ## No input: the oracle prints usage and exits 0.
+    printHelp()
+    return 0
 
   var failed = false
   var exitCode = 0
@@ -156,53 +166,4 @@ proc main(): int =
   return if failed: 1 elif exitCode != 0: exitCode else: 0
 
 when isMainModule:
-  if paramCount() == 0:
-    # Self-test: exercise the real CLI pipeline end-to-end through the built
-    # binary, then clean up the transient test files under tmp/.
-    let projRoot = getAppDir().parentDir()
-    let tmpDir = projRoot / "tmp"
-    let testPath = tmpDir / "mains_selftest.nelua"
-    let exe = getAppDir() / "main"
-    let q = testPath.quoteShell
-
-    var failed = false
-
-    try:
-      writeFile(testPath, "local x = 5\n")
-    except OSError:
-      echo "SELFTEST FAIL: could not write " & testPath
-      quit(1)
-
-    # 1. Default binary path: exit 0, no diagnostics, no stdout.
-    let r1 = execCmdEx(exe.quoteShell & " " & q)
-    if r1[1] != 0 or r1[0].len > 0:
-      echo "SELFTEST FAIL [binary]: exit=" & $r1[1] & " output=[" & r1[0] & "]"
-      failed = true
-    else:
-      echo "SELFTEST OK [binary]: exit 0, no diagnostics"
-
-    # 2. --print-code: non-empty C translation unit.
-    let r2 = execCmdEx(exe.quoteShell & " --print-code " & q)
-    if r2[1] != 0 or r2[0].len == 0 or "nelua_main" notin r2[0]:
-      echo "SELFTEST FAIL [print-code]: exit=" & $r2[1] & " len=" & $r2[0].len
-      failed = true
-    else:
-      echo "SELFTEST OK [print-code]: " & $r2[0].len & " chars of C"
-
-    # 3. --print-analyzed-ast: typed AST dump.
-    let r3 = execCmdEx(exe.quoteShell & " --print-analyzed-ast " & q)
-    if r3[1] != 0 or "Block" notin r3[0] or "VarDecl" notin r3[0]:
-      echo "SELFTEST FAIL [print-analyzed-ast]: exit=" & $r3[1]
-      failed = true
-    else:
-      echo "SELFTEST OK [print-analyzed-ast]: typed AST present"
-
-    # Clean up the test source and any compile() scratch artefacts in tmp/.
-    try: removeFile(testPath) except OSError, IOError: discard
-    for f in walkDirRec(tmpDir):
-      if "mains_selftest" in f:
-        try: removeFile(f) except OSError, IOError: discard
-
-    quit(if failed: 1 else: 0)
-  else:
-    cexit(cint(main()))
+  cexit(cint(main()))

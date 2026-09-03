@@ -117,7 +117,7 @@ proc cType*(t: Type): string =
     of tkClongdouble:
       "long double"
     of tkCstring:
-      "const char*"
+      "char*"
     of tkCvalist:
       "va_list"
     of tkCvarargs:
@@ -312,7 +312,7 @@ when isMainModule:
   doAssert cType(clongdouble) == "long double",  cType(clongdouble)
   doAssert cType(cvalist)  == "va_list",          cType(cvalist)
   doAssert cType(cvarargs) == "...",              cType(cvarargs)
-  doAssert cType(cstring)  == "const char*",      cType(cstring)
+  doAssert cType(cstring)  == "char*",            cType(cstring)
 
   # --- const qualification ---
   doAssert cConstType(integer) == "const int64_t",   cConstType(integer)

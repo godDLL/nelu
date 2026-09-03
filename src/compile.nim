@@ -27,6 +27,16 @@ import ./parser
 import ./ast
 import ./luaengine
 
+proc outputExtension(kind: OutputKind): string =
+  ## File extension for the final artifact of an output mode ("" for a bare
+  ## executable, which takes no suffix).
+  case kind:
+    of okBinary: ""
+    of okObject: "o"
+    of okAssembly: "s"
+    of okStaticLib: "a"
+    of okSharedLib: "so"
+
 type
   CompileResult* = object
     success*: bool              ## genC emitted a real translation unit (not a stub)
@@ -91,17 +101,24 @@ proc resolveModule*(name: string, config: Config, requiringPath: string): string
   return ""
 
 proc findRequires*(ast: Node): seq[string] =
-  ## Collect the module names of every top-level `require 'name'` statement.
-  ## `require` lowers to a call on the builtin `require` (see parser.nim), so we
-  ## look for `nkCall` nodes whose caller is the `require` identifier and whose
-  ## single argument is a string literal.
+  ## Collect the module names of every `require 'name'` call anywhere in the
+  ## tree, not only top-level statement position.  `require` lowers to a call
+  ## on the builtin `require` (see parser.nim); it may appear in expression
+  ## position (`local m = require 'foo'`), inside a function body, or inside a
+  ## branch that never executes -- the reference resolves it there too, so a
+  ## missing module must be detected regardless of where the call sits instead
+  ## of being silently lowered to nothing (which is what masked stdlib gaps:
+  ## the program ran as if the require had returned nil).
   if ast == nil:
     return
+  if ast.kind == nkCall and ast.children.len == 2 and
+     ast.children[1].kind == nkId and ast.children[1].str == "require" and
+     ast.children[0].kind == nkString:
+    result.add ast.children[0].str
   for c in ast.children:
-    if c.kind == nkCall and c.children.len == 2 and
-       c.children[1].kind == nkId and c.children[1].str == "require" and
-       c.children[0].kind == nkString:
-      result.add c.children[0].str
+    let sub = findRequires(c)
+    if sub.len > 0:
+      result &= sub
 
 proc compileUnit*(source: string, path: string, config: Config,
                    cache: var ModuleCache): CompileResult =
@@ -127,6 +144,12 @@ proc compileUnit*(source: string, path: string, config: Config,
       let depPath = resolveModule(modname, config, path)
       if depPath == "":
         result.diagnostics.add "require '" & modname & "': module not found"
+        # Abort this unit.  Without this the driver proceeds to `genC`, which
+        # re-resolves the require through `analyze` (whose `findRequires` is
+        # still top-level-only) and -- for a require in expression/nested
+        # position -- emits no diagnostic at all, lowering the call to nothing
+        # so the program builds and runs as if `require` had returned nil.
+        depFailed = true
         continue
       if cache.files.hasKey(depPath):
         continue  # already compiled (or currently being compiled)
@@ -158,6 +181,8 @@ proc compileUnit*(source: string, path: string, config: Config,
   let cfile = tdir / unitname & ".c"
   try:
     writeFile(cfile, cSource)
+    if config.verbose:
+      echo "generated " & cfile
   except OSError, IOError:
     result.diagnostics.add "nelua: cannot write '" & cfile & "': " & getCurrentExceptionMsg()
     result.success = false
@@ -185,26 +210,61 @@ proc compile*(source: string, path: string, config: Config = defaultConfig()): C
   let unitname = analyzer.computeUnitname(path)
   let tdir = tmpDir()
   let cfile = tdir / unitname & ".c"
-  let bin = tdir / unitname
+
+  # Output path: -o overrides the destination, otherwise a per-mode default
+  # under tmp/.  The oracle writes every artifact to its cache dir and only
+  # honours -o as the final artifact path; we do the same from our tmp/.
+  let outExt = outputExtension(config.outputKind)
+  let outPath = if config.output.len > 0: config.output
+                else: tdir / unitname & "." & outExt
 
   # The emitted TU only *declares* the runtime (struct nltype, nelua_print, ...);
   # their definitions live in `src/runtime.c`, which must be linked in or every
   # program fails to link.  Resolved at compile time so it is correct from any cwd.
   const runtimeC = currentSourcePath().splitFile().dir / "runtime.c"
-  var ccCmd = config.cc & " -o " & bin.quoteShell & " " & cfile.quoteShell & " " & runtimeC.quoteShell & " -lm"
+  var ccCmd: string
+  case config.outputKind:
+    of okBinary:
+      ccCmd = config.cc & " -o " & outPath.quoteShell & " " & cfile.quoteShell & " " & runtimeC.quoteShell & " -lm"
+    of okObject:
+      ccCmd = config.cc & " -c " & cfile.quoteShell & " -o " & outPath.quoteShell
+    of okAssembly:
+      ccCmd = config.cc & " -S " & cfile.quoteShell & " -o " & outPath.quoteShell
+    of okStaticLib:
+      let obj = tdir / unitname & ".o"
+      ccCmd = config.cc & " -c " & cfile.quoteShell & " -o " & obj.quoteShell
+    of okSharedLib:
+      ccCmd = config.cc & " -shared -fPIC -o " & outPath.quoteShell & " " & cfile.quoteShell
   if config.cflags.len > 0:
     ccCmd.add " " & config.cflags
-  if config.ldflags.len > 0:
+  # ldflags only make sense when linking (binary / shared lib); passing them
+  # to -c/-S is noise.
+  if config.ldflags.len > 0 and config.outputKind in {okBinary, okSharedLib}:
     ccCmd.add " " & config.ldflags
 
   let (ccOut, ccExit) = execCmdEx(ccCmd)
+  if config.verbose:
+    echo ccCmd
   result.exitCode = ccExit
   if ccExit != 0:
     result.diagnostics.add("C compile failed (cc=" & config.cc & ", exit=" & $ccExit & "):\n" & ccOut)
     return
 
-  if config.binary:
-    let (runOut, runExit) = execCmdEx(bin.quoteShell)
+  # Static library: archive the object we just compiled.
+  if config.outputKind == okStaticLib:
+    let obj = tdir / unitname & ".o"
+    let arCmd = "ar rcs " & outPath.quoteShell & " " & obj.quoteShell
+    if config.verbose:
+      echo arCmd
+    let (arOut, arExit) = execCmdEx(arCmd)
+    if arExit != 0:
+      result.diagnostics.add("ar failed (exit=" & $arExit & "):\n" & arOut)
+      result.exitCode = arExit
+      return
+
+  # Only a binary is executed; object / assembly / library are artifacts.
+  if config.outputKind == okBinary and config.binary:
+    let (runOut, runExit) = execCmdEx(outPath.quoteShell)
     result.output = runOut
     # The oracle reports 255 when the compiled program is killed by a signal
     # (error/panic/assert all abort via SIGABRT).  On POSIX the shell reports
