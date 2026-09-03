@@ -14,6 +14,14 @@ non-trivial claim was confirmed by compiling and running a throwaway probe
 > compiles to C and then to native code — so you get Lua ergonomics with C
 > performance and direct, ergonomic access to C functions and headers.
 
+> **Tree note (2026-09-03).** This document describes the **oracle**
+> (`/usr/bin/nelua`, 0.2.0-dev). The clean-room reimplementation is a separate
+> binary (`tmp/nelua`) and is documented in `NELU-2K.md`. Three trees were
+> taken into the repository at `f75601a`: `spec/` (the oracle's own test
+> suite, 16 files), `lib/` (the runtime stdlib, 44 `.nelua` files including
+> `lib/C/` and `lib/detail/`), and `lualib/nelua/` (the compiler's build-time
+> Lua source, 57 files, read-only reference -- do not port into `src/`).
+
 ---
 
 ## 1. First program and how to build

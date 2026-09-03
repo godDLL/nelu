@@ -69,8 +69,7 @@ Nothing here is speculative - each row was compiled and run through `tmp/nelua`.
 ### 1.3 Oracle-behavior surveys as Nelu design inputs
 
 A set of parked specs, labelled `-design`, that pin down what the oracle does so Nelu
-can deliberately diverge *from a known baseline* rather than by accident. All in `plan/`
-or `tmp/`:
+can deliberately diverge *from a known baseline* rather than by accident. All in `plan/`:
 
 | Topic | Doc | The Nelu decision it feeds |
 |---|---|---|
@@ -98,9 +97,12 @@ or `tmp/`:
   lowers to a file-scope `static` declared *before* the function definitions. Function-local
   capture is rejected at analysis, with the oracle's exact message
   (`attempt to access upvalue 'x', but closures are not supported`).
-- **Status.** Landed, integrated, committed `75f315e`. Verified: 5 closure probes MATCH the
-  oracle (exit 0); 4 upvalue probes fail at analysis (exit 1) with a byte-identical message.
-  See `plan/closures-upvalues-design.md`.
+- **Status.** Landed, integrated across `75f315e` (module-scope capture + upvalue
+  rejection) and `bab3eb3` (closure function-value fixes). Verified: **7 closure probes
+  MATCH the oracle** (exit 0); the remaining 8 are DIFFs -- 4 honest diagnostic-channel
+  DIFFs (our upvalue message has no line:col) and 4 deliberate permissive divergences
+  (forward references, `## local`, bare top-level `function`, `global` in fn). See
+  `plan/closures-upvalues-design.md`.
 
 ### 1.6 Pointer print spelling
 
@@ -112,20 +114,25 @@ or `tmp/`:
   cases MATCH byte-for-byte; every non-null case now emits the oracle's `0x...` format.
   See `plan/pointer-printing-design.md`.
 
-### 1.7 Session work (2026-08-30) -- uncommitted in the working tree
+### 1.7 Session work (2026-08-30) -- landed in `f75601a`
 
 Each row below was verified against a fresh `nim c -d:release --path:src -o:tmp/nelua_test
-src/main.nim` build of the live working tree, not taken on trust from the board.
+src/main.nim` build of the live working tree, not taken on trust from the board. These
+were uncommitted when this ledger was last written; they are now committed at
+`f75601a` ("Parity: cgen/analyzer fixes, --lint syntax-only, long-string strip; take
+spec/, lib/, lualib/ into the tree"), along with `69098c3`, `ed503c1`, `6a04582`,
+`bab3eb3`, `dd291fc` and `689a2f7`.
 
 - **Metamethod-dispatch family (M1-M4) -- cgen agent, `src/cgen.nim`.** A shared
   `genMetaCall` helper plus dispatch sites in the `#` operator, the `print()` arm,
   the call expression, and `[]` indexing. Verified: **M1 `__len` via `#` MATCHES**
   (`5` vs `5`) and **M2 `__tostring` via `print()` MATCHES** (`Vec` vs `Vec`).
-  Still open: **M3 `__call` via `r(...)`** prints `(null)` where the oracle prints
-  `17`; **M4 `__index` via `r[i]`** has the dispatch landed but its probe dies on
-  the `{data = a}` array-field-init mis-lowering, a separate documented finding.
-  The `genKeyIndex` key/base swap (children[0]=key, children[1]=base) also landed
-  here. This is the finding ranked 1 of 25 in `plan/devil-advocate-findings.md`
+  **M3 `__call` via `r(...)`** still prints `(null)` where the oracle prints `17`;
+  **M4 `__index` via `r[i]`** had its dispatch land here, and its probe's blocker
+  (the `{data = a}` array-field-init mis-lowering) is **now fixed** in `f75601a`
+  ("nested-record constructor array-field init"), so M4 is unblocked and should be
+  re-probed. The `genKeyIndex` key/base swap (children[0]=key, children[1]=base) also
+  landed here. This was the finding ranked 1 of 25 in `plan/devil-advocate-findings.md`
   CONSOLIDATED RANKING; it is now mostly closed and the ranking should be
   re-derived, not re-litigated.
 - **C1 partial fix -- `src/analyzer.nim`.** An `analyzeCall` `nkDotIndex` branch
@@ -158,11 +165,12 @@ src/main.nim` build of the live working tree, not taken on trust from the board.
 - **25 confirmed findings, three Devil's advocate runs (9 + 8 + 8).** All in
   `plan/devil-advocate-findings.md`, with a CONSOLIDATED RANKING treated as
   authoritative. The metamethod family (M1-M4) ranks 1 of 25 by stdlib-file
-  breadth; as noted above, M1 and M2 are now fixed in the tree.
-- **NASM investigation -- in flight, do not write it.** A research agent is
-  surveying `src/runtime.c`, `src/cgen.nim`, `src/cemitter.nim` and the
-  build/link path for concrete opportunities to move part of our machinery to
-  NASM. Report will land in `plan/nasm-opportunities.md`.
+  breadth; as noted above, M1, M2 and M4's blocker are now fixed in the tree.
+- **NASM investigation -- COMPLETED 2026-08-31.** Report at `plan/nasm-opportunities.md`:
+  partial NASM-ification is not a good next move (gcc 16.2.1 `-O2 -fno-plt -flto` beats
+  hand-written NASM on every measured path; NASM cannot drop the gcc dependency; the
+  real costs are C-emitter design issues in `cgen.nim`/`cbuiltins.lua`, not NASM-shaped;
+  compile step dominates runtime). Do not write it.
 
 ---
 
@@ -201,6 +209,12 @@ The bar is the same as `NELUA-200.md` section 0, mirrored:
   `plan/cmp.py`, `plan/regress.py`, `plan/examples_parity.py`, and
   `tmp/wwwcheck.py`. Nelu work must not regress these; re-run only when `src/`
   is quiescent.
+
+  **Current gates (last recorded, not re-run this session):** `plan/cmp.py` 39 MATCH /
+  1 DIFF (case [25] `integer?`, a permissive divergence); `tmp/wwwcheck.py` 90 PASS /
+  6 DIFF over 105 files (2 oracle-side unsupported, 2 `splice_embed`, 1 `www_math`,
+  1 `www_neg_for`); `plan/examples_parity.py` 2 MATCH / 5 DIFF / 3 SKIP; closures
+  probes 7 MATCH / 8 DIFF (4 diagnostic-channel, 4 permissive).
 
 ---
 

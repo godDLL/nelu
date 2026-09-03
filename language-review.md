@@ -806,11 +806,11 @@ into a single file. It produces declarations, then definitions, then a
   `src/cgen.nim:20-21`.
 - Lower multiple returns to small C structs.
 - Lower polymorphic/varargs functions to monomorphic C functions (one
-  specialization per call signature). **Not done in this build:** polymorphic
-  `auto` is not monomorphized; `AnalyzerResult` has no `specials` field
-  (`src/analyzer.nim:71-73` — only `root`, `ctx`), and `auto` params lower to
-  `any`/`void*` and currently emit the literal C `auto` keyword, which breaks
-  codegen. See the gap note in `src/cgen.nim:21-25`.
+  specialization per call signature). **Done in this build:** polymorphic
+  `auto` is monomorphized (D1, committed `40fca09`); `AnalyzerResult` has a
+  `specials` field (`src/analyzer.nim:71-73`), and `auto` params lower to a
+  concrete monomorphized type rather than `any`/`void*`. See
+  `plan/auto_oracle-behavior-design.md`.
 - Lower method calls, metamethod dispatch, and auto(ref/deref) for records/arrays.
 - Implement the GC runtime (or omit it when `nogc`).
 - Honor annotations: `<inline>`, `<cimport>` (declare/import C functions),
@@ -843,7 +843,7 @@ and its module map is one file per concern:
 > removed.
 
 **Verification oracles (both flags on `/usr/bin/nelua`):**
-- `--print-ast` — the untyped AST. The M1 acceptance bar; `tmp/cmp.py` normalizes
+- `--print-ast` — the untyped AST. The M1 acceptance bar; `plan/cmp.py` normalizes
   both dumps to a `(kind, scalar)` token stream and diffs.
   **`cmp.py` has a hard ceiling, verified: its mine-side tokenizer sets
   `kind = first whitespace token of every `nk`-prefixed line`, so `kind` is
@@ -912,17 +912,17 @@ racing another agent's file or the regression gate.
 
 ### 11.0b Nelu design docs and design discipline
 
-The parked oracle-behavior specs in `tmp/` are **Nelu design inputs**, not just probe
+The parked oracle-behavior specs in `plan/` are **Nelu design inputs**, not just probe
 outputs. They are labelled as such in the filename (`-design` suffix) and referenced
-here so they are not lost when `tmp/` is eventually reviewed and pruned:
+here so they are not lost when `plan/` is eventually reviewed and pruned:
 
-- `tmp/auto_oracle-behavior-design.md` — what `auto` means (monomorphization to a
+- `plan/auto_oracle-behavior-design.md` — what `auto` means (monomorphization to a
   concrete type, *not* `any`).
-- `tmp/auto_widening-behavior-design.md` — where `auto` flows and where it is rejected
+- `plan/auto_widening-behavior-design.md` — where `auto` flows and where it is rejected
   (e.g. `local x: auto; print(x)` is rejected; `print(id(5))` is accepted).
-- `tmp/table_oracle-behavior-design.md` — table semantics, and that the C backend
+- `plan/table_oracle-behavior-design.md` — table semantics, and that the C backend
   rejects tables outright (so C table support is beyond-oracle, not parity).
-- `tmp/exceptions_oracle-behavior-design.md` — the oracle has **no** structured
+- `plan/exceptions_oracle-behavior-design.md` — the oracle has **no** structured
   exception handling at all (`try`/`catch`/`throw`/`finally`/`raise`/`except`/
   `recover`/`perror` are all rejected). What exists is fatal panic primitives only:
   `error(msg?)`, `panic(msg?)` (C-backend only), `assert(v, msg?)`,
@@ -931,7 +931,7 @@ here so they are not lost when `tmp/` is eventually reviewed and pruned:
   **not** on `error()`/`panic()`, and the Lua backend cannot compile `defer`.
   The doc's own "parity = panic builtins + defer; beyond = try/catch" split is
   **superseded by §11.0c below** — see that policy note before scoping work.
-- `tmp/pattern_matching_oracle-behavior-design.md` — the oracle's only matching
+- `plan/pattern_matching_oracle-behavior-design.md` — the oracle's only matching
   construct is the C-like `switch`/`case`/`else` **statement** (not an
   expression). No `match`, no `case` outside `switch`, no `if`-expression, no
   guards, no destructuring; `record`/`union`/`enum` are not even keywords.
@@ -941,7 +941,7 @@ here so they are not lost when `tmp/` is eventually reviewed and pruned:
   `break`/`continue` bind to the enclosing loop. The doc's own "parity =
   switch/case/else; beyond = match/cond/patterns" split is **superseded by
   §11.0c below** — see that policy note before scoping work.
-- `tmp/oracle-any-behavior-design.md` — **the two backends disagree fundamentally
+- `plan/oracle-any-behavior-design.md` — **the two backends disagree fundamentally
   about `any`, and neither backend's type-value equality is a spec.** C backend
   **rejects `any` as a variable/parameter/return type** (`compiler deduced type
   'any' here, but it's not supported yet`); `any` *as a value* is a compile-time
@@ -953,19 +953,24 @@ here so they are not lost when `tmp/` is eventually reviewed and pruned:
   `any` is a plain identifier, not a keyword. **`any` cannot take a table
   literal** (`type 'any' cannot be initialized using an initializer list` on
   both backends) — a table *variable* works fine. Passing `nil` to an `any`
-  param is a compile error, but that is general, not `any`-specific. **Notable
-  for Nelu: our compiler currently accepts `any` and lowers it to `void*`**
-  (`cgen_types.nim:127`), producing broken C — a deliberate beyond-oracle design
-  that predates this survey and now has an oracle reference to check against.
-- `tmp/any-intended-design.md` — the **intended** `any`, per the docs
+  param is a compile error, but that is general, not `any`-specific. **Our
+  compiler's `any` handling has since changed twice:** Phase 1 (committed
+  `ab25f532`) deletes the broken `void*` lowering and emits the oracle's exact
+  rejection for deduced `any`, `any` table-literal initializers, `: any`
+  params, untyped params, and explicit `: any` returns; Phase 2 (Nelu, committed
+  `214102c`) implements the tagged runtime `any` described below. The
+  "accepts `any` and lowers it to `void*`, producing broken C" line in this
+  entry is superseded history — see `plan/any-implementation-design.md`.
+- `plan/any-intended-design.md` — the **intended** `any`, per the docs
   (`language-review.md` §11.1.2: "efficient tagged-representation `any` value"
   enabling porting real Lua code). Two-phase: **Phase 1** (easy, non-interfering)
   emits the oracle's exact rejection for deduced `any` and deletes the broken
   `void*` lowering; **Phase 2** (Nelu, additive) implements the tagged
-  representation with runtime dispatch. Tagged word + payload union, Lua coercion
-  rules, implicit in-conversion / explicit out-conversion. Open questions on
-  whether deduced `any` should flow into the dynamic type (recommended: yes) and
-  the tag set.
+  representation with runtime dispatch. Both phases are now landed (Phase 1
+  `ab25f532`, Phase 2 `214102c`), so this doc is a design record, not a to-do
+  list. Tagged word + payload union, Lua coercion rules, implicit
+  in-conversion / explicit out-conversion. Open questions on whether deduced
+  `any` should flow into the dynamic type (recommended: yes) and the tag set.
 
 ### 11.0c Scoping policy for §11 features (2026-08-29, user directive)
 
@@ -993,7 +998,7 @@ the constructs the oracle refused.
 
 **Sequencing:** compatibility (run existing programs, then multi-file/large/
 advanced) comes first; the additive-beyond work follows, and only once it can be
-verified against a working build. See `tmp/examples_parity.py` as the
+verified against a working build. See `plan/examples_parity.py` as the
 existing-program execution gate.
 
 **Design discipline.** Two principles govern how Nelu changes the compiler:
@@ -1022,19 +1027,37 @@ existing-program execution gate.
    `hashmap`.
 2. **Full `any` type with runtime type dispatch.** Support dynamic typing in
    the way Lua does, with an efficient tagged-representation `any` value and
-   minimal overhead. This enables porting real Lua code.
+   minimal overhead. This enables porting real Lua code. **Status: DONE, both
+   phases.** Phase 1 (oracle-parity rejection of deduced `any`, deletion of the
+   broken `void*` lowering) committed `ab25f532`; Phase 2 (Nelu tagged runtime
+   `any` with `nlany` + runtime dispatch) committed `214102c`. See
+   `plan/any-implementation-design.md` and `NELU-2K.md` 1.2/1.4.
 3. **Exceptions / `perror` with `try`/`catch`/`recover`.** A structured error
    handling mechanism (the FAQ says `error` may become an exception in the
    future). `recover` blocks, `try`, and guaranteed `__close` on error paths.
+   **Status: parity half landed** (fatal panic primitives `error`/`panic`/
+   `assert`/`check` + `defer` are parity with the oracle); the full
+   `try`/`catch`/`finally`/`recover` surface is **queued** (see
+   `NELU-2K.md` 2).
 4. **Closures everywhere (not just top scope).** Currently only top-scope
    functions close over static storage. Real closures (capturing heap-allocated
    upvalues, or via a GC) would make anonymous/nested functions fully useful.
+   **Status: partial.** Module-scope capture lowers to file-scope `static`s
+   and function-local capture is rejected with the oracle's exact message
+   (committed `75f315e` + `bab3eb3`); 7 of 15 closure probes MATCH the oracle.
+   Full heap-allocated upvalues is **queued** (see `NELU-2K.md` 2).
 5. **Generators / coroutines-as-first-class values.** A `yield`-based iterator
    protocol without the `coroutine` library's push/pop friction.
 6. **`match` expressions and pattern matching** on records, unions, and
-   `any` (Rust/Ocaml-flavored).
+   `any` (Rust/Ocaml-flavored). **Status: parity half landed** (the oracle's
+   `switch`/`case`/`else` statement is parity); `match`/`cond`/destructuring
+   patterns are **queued** (see `NELU-2K.md` 2).
 7. **Operator overloading via `__` metamethods for more operators** (e.g.
    indexing assignment `__newindex`, `__call`, `__unm` for more types).
+   **Status: partial.** M1 (`__len` via `#`), M2 (`__tostring` via `print()`)
+   and M4 (`__index` via `[]`, its array-field-init blocker fixed) are landed
+   and MATCH the oracle (committed `f75601a`); M3 (`__call` codegen) is
+   **queued**.
 8. **`constexpr`-style compile-time evaluation** of arbitrary functions (not
    just the preprocessor) — evaluate pure functions at compile time.
 9. **`@`-prefixed macro functions** that are syntactically lightweight and
@@ -1163,8 +1186,8 @@ are reference — but `tests/` doubles as the oracle's behavioral specification.
 They are the oracle's own test/example/spec trees (32 Nelua test files, plus the
 Lua spec under `spec/` and the `-g lua` stdlib under `lualib/nelua/`). We
 inherit them as reference and ship them; we do **not** run the oracle's test
-suite as our gate. Our gates are separate and curated: `tmp/cmp.py` (M1
-AST-diff floor, 40 inline cases), `tmp/regress.py` (M1 corpus + M2 typed-AST
+suite as our gate. Our gates are separate and curated: `plan/cmp.py` (M1
+AST-diff floor, 40 inline cases), `plan/regress.py` (M1 corpus + M2 typed-AST
 over our own 14-file `tmp/m2_corpus/`, with `.ref` snapshots taken from the
 live oracle and *not* derived from `tests/`).
 
@@ -1188,9 +1211,9 @@ The oracle runs 7 of them to deterministic output (brainfuck `Hello World!`,
 fibonacci `55 55 55 55`, helloworld `hello world`, matmul `-18.8963499125`,
 mersenne, gameoflife, record_inheretance); 2 are interactive loops killed by
 timeout (condots, snakesdl); 1 is illustrative (overview, oracle exits 1). This
-is the gate *above* `regress.py` — regress.py checks parse/analyze *shape*
+is the gate *above* `plan/regress.py` — regress.py checks parse/analyze *shape*
 (M1/M2), `examples/` checks that a real program actually *runs* and matches.
-Harness: `tmp/examples_parity.py` (rebuilds the compiler from `src/` whenever
+Harness: `plan/examples_parity.py` (rebuilds the compiler from `src/` whenever
 it is missing or stale, runs each example through the oracle and us, diffs
 stdout+exit, SKIPs the 3 non-runnable ones; exit 0 only when all runnable
 examples MATCH).

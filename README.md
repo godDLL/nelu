@@ -64,7 +64,7 @@ the bundled `lib/`.
 
 | Milestone | Scope | State |
 |-----------|-------|-------|
-| M1 | lexer + parser + AST | committed; gate floor `plan/cmp.py` 39 MATCH / 1 DIFF / 0 CRASH (case [25]; [31] fixed by the parser.nim `proc dump` nkPair change) |
+| M1 | lexer + parser + AST | committed; gate floor `plan/cmp.py` 39 MATCH / 1 DIFF / 0 CRASH (case [25] `integer?`, a permissive divergence; [31] fixed by the parser.nim `proc dump` nkPair change) |
 | M2 | type system, scope, symbols | committed; `plan/regress.py` M2 14/14 MATCH |
 | M3 | preprocessor | committed |
 | M4 | analyzer | committed |
@@ -73,20 +73,17 @@ the bundled `lib/`.
 | M7 | end-to-end compile + run | committed; the --print-ast driver no longer runs genC, so the three emitter SIGSEGVs (a.b:c(1), anonymous function, if/elseif) no longer abort AST dumps |
 | M8 | stdlib compilation | committed |
 | M9 | bootstrap | committed |
-| M10 | beyond-features sprints | committed; latest `82cd86b` (tetrix_rotation any-coercion codegen, quote-aware gate tokenizer). This cycle landed: tetrix_rotation, scope_shadow + stepped_for, locals-in-functions (unit-scope block locals), lshift/escapes/floor_div, type-as-value, nilptr-to-pointer, closures/upvalue scoping, pointer print spelling, any phase 2. See NOTE_backlog.md. |
+| M10 | beyond-features sprints | committed; latest `5f3d20e` ("Parity: CLI shell use, output modes, cstring spelling, inferBinary guard"). The `f75601a` cycle landed: cgen/analyzer fixes, `--lint` syntax-only, long-string strip; take spec/, lib/, lualib/ into the tree. Since `82cd86b` this cycle also landed: scope_shadow + stepped_for (`69098c3`), unit-scope block locals + Pair dump fix (`ed503c1`), splice Stage 4 steps 5-6 (`6a04582`), closure function-value fixes (`bab3eb3`), 11 oracle-behavior fixes (`dd291fc`, `689a2f7`), plus tetrix_rotation, locals-in-functions, lshift/escapes/floor_div, type-as-value, nilptr-to-pointer, closures/upvalue scoping, pointer print spelling, any phase 2. See NOTE_backlog.md. |
 
-Uncommitted in the working tree (deliberately kept separate from `82cd86b`):
-- `src/analyzer.nim` (+42) -- scope_shadow + stepped_for fix: nested `do` scope, block-scoped shadow folding, `until` condition analysis, negative-step loop direction. Verified: `scope_shadow.nelua` and `stepped_for.nelua` MATCH the oracle byte-for-byte.
-- `src/cgen.nim` -- locals-in-functions declaration drop, extended to unit-scope block locals: `genVarDecl` gains an `alreadyDeclared` flag so step 6 does not re-emit the `static` declaration step 3b already emitted for module-level VarDecls; block-scoped locals at unit scope fold to comptime (see the analyzer change) and so need no C variable of their own. Landed by the cgen agent; `tmp/probe_unitblock.nelua` now MATCHes the oracle byte-for-byte.
+The `src/` tree is clean at `5f3d20e`; everything below is committed, not uncommitted. (The docs-agent refresh of NELU-2K/NELUA-200/README/language-review sits uncommitted pending review.)
 
 Active work (live queue in `NOTE_backlog.md`):
-- **Locals-in-functions, extended to unit-scope block locals** - DONE (`src/cgen.nim`, uncommitted); `tmp/probe_unitblock.nelua` MATCHes the oracle.
-- **Splice Stage 4 steps 5-6** - in flight (`src/types.nim`, `src/preprocessor.nim`): Type boolean attributes, concept()/generalize() builtins.
-- **cmp.py [31] Pair dump gap** - DONE: characterised in `plan/pair-dump-gap-design.md`, fix landed in `src/parser.nim` (`proc dump` nkPair branch); cmp.py now 39 MATCH / 1 DIFF.
-- **scope_shadow + stepped_for** - DONE (uncommitted `src/analyzer.nim`); both www targets MATCH.
+- **Parser agent** (`src/parser.nim`, `src/preprocessor.nim`, `src/compile.nim`) - P1/N4/N5, the `tkLString` long-string strip, `#|name|#` splice, and the `##[=[ ... ]=]` block parse all landed at `f75601a`. Still queued: P3 `require` as an expression, P2 dotted field type, N2 byte literal `_b`, N1 `goto`/`::label:`, W3 `##` driver wiring, P4 generic instantiation.
+- **Fresh cgen agent** (`src/cgen.nim`, `src/analyzer.nim`, `src/runtime.c`, `src/types.nim`, `src/cgen_types.nim`) - M1/M2/M4 metamethod dispatch landed; this session's parity fixes (array `==`/`!=` element-wise, `#cstring` wraps in `nllen(nlstr(...))`, `#array` constant-fold, `$` -> `"deref"`, nested-record constructor array-field init, method-call arg indexing) landed at `f75601a`. The `5f3d20e` cycle landed: `cstring` now emits `char*` (was `const char*`, matching the oracle), CLI parity (no args prints usage + exit 0, `-V` verbose echoes the gcc line), output modes `-B`/`--object`, `-Y`/`--assembly`, `-A`/`--static-lib`, `-H`/`--shared-lib` with `-o` redirection, `--selftest` removed, and the `inferBinary` nil-operand guard in `sema.nim`. Still queued: M3 `__call` codegen, C5 `<forwarddecl>`, C3 `@union`, N3 `<comptime>` string, W1 float32 `.0`, W2 small-uint wrap, W4 `check()` location; plus the colon method-call `nkColonIndex` SIGSEGV (same C1 root cause).
+- **cmp.py [31] Pair dump gap** - DONE: fix landed in `src/parser.nim` (`proc dump` nkPair branch); cmp.py now 39 MATCH / 1 DIFF.
 - **tetrix_rotation** - DONE & committed `82cd86b`; www target MATCH.
-- **Closures / upvalues** - landed & committed 75f315e. 5 of 15 probes MATCH the oracle; function-local capture is rejected at analysis with the oracle's exact message.
-- **Pointer printing** - landed & committed 75f315e.
+- **Closures / upvalues** - landed across `75f315e` + `bab3eb3`. 7 of 15 probes MATCH the oracle; function-local capture is rejected at analysis with the oracle's exact message.
+- **Pointer printing** - landed & committed `75f315e`.
 - **Exceptions / pattern matching / any phase 2** - DONE, integrated & committed.
 
 ---
@@ -147,10 +144,10 @@ in-flight edits):
 
 | Owner | Files |
 |-------|-------|
-| scope_shadow + stepped_for (DONE, uncommitted) | `src/analyzer.nim` |
-| locals-in-functions -> unit-scope block locals (DONE, landed by cgen agent, uncommitted) | `src/cgen.nim` |
-| splice Stage 4 steps 5-6 (running) | `src/types.nim`, `src/preprocessor.nim` |
-| cmp.py [31] Pair dump gap (DONE, fix in `src/parser.nim`) | `plan/pair-dump-gap-design.md` |
+| scope_shadow + stepped_for (DONE, committed `69098c3`) | `src/analyzer.nim` |
+| locals-in-functions -> unit-scope block locals (DONE, committed `ed503c1`) | `src/cgen.nim` |
+| splice Stage 4 steps 5-6 (DONE, committed `6a04582`) | `src/types.nim`, `src/preprocessor.nim` |
+| cmp.py [31] Pair dump gap (DONE, committed `f75601a`) | `plan/pair-dump-gap-design.md` |
 | gate scripts (mine) | `plan/cmp.py`, `plan/regress.py`, `plan/examples_parity.py` |
 | exceptions (done, integrated) | exceptions feature files (see its design doc) |
 | `any` (done, integrated) | `src/cgen_types.nim`, `src/analyzer.nim` (any-rejection blocks) |
@@ -162,14 +159,11 @@ in-flight edits):
 
 **Concurrency: never launch more than 2 agents at once** (user cap: up to 4
 design/research, 2 impl). Files edited by multiple agents race - queue the
-rest and re-check ownership before launching. Right now `src/analyzer.nim` is
-owned by the scope_shadow/stepped_for agent (uncommitted); it was previously
-touched by `any`, type-as-value, closures/upvalues, module phase 1b and
-bounded-gaps (all committed). `src/cgen.nim` is owned by the locals-in-functions
-agent (uncommitted); it was previously touched by `any`, tetrix_rotation,
-lshift/escapes/floor_div, closures/upvalues, module phase 1b and bounded-gaps
-(all committed). Two impl agents editing the same file race -- check ownership
-before launching.
+rest and re-check ownership before launching. The table above is a snapshot
+of where each piece of work landed; the ownership it records is by commit,
+not by an in-flight agent. Always re-read `git status` and `NOTE_backlog.md`
+before starting a new impl agent, because the live queue moves as commits
+land and two impl agents editing the same file race.
 
 ---
 
@@ -216,7 +210,10 @@ false alarm. Re-run only when `src/` is quiescent.
   4. No `_` discard - `_` is an undeclared identifier.
   5. `os.execute` returns `true`/`false`, not an exit code.
   6. `any` is unsupported (deduced-`any` is a compile error); `facultative(T)`
-     cannot be used in return position.
+     cannot be used in return position. This is the *oracle* behaviour and is
+     parity with it. Beyond-oracle, Nelu adds a tagged runtime `any` (phase 2,
+     committed `214102c`) -- see `NELU-2K.md` 1.2/1.4 and
+     `plan/any-implementation-design.md`.
   7. C-keyword record fields break C emission - reject at parse time.
 
 ---
