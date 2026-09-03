@@ -271,19 +271,19 @@ proc compile*(source: string, path: string, config: Config = defaultConfig()): C
     else:
       tdir / unitname & "." & outExt
 
-  # The emitted TU only *declares* the runtime (struct nltype, nelua_print, ...);
-  # their definitions live in `src/runtime.c`, which must be linked in or every
-  # program fails to link.  Resolved at compile time so it is correct from any cwd.
-  const runtimeC = currentSourcePath().splitFile().dir / "runtime.c"
-  # Optimization tier: -M is the oracle's maximum-performance tier, -r is release,
-  # and the default keeps debug info.  Assembly gets -fverbose-asm -g0 for source
-  # annotations.
-  # OG Nelua runs the same C compiler flags on every tier: `-fwrapv` makes
-  # signed integer overflow wrap (two's complement) instead of being
-  # undefined behaviour, and `-fno-strict-aliasing` stops gcc from reordering
-  # accesses across type-punned stores (our `any` tagged unions and pointer
-  # casts rely on it).  Both are always-on in the oracle, so they are always-on
-  # here too; the tier only varies the optimisation level.
+  # The emitted TU is self-contained: every runtime helper it needs is emitted
+  # as a `static` definition in its preamble (see cgen.genPreamble), so there is
+  # no separate runtime.c to link and no `-lm` to pass.  The only math symbol
+  # the runtime ever touched was `pow`, wrapped per-TU by `nlpow`; plain gcc
+  # `pow` (via `nlpow`, the `^` operator) lives in libm.  Plain gcc does not
+  # auto-link libm, so a TU that uses `^` needs `-lm` to resolve `pow`; the
+  # oracle passes it for exactly this reason.  Non-math TUs need no libm at
+  # all, so emit `-lm` only when the preamble actually pulled in <math.h>.
+  # NOTE: the design doc claims `-lm` is a no-op here -- it is not.  Even the
+  # oracle's own generated C fails to link `pow` at the default `-g` tier
+  # without it; only release tiers fold `pow` away.  So `-lm` is kept, but
+  # conditionally, matching the oracle's behaviour and keeping non-math
+  # programs libm-free.
   let optFlags =
     if config.maxPerf:   " -fwrapv -fno-strict-aliasing -Ofast -march=native -DNDEBUG -fno-plt -flto=auto"
     elif config.release: " -fwrapv -fno-strict-aliasing -O2 -DNDEBUG"
@@ -292,7 +292,7 @@ proc compile*(source: string, path: string, config: Config = defaultConfig()): C
   var ccCmd: string
   case config.outputKind:
     of okBinary:
-      ccCmd = config.cc & optFlags & " -o " & outPath.quoteShell & " " & cfile.quoteShell & " " & runtimeC.quoteShell & " -lm"
+      ccCmd = config.cc & optFlags & " -o " & outPath.quoteShell & " " & cfile.quoteShell
     of okObject:
       ccCmd = config.cc & optFlags & " -c " & cfile.quoteShell & " -o " & outPath.quoteShell
     of okAssembly:
@@ -302,6 +302,11 @@ proc compile*(source: string, path: string, config: Config = defaultConfig()): C
       ccCmd = config.cc & optFlags & " -c " & cfile.quoteShell & " -o " & obj.quoteShell
     of okSharedLib:
       ccCmd = config.cc & optFlags & " -shared -fPIC -o " & outPath.quoteShell & " " & cfile.quoteShell
+  # `-lm` only when the TU actually references a math helper (the preamble
+  # emits `#include <math.h>` in that case).  Object / assembly / static-lib
+  # steps do not link, so `-lm` is harmless noise there.
+  if result.cSource.len > 0 and "#include <math.h>" in result.cSource:
+    ccCmd.add " -lm"
   if config.cflags.len > 0:
     ccCmd.add " " & config.cflags
   # ldflags only make sense when linking (binary / shared lib); passing them

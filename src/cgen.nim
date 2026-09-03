@@ -44,156 +44,17 @@ import config
 # `nlcheck_*` narrow-check macros.  It is prepended verbatim to the output.
 # ---------------------------------------------------------------------------
 
-const RUNTIME_C = """
-/* === nelua runtime (embedded by cgen.nim; src/runtime.c is a later milestone) === */
-#include <stdint.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdarg.h>
-#include <string.h>
-#include <stdio.h>
-#include <stdlib.h>
-
-typedef struct { const char* data; size_t size; } nlstring;
-typedef void* nilptr;
-typedef enum {
-  NLANY_NIL = 0,
-  NLANY_BOOL, NLANY_INT, NLANY_UINT, NLANY_NUM,
-  NLANY_STRING, NLANY_POINTER, NLANY_TABLE, NLANY_FUNC, NLANY_TYPE
-} nlany_tag;
-
-typedef struct {
-  nlany_tag tag;
-  union {
-    uint8_t b; int64_t i; uint64_t u; double n;
-    nlstring s; void* p;
-  } as;
-} nlany;
-struct nltype;
-typedef struct nltype nltype;
-
-/* Narrow-check macros.  Debug builds call runtime panic helpers; release
-   builds (NLNOCHECK defined) elide them entirely.  Each macro returns the
-   checked value so it can be used inline in an expression. */
-#ifndef NLNOCHECK
-void nlcheck_int_overflow(int64_t x, const char* what);
-void nlcheck_uint_overflow(uint64_t x, const char* what);
-void nlcheck_float_overflow(double x, const char* what);
-#define nlcheck_int(x)   (nlcheck_int_overflow((int64_t)(x), "int"), (int64_t)(x))
-#define nlcheck_uint(x)  (nlcheck_uint_overflow((uint64_t)(x), "uint"), (uint64_t)(x))
-#define nlcheck_float(x) (nlcheck_float_overflow((double)(x), "float"), (double)(x))
-#else
-#define nlcheck_int(x)   ((int64_t)(x))
-#define nlcheck_uint(x)  ((uint64_t)(x))
-#define nlcheck_float(x) ((double)(x))
-#endif
-
-/* Builtin / runtime helpers.  Definitions live in src/runtime.c; here only the
-   declarations so the emitted translation unit links.  C7: nelua_print is gone;
-   each typed helper takes exactly one argument, so the C generator can emit one
-   call per argument and the argument order is guaranteed correct. */
-void nelua_print_int64(int64_t v);
-void nelua_print_uint64(uint64_t v);
-void nelua_print_double(double d);
-void nelua_print_string(nlstring s);
-void nelua_print_bool(int b);
-void nelua_print_nil(void);
-void nelua_print_ptr(void* v);
-void nelua_print_sep(void);
-void nelua_print_newline(void);
-extern FILE* nl_out;
-nlstring nlstr(const char* s);
-nlstring nlstring_concat(nlstring a, nlstring b);
-void nlstring_free(nlstring* s);
-int64_t nlidiv(int64_t a, int64_t b);
-int64_t nlmod(int64_t a, int64_t b);
-double nlpow(double a, double b);
-int64_t nllen(nlstring s);
-void nlclose(void* p);
-extern const nltype nltype_of_int64;
-extern const nltype nltype_of_double;
-extern const nltype nltype_of_bool;
-extern const nltype nltype_of_string;
-
-/* `any` runtime helpers.  Definitions live in src/runtime.c; here only the
-   declarations so the emitted translation unit links.  The construction set
-   wraps a typed value into a tagged `nlany`; nelua_print_any dispatches print
-   by tag; the load/eq helpers are phase 2b plumbing, declared now so the
-   preamble stays stable when they are wired in. */
-nlany nlany_from_nil(void);
-nlany nlany_from_bool(uint8_t v);
-nlany nlany_from_int(int64_t v);
-nlany nlany_from_uint(uint64_t v);
-nlany nlany_from_num(double v);
-nlany nlany_from_string(nlstring v);
-nlany nlany_from_ptr(void* v);
-void nelua_print_any(nlany v);
-int64_t  nlany_load_int(nlany v);
-uint64_t nlany_load_uint(nlany v);
-double   nlany_load_num(nlany v);
-uint8_t  nlany_load_bool(nlany v);
-nlstring nlany_load_string(nlany v);
-void*    nlany_load_ptr(nlany v);
-bool nlany_eq(nlany a, nlany b);
-
-/* Exception / panic primitives.  Definitions are inline here (rather than in
-   src/runtime.c) so every emitted translation unit is self-contained; they are
-   `static` so dependency `.c` files that never use them produce no linkage
-   symbols and no unused-function warnings.  `error`/`assert`/`check` raise a
-   fatal "runtime error:" and abort; `panic` prints its message and aborts. */
-
-static inline void nelua_abort(void) {
-  abort();
-}
-
-static inline void nelua_error_line(nlstring msg) {
-  fwrite("runtime error: ", 1, sizeof("runtime error: ") - 1, stderr);
-  if (msg.size > 0 && msg.data) {
-    fwrite(msg.data, 1, msg.size, stderr);
-  }
-  fwrite("\n", 1, 1, stderr);
-  fflush(stderr);
-  nelua_abort();
-}
-
-static inline void nelua_panic_string(nlstring s) {
-  if (s.size > 0 && s.data) {
-    fwrite(s.data, 1, s.size, stderr);
-  }
-  fwrite("\n", 1, 1, stderr);
-  fflush(stderr);
-  nelua_abort();
-}
-
-static inline void nelua_assert_line(bool cond, nlstring msg) {
-  if (!cond) {
-    nelua_error_line(msg);
-  }
-}
-
-/* Float32 print.  The oracle formats a `float` with %.7g (its runtime's
-   print_float) and a `double` with %.14g (print_double, defined in
-   src/runtime.c).  A float32 value shown at double precision gains digits that
-   are not in the oracle's output, so route `float` through this inline helper
-   rather than through nelua_print_double.  Self-contained (static) so a TU
-   that never prints a float carries no linkage symbol. */
-static inline void nelua_print_float(float v) {
-  char buf[64];
-  snprintf(buf, sizeof buf, "%.7g", (double)v);
-  /* Mirror the suffix logic in nelua_print_double (src/runtime.c): %.7g drops
-     the trailing ".0" for integral values, so the oracle's print_float would
-     render `75.0` as `75`.  Re-append ".0" when the buffer has no decimal
-     point and no exponent -- except for the bare inf/nan words, which the
-     oracle prints as-is. */
-  if (strcmp(buf, "inf") != 0 && strcmp(buf, "-inf") != 0 &&
-      strcmp(buf, "nan") != 0 && strcmp(buf, "-nan") != 0 &&
-      strchr(buf, '.') == NULL && strchr(buf, 'e') == NULL &&
-      strchr(buf, 'E') == NULL) {
-    strcat(buf, ".0");
-  }
-  fputs(buf, nl_out);
-}
-"""
+# ---------------------------------------------------------------------------
+# Runtime preamble.
+#
+# Every emitted translation unit used to prepend a fixed `RUNTIME_C` block of
+# *declarations* (extern prototypes for nelua_print_*, nlany_*, nlstr, ...) and
+# linked `src/runtime.c` + `-lm` to resolve them.  This task inlines the runtime
+# per-TU instead: `genPreamble(refs)` emits a `static` DEFINITION of only the
+# helpers the TU actually calls (tracked in `Gen.refs` during codegen), so each
+# TU is self-contained and links against nothing outside itself.  `-lm` goes
+# with the runtime link: the only math symbol is `pow`, wrapped by `nlpow`.
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Generator state
@@ -204,6 +65,20 @@ type
     dkBlock
     dkFunc
     dkLoop
+  # Runtime helpers the generated translation unit actually calls.  The
+  # preamble emits a `static` DEFINITION (not a declaration) for each member
+  # present in this set, so every TU is self-contained and links against
+  # nothing outside itself.  Members not present are omitted entirely.
+  RuntimeHelper = enum
+    rhPrintInt, rhPrintUint, rhPrintDouble, rhPrintString, rhPrintBool,
+    rhPrintNil, rhPrintPtr, rhPrintSep, rhPrintNewline, rhPrintAny, rhPrintFloat,
+    rhAnyFromNil, rhAnyFromBool, rhAnyFromInt, rhAnyFromUint, rhAnyFromNum,
+    rhAnyFromString, rhAnyFromPtr,
+    rhAnyLoadInt, rhAnyLoadUint, rhAnyLoadNum, rhAnyLoadBool, rhAnyLoadString,
+    rhAnyLoadPtr, rhAnyEq,
+    rhStr, rhStrConcat, rhStrFree, rhIdiv, rhMod, rhPow, rhLen, rhClose,
+    rhNltypeInt, rhNltypeDouble, rhNltypeBool, rhNltypeString,
+    rhMath, rhCheckInt, rhCheckUint, rhCheckFloat
   Gen = object
     ctx: AnalyzerContext
     release*: bool
@@ -213,6 +88,7 @@ type
     inFunc: bool               ## true while emitting a function body (locals)
     currentReturns: seq[Type]  ## return types of the function being emitted
     mrCounter: int             ## unique temp name counter for multi-returns
+    refs: set[RuntimeHelper]   ## runtime helpers this TU actually calls
     unsupported: bool
     unsupportedMsg: string
     typeSeen: Table[int, bool]
@@ -224,6 +100,433 @@ type
 
 proc g(s: var Gen, text: string) =
   s.buf.add text
+
+proc use(s: var Gen, h: RuntimeHelper) =
+  ## Record that the generated TU calls runtime helper `h`.  The preamble is
+  ## built from this set (see genPreamble), so only helpers actually used are
+  ## emitted as `static` definitions -- a TU that references nothing emits no
+  ## helper definitions at all and still links.
+  s.refs.incl h
+
+proc notePrintHelper(s: var Gen, helper: string) =
+  ## Resolve a `nelua_print_*` codename to its RuntimeHelper and record it.
+  case helper
+  of "nelua_print_int64": s.use rhPrintInt
+  of "nelua_print_uint64": s.use rhPrintUint
+  of "nelua_print_double": s.use rhPrintDouble
+  of "nelua_print_string": s.use rhPrintString
+  of "nelua_print_bool": s.use rhPrintBool
+  of "nelua_print_nil": s.use rhPrintNil
+  of "nelua_print_ptr": s.use rhPrintPtr
+  of "nelua_print_sep": s.use rhPrintSep
+  of "nelua_print_newline": s.use rhPrintNewline
+  of "nelua_print_any": s.use rhPrintAny
+  of "nelua_print_float": s.use rhPrintFloat
+  else: discard
+
+# ---------------------------------------------------------------------------
+# Per-TU runtime preamble.
+#
+# Builds the C header block prepended to every emitted translation unit.  Only
+# the helpers in `refs` get a `static` DEFINITION here; everything else is
+# omitted, so a TU that references no runtime helper emits no helper
+# definitions at all and still links.  The exception/panic inline block
+# (nelua_abort, nelua_error_line, nelua_panic_string, nelua_assert_line) is
+# always emitted: it is fully self-contained (stdio/stdlib, always included).
+# Bodies are copied verbatim from src/runtime.c; only the linkage changed from
+# extern-linked to static-per-TU.
+# ---------------------------------------------------------------------------
+proc genPreamble(refs: set[RuntimeHelper]): string =
+  var s: string
+  s.add "/* === nelua runtime (per-TU inlined; no separate runtime.c link) === */\n"
+  s.add "#include <stdint.h>\n"
+  s.add "#include <stdbool.h>\n"
+  s.add "#include <stddef.h>\n"
+  s.add "#include <stdarg.h>\n"
+  s.add "#include <string.h>\n"
+  s.add "#include <stdio.h>\n"
+  s.add "#include <stdlib.h>\n"
+  if rhMath in refs:
+    s.add "#include <math.h>\n"
+  s.add "\n"
+  s.add "typedef struct { const char* data; size_t size; } nlstring;\n"
+  s.add "typedef void* nilptr;\n"
+  s.add "typedef enum {\n"
+  s.add "  NLANY_NIL = 0,\n"
+  s.add "  NLANY_BOOL, NLANY_INT, NLANY_UINT, NLANY_NUM,\n"
+  s.add "  NLANY_STRING, NLANY_POINTER, NLANY_TABLE, NLANY_FUNC, NLANY_TYPE\n"
+  s.add "} nlany_tag;\n"
+  s.add "typedef struct {\n"
+  s.add "  nlany_tag tag;\n"
+  s.add "  union {\n"
+  s.add "    uint8_t b; int64_t i; uint64_t u; double n;\n"
+  s.add "    nlstring s; void* p;\n"
+  s.add "  } as;\n"
+  s.add "} nlany;\n"
+  s.add "struct nltype;\n"
+  s.add "typedef struct nltype nltype;\n"
+  s.add "#ifndef NELUA_INLINE\n"
+  s.add "#define NELUA_INLINE inline\n"
+  s.add "#endif\n"
+  s.add "\n"
+  # Exception / panic primitives: always emitted, fully self-contained.
+  s.add "static inline void nelua_abort(void) {\n"
+  s.add "  abort();\n"
+  s.add "}\n"
+  s.add "\n"
+  s.add "static inline void nelua_error_line(nlstring msg) {\n"
+  s.add "  fwrite(\"runtime error: \", 1, sizeof(\"runtime error: \") - 1, stderr);\n"
+  s.add "  if (msg.size > 0 && msg.data) {\n"
+  s.add "    fwrite(msg.data, 1, msg.size, stderr);\n"
+  s.add "  }\n"
+  s.add "  fwrite(\"\\n\", 1, 1, stderr);\n"
+  s.add "  fflush(stderr);\n"
+  s.add "  nelua_abort();\n"
+  s.add "}\n"
+  s.add "\n"
+  s.add "static inline void nelua_panic_string(nlstring s) {\n"
+  s.add "  if (s.size > 0 && s.data) {\n"
+  s.add "    fwrite(s.data, 1, s.size, stderr);\n"
+  s.add "  }\n"
+  s.add "  fwrite(\"\\n\", 1, 1, stderr);\n"
+  s.add "  fflush(stderr);\n"
+  s.add "  nelua_abort();\n"
+  s.add "}\n"
+  s.add "\n"
+  s.add "static inline void nelua_assert_line(bool cond, nlstring msg) {\n"
+  s.add "  if (!cond) {\n"
+  s.add "    nelua_error_line(msg);\n"
+  s.add "  }\n"
+  s.add "}\n"
+  s.add "\n"
+  # Print family: emitted only when at least one print helper is referenced.
+  # nl_out is per-TU static (stdout is not a compile-time constant, so it is
+  # wired up by a constructor rather than a static initializer).
+  if {rhPrintInt, rhPrintUint, rhPrintDouble, rhPrintString, rhPrintBool,
+      rhPrintNil, rhPrintPtr, rhPrintSep, rhPrintNewline, rhPrintAny,
+      rhPrintFloat} * refs != {}:
+    s.add "static FILE* nl_out;\n"
+    s.add "static void nl_init_out(void) __attribute__((constructor));\n"
+    s.add "static void nl_init_out(void) { nl_out = stdout; }\n"
+    s.add "\n"
+    if rhPrintFloat in refs:
+      s.add "static inline void nelua_print_float(float v) {\n"
+      s.add "  char buf[64];\n"
+      s.add "  snprintf(buf, sizeof buf, \"%.7g\", (double)v);\n"
+      s.add "  if (strcmp(buf, \"inf\") != 0 && strcmp(buf, \"-inf\") != 0 &&\n"
+      s.add "      strcmp(buf, \"nan\") != 0 && strcmp(buf, \"-nan\") != 0 &&\n"
+      s.add "      strchr(buf, '.') == NULL && strchr(buf, 'e') == NULL &&\n"
+      s.add "      strchr(buf, 'E') == NULL) {\n"
+      s.add "    strcat(buf, \".0\");\n"
+      s.add "  }\n"
+      s.add "  fputs(buf, nl_out);\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhPrintInt in refs or rhPrintAny in refs:
+      s.add "static void nelua_print_int64(int64_t v) {\n"
+      s.add "  fprintf(nl_out, \"%lld\", (long long)v);\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhPrintUint in refs or rhPrintAny in refs:
+      s.add "static void nelua_print_uint64(uint64_t v) {\n"
+      s.add "  fprintf(nl_out, \"%llu\", (long long)v);\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhPrintDouble in refs or rhPrintAny in refs:
+      s.add "static void nelua_print_double(double d) {\n"
+      s.add "  char buf[64];\n"
+      s.add "  snprintf(buf, sizeof buf, \"%.14g\", d);\n"
+      s.add "  if (strcmp(buf, \"inf\") != 0 && strcmp(buf, \"-inf\") != 0 &&\n"
+      s.add "      strcmp(buf, \"nan\") != 0 && strcmp(buf, \"-nan\") != 0 &&\n"
+      s.add "      strchr(buf, '.') == NULL && strchr(buf, 'e') == NULL &&\n"
+      s.add "      strchr(buf, 'E') == NULL) {\n"
+      s.add "    strcat(buf, \".0\");\n"
+      s.add "  }\n"
+      s.add "  fputs(buf, nl_out);\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhPrintString in refs or rhPrintAny in refs:
+      s.add "static void nelua_print_string(nlstring s) {\n"
+      s.add "  if (s.data != NULL && s.size > 0) {\n"
+      s.add "    fwrite(s.data, 1, s.size, nl_out);\n"
+      s.add "  }\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhPrintBool in refs or rhPrintAny in refs:
+      s.add "static void nelua_print_bool(int b) {\n"
+      s.add "  fputs(b ? \"true\" : \"false\", nl_out);\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhPrintNil in refs or rhPrintAny in refs:
+      s.add "static void nelua_print_nil(void) {\n"
+      s.add "  fputs(\"(null)\", nl_out);\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhPrintPtr in refs:
+      s.add "static void nelua_print_ptr(void* v) {\n"
+      s.add "  if (v == NULL) {\n"
+      s.add "    fputs(\"(null)\", nl_out);\n"
+      s.add "  } else {\n"
+      s.add "    fprintf(nl_out, \"%p\", v);\n"
+      s.add "  }\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhPrintSep in refs:
+      s.add "static void nelua_print_sep(void) {\n"
+      s.add "  fputc('\\t', nl_out);\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhPrintNewline in refs:
+      s.add "static void nelua_print_newline(void) {\n"
+      s.add "  fputc('\\n', nl_out);\n"
+      s.add "  fflush(nl_out);\n"
+      s.add "}\n"
+      s.add "\n"
+  # `any` helpers.
+  if {rhAnyFromNil, rhAnyFromBool, rhAnyFromInt, rhAnyFromUint, rhAnyFromNum,
+      rhAnyFromString, rhAnyFromPtr, rhAnyLoadInt, rhAnyLoadUint, rhAnyLoadNum,
+      rhAnyLoadBool, rhAnyLoadString, rhAnyLoadPtr, rhAnyEq, rhPrintAny} * refs != {}:
+    if rhAnyFromNil in refs:
+      s.add "static nlany nlany_from_nil(void) {\n"
+      s.add "  nlany r;\n"
+      s.add "  r.tag = NLANY_NIL;\n"
+      s.add "  r.as.i = 0;\n"
+      s.add "  return r;\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyFromBool in refs:
+      s.add "static nlany nlany_from_bool(uint8_t v) {\n"
+      s.add "  nlany r;\n"
+      s.add "  r.tag = NLANY_BOOL;\n"
+      s.add "  r.as.b = v;\n"
+      s.add "  return r;\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyFromInt in refs:
+      s.add "static nlany nlany_from_int(int64_t v) {\n"
+      s.add "  nlany r;\n"
+      s.add "  r.tag = NLANY_INT;\n"
+      s.add "  r.as.i = v;\n"
+      s.add "  return r;\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyFromUint in refs:
+      s.add "static nlany nlany_from_uint(uint64_t v) {\n"
+      s.add "  nlany r;\n"
+      s.add "  r.tag = NLANY_UINT;\n"
+      s.add "  r.as.u = v;\n"
+      s.add "  return r;\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyFromNum in refs:
+      s.add "static nlany nlany_from_num(double v) {\n"
+      s.add "  nlany r;\n"
+      s.add "  r.tag = NLANY_NUM;\n"
+      s.add "  r.as.n = v;\n"
+      s.add "  return r;\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyFromString in refs:
+      s.add "static nlany nlany_from_string(nlstring v) {\n"
+      s.add "  nlany r;\n"
+      s.add "  r.tag = NLANY_STRING;\n"
+      s.add "  r.as.s = v;\n"
+      s.add "  return r;\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyFromPtr in refs:
+      s.add "static nlany nlany_from_ptr(void* v) {\n"
+      s.add "  nlany r;\n"
+      s.add "  r.tag = (v == NULL) ? NLANY_NIL : NLANY_POINTER;\n"
+      s.add "  r.as.p = v;\n"
+      s.add "  return r;\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhPrintAny in refs:
+      s.add "static void nelua_print_any(nlany v) {\n"
+      s.add "  switch (v.tag) {\n"
+      s.add "    case NLANY_NIL:    nelua_print_nil(); break;\n"
+      s.add "    case NLANY_BOOL:   nelua_print_bool(v.as.b); break;\n"
+      s.add "    case NLANY_INT:    nelua_print_int64(v.as.i); break;\n"
+      s.add "    case NLANY_UINT:   nelua_print_uint64(v.as.u); break;\n"
+      s.add "    case NLANY_NUM:    nelua_print_double(v.as.n); break;\n"
+      s.add "    case NLANY_STRING: nelua_print_string(v.as.s); break;\n"
+      s.add "    default:           nelua_print_nil(); break;\n"
+      s.add "  }\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyLoadInt in refs:
+      s.add "static int64_t nlany_load_int(nlany v) {\n"
+      s.add "  switch (v.tag) {\n"
+      s.add "    case NLANY_INT:  return v.as.i;\n"
+      s.add "    case NLANY_UINT: return (int64_t)v.as.u;\n"
+      s.add "    case NLANY_BOOL: return v.as.b;\n"
+      s.add "    case NLANY_NUM:  return (int64_t)v.as.n;\n"
+      s.add "    default:         return 0;\n"
+      s.add "  }\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyLoadUint in refs:
+      s.add "static uint64_t nlany_load_uint(nlany v) {\n"
+      s.add "  switch (v.tag) {\n"
+      s.add "    case NLANY_UINT: return v.as.u;\n"
+      s.add "    case NLANY_INT:  return (uint64_t)v.as.i;\n"
+      s.add "    case NLANY_BOOL: return v.as.b;\n"
+      s.add "    case NLANY_NUM:  return (uint64_t)v.as.n;\n"
+      s.add "    default:         return 0;\n"
+      s.add "  }\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyLoadNum in refs:
+      s.add "static double nlany_load_num(nlany v) {\n"
+      s.add "  switch (v.tag) {\n"
+      s.add "    case NLANY_NUM:  return v.as.n;\n"
+      s.add "    case NLANY_INT:  return (double)v.as.i;\n"
+      s.add "    case NLANY_UINT: return (double)v.as.u;\n"
+      s.add "    case NLANY_BOOL: return (double)v.as.b;\n"
+      s.add "    default:         return 0.0;\n"
+      s.add "  }\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyLoadBool in refs:
+      s.add "static uint8_t nlany_load_bool(nlany v) {\n"
+      s.add "  switch (v.tag) {\n"
+      s.add "    case NLANY_BOOL: return v.as.b;\n"
+      s.add "    case NLANY_INT:  return v.as.i != 0;\n"
+      s.add "    case NLANY_UINT: return v.as.u != 0;\n"
+      s.add "    case NLANY_NUM:  return v.as.n != 0.0;\n"
+      s.add "    default:         return 0;\n"
+      s.add "  }\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyLoadString in refs:
+      s.add "static nlstring nlany_load_string(nlany v) {\n"
+      s.add "  if (v.tag == NLANY_STRING) return v.as.s;\n"
+      s.add "  nlstring empty; empty.data = NULL; empty.size = 0; return empty;\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyLoadPtr in refs:
+      s.add "static void* nlany_load_ptr(nlany v) {\n"
+      s.add "  if (v.tag == NLANY_POINTER) return v.as.p;\n"
+      s.add "  return NULL;\n"
+      s.add "}\n"
+      s.add "\n"
+    if rhAnyEq in refs:
+      s.add "static bool nlany_eq(nlany a, nlany b) {\n"
+      s.add "  if (a.tag != b.tag) return false;\n"
+      s.add "  switch (a.tag) {\n"
+      s.add "    case NLANY_NIL:    return true;\n"
+      s.add "    case NLANY_BOOL:   return a.as.b == b.as.b;\n"
+      s.add "    case NLANY_INT:    return a.as.i == b.as.i;\n"
+      s.add "    case NLANY_UINT:   return a.as.u == b.as.u;\n"
+      s.add "    case NLANY_NUM:    return a.as.n == b.as.n;\n"
+      s.add "    case NLANY_STRING: return a.as.s.data == b.as.s.data &&\n"
+      s.add "                         a.as.s.size == b.as.s.size;\n"
+      s.add "    case NLANY_POINTER: return a.as.p == b.as.p;\n"
+      s.add "    default:           return false;\n"
+      s.add "  }\n"
+      s.add "}\n"
+      s.add "\n"
+  # String helpers.
+  if rhStr in refs:
+    s.add "static nlstring nlstr(const char* s) {\n"
+    s.add "  nlstring r;\n"
+    s.add "  r.data = s;\n"
+    s.add "  r.size = s ? strlen(s) : 0;\n"
+    s.add "  return r;\n"
+    s.add "}\n"
+    s.add "\n"
+  if rhStrConcat in refs:
+    s.add "static nlstring nlstring_concat(nlstring a, nlstring b) {\n"
+    s.add "  nlstring r;\n"
+    s.add "  r.size = a.size + b.size;\n"
+    s.add "  r.data = (const char*)malloc(r.size ? r.size : 1);\n"
+    s.add "  if (r.data) {\n"
+    s.add "    if (a.size) memcpy((void*)r.data, a.data, a.size);\n"
+    s.add "    if (b.size) memcpy((void*)r.data + a.size, b.data, b.size);\n"
+    s.add "  } else {\n"
+    s.add "    r.data = NULL;\n"
+    s.add "    r.size = 0;\n"
+    s.add "  }\n"
+    s.add "  return r;\n"
+    s.add "}\n"
+    s.add "\n"
+  if rhStrFree in refs:
+    s.add "static void nlstring_free(nlstring* s) {\n"
+    s.add "  if (s) {\n"
+    s.add "    free((void*)s->data);\n"
+    s.add "    s->data = NULL;\n"
+    s.add "    s->size = 0;\n"
+    s.add "  }\n"
+    s.add "}\n"
+    s.add "\n"
+  if rhLen in refs:
+    s.add "static int64_t nllen(nlstring s) {\n"
+    s.add "  return (int64_t)s.size;\n"
+    s.add "}\n"
+    s.add "\n"
+  if rhIdiv in refs:
+    s.add "static int64_t nlidiv(int64_t a, int64_t b) {\n"
+    s.add "  if (b == 0) return 0;\n"
+    s.add "  int64_t q = a / b;\n"
+    s.add "  int64_t r = a % b;\n"
+    s.add "  if (r != 0 && ((a < 0) != (b < 0))) q -= 1;\n"
+    s.add "  return q;\n"
+    s.add "}\n"
+    s.add "\n"
+  if rhMod in refs:
+    s.add "static int64_t nlmod(int64_t a, int64_t b) {\n"
+    s.add "  if (b == 0) return 0;\n"
+    s.add "  int64_t r = a % b;\n"
+    s.add "  if (r != 0 && ((a < 0) != (b < 0))) r += b;\n"
+    s.add "  return r;\n"
+    s.add "}\n"
+    s.add "\n"
+  if rhPow in refs:
+    s.add "static NELUA_INLINE double nlpow(double a, double b) {\n"
+    s.add "  return pow(a, b);\n"
+    s.add "}\n"
+    s.add "\n"
+  if rhClose in refs:
+    s.add "static void nlclose(void* p) {\n"
+    s.add "  free(p);\n"
+    s.add "}\n"
+    s.add "\n"
+  # Builtin type descriptors (vestigial; nothing references them today, so this
+  # block is never emitted -- kept for completeness if a future codegen path
+  # takes a value of type `type`).
+  if {rhNltypeInt, rhNltypeDouble, rhNltypeBool, rhNltypeString} * refs != {}:
+    if rhNltypeInt in refs:
+      s.add "static const struct nltype nltype_of_int64 = { \"int64\", sizeof(int64_t), _Alignof(int64_t), NULL };\n"
+    if rhNltypeDouble in refs:
+      s.add "static const struct nltype nltype_of_double = { \"double\", sizeof(double), _Alignof(double), NULL };\n"
+    if rhNltypeBool in refs:
+      s.add "static const struct nltype nltype_of_bool = { \"bool\", sizeof(uint8_t), _Alignof(uint8_t), NULL };\n"
+    if rhNltypeString in refs:
+      s.add "static const struct nltype nltype_of_string = { \"string\", sizeof(nlstring), _Alignof(nlstring), NULL };\n"
+    s.add "\n"
+  # Narrow-check macros + overflow helpers.  When a check helper is referenced
+  # the macros call the (static, per-TU) overflow helpers; otherwise the
+  # macros elide to a bare cast and reference no helper at all.
+  if {rhCheckInt, rhCheckUint, rhCheckFloat} * refs != {}:
+    s.add "static void nlcheck_int_overflow(int64_t x, const char* what) {\n"
+    s.add "  (void)x; (void)what;\n"
+    s.add "}\n"
+    s.add "static void nlcheck_uint_overflow(uint64_t x, const char* what) {\n"
+    s.add "  (void)x; (void)what;\n"
+    s.add "}\n"
+    s.add "static void nlcheck_float_overflow(double x, const char* what) {\n"
+    s.add "  (void)x; (void)what;\n"
+    s.add "}\n"
+    s.add "#define nlcheck_int(x)   (nlcheck_int_overflow((int64_t)(x), \"int\"), (int64_t)(x))\n"
+    s.add "#define nlcheck_uint(x)  (nlcheck_uint_overflow((uint64_t)(x), \"uint\"), (uint64_t)(x))\n"
+    s.add "#define nlcheck_float(x) (nlcheck_float_overflow((double)(x), \"float\"), (double)(x))\n"
+  else:
+    s.add "#define nlcheck_int(x)   ((int64_t)(x))\n"
+    s.add "#define nlcheck_uint(x)  ((uint64_t)(x))\n"
+    s.add "#define nlcheck_float(x) ((double)(x))\n"
+  s.add "\n"
+  return s
 
 proc line(s: var Gen, text: string) =
   s.buf.add "  ".repeat(s.indent) & text & "\n"
@@ -441,8 +744,10 @@ proc coerce(s: var Gen, expr: string, fromT: Type, toT: Type): string =
     if conv.check:
       if not s.nochecks:
         if fromT.isIntegral and toT.isIntegral:
+          s.use rhCheckInt
           return "nlcheck_int(" & cCast(toT, expr) & ")"
         elif fromT.isFloat or toT.isFloat:
+          s.use rhCheckFloat
           return "nlcheck_float(" & cCast(toT, expr) & ")"
         else:
           return cCast(toT, expr)
@@ -457,31 +762,43 @@ proc coerce(s: var Gen, expr: string, fromT: Type, toT: Type): string =
   of ckAnyStore:
     # T -> any: wrap the typed expression in the matching tagged-store helper.
     if fromT.isNiltype or fromT.isNilptr:
+      s.use rhAnyFromNil
       return "nlany_from_nil()"
     if fromT.isBoolean:
+      s.use rhAnyFromBool
       return "nlany_from_bool(" & expr & ")"
     if fromT.isStringy:
+      s.use rhAnyFromString
       return "nlany_from_string(" & expr & ")"
     if fromT.isIntegral:
+      s.use (if fromT.isUnsigned: rhAnyFromUint else: rhAnyFromInt)
       return (if fromT.isUnsigned: "nlany_from_uint(" else: "nlany_from_int(") & expr & ")"
     if fromT.isFloat:
+      s.use rhAnyFromNum
       return "nlany_from_num(" & expr & ")"
     if fromT.isPointer or fromT.isFunction:
+      s.use rhAnyFromPtr
       return "nlany_from_ptr(" & expr & ")"
     # record / table value -> any: store its address (a record value has no
     # single address until it is on the stack; the sources here are lvalues --
     # a variable, a field, or a compound literal -- so address-of is valid).
+    s.use rhAnyFromPtr
     return "nlany_from_ptr((void*)(&(" & expr & ")))"
   of ckAnyLoad:
     # any -> T: extract the payload with a runtime tag check.
     if toT.isStringy:
+      s.use rhAnyLoadString
       return "nlany_load_string(" & expr & ")"
     if toT.isBoolean:
+      s.use rhAnyLoadBool
       return "nlany_load_bool(" & expr & ")"
     if toT.isIntegral:
+      s.use (if toT.isUnsigned: rhAnyLoadUint else: rhAnyLoadInt)
       return (if toT.isUnsigned: "nlany_load_uint(" else: "nlany_load_int(") & expr & ")"
     if toT.isFloat:
+      s.use rhAnyLoadNum
       return "nlany_load_num(" & expr & ")"
+    s.use rhAnyLoadPtr
     return "nlany_load_ptr(" & expr & ")"   # phase 2b placeholder
 
 proc realType(s: var Gen, node: Node): Type =
@@ -557,6 +874,7 @@ proc genExpr(s: var Gen, node: Node): string =
     let t = if a != nil: a.typ else: nil
     return cNumberLit(t, node.str)
   of nkString:
+    s.use rhStr
     return "nlstr(" & cStringLit(stripStr(node.str)) & ")"
   of nkBoolean:
     return cBoolLit(node.boolVal)
@@ -586,6 +904,7 @@ proc genExpr(s: var Gen, node: Node): string =
       # lowers to `nlstr("1.0")` instead of leaking the bare text into the C
       # output (which turned `print(_VERSION)` into `nelua_print_string(1.0)`).
       if a.typ != nil and a.typ.kind in {tkString, tkCstring}:
+        s.use rhStr
         return "nlstr(" & cStringLit(a.value) & ")"
       return a.value
     return cn
@@ -642,6 +961,7 @@ proc genBinaryOp(s: var Gen, node: Node): string =
   if na != nil and na.comptime and na.value != "" and not (node.str in @["//", "%"]):
     let nt = na.typ
     if nt != nil and nt.isStringy:
+      s.use rhStr
       return "nlstr(" & cStringLit(na.value) & ")"
     return na.value
   let lstr0 = s.genExpr(lhs)
@@ -652,15 +972,26 @@ proc genBinaryOp(s: var Gen, node: Node): string =
   let stringy = (lt != nil and lt.isStringy) and (rt != nil and rt.isStringy)
   case node.str
   of "+":
-    if stringy: return "nlstring_concat(" & lstr & ", " & rstr & ")"
+    if stringy:
+      s.use rhStrConcat
+      return "nlstring_concat(" & lstr & ", " & rstr & ")"
     return "(" & lstr & " + " & rstr & ")"
   of "-": return "(" & lstr & " - " & rstr & ")"
   of "*": return "(" & lstr & " * " & rstr & ")"
   of "/": return "(" & lstr & " / " & rstr & ")"
-  of "//": return "nlidiv(" & lstr & ", " & rstr & ")"
-  of "%": return "nlmod(" & lstr & ", " & rstr & ")"
-  of "^": return "nlpow(" & lstr & ", " & rstr & ")"
-  of "..": return "nlstring_concat(" & lstr & ", " & rstr & ")"
+  of "//":
+    s.use rhIdiv
+    return "nlidiv(" & lstr & ", " & rstr & ")"
+  of "%":
+    s.use rhMod
+    return "nlmod(" & lstr & ", " & rstr & ")"
+  of "^":
+    s.use rhPow
+    s.use rhMath
+    return "nlpow(" & lstr & ", " & rstr & ")"
+  of "..":
+    s.use rhStrConcat
+    return "nlstring_concat(" & lstr & ", " & rstr & ")"
   of "<<": return "(" & lstr & " << " & rstr & ")"
   of ">>": return "(" & lstr & " >> " & rstr & ")"
   of "&": return "(" & lstr & " & " & rstr & ")"    ## band
@@ -704,7 +1035,10 @@ proc genUnaryOp(s: var Gen, node: Node): string =
   of "-": return "(-" & rstr & ")"
   of "#":
     if rt != nil and rt.kind == tkString: return "(" & rstr & ".size)"
-    if rt != nil and rt.kind == tkCstring: return "nllen(nlstr(" & rstr & "))"
+    if rt != nil and rt.kind == tkCstring:
+      s.use rhLen
+      s.use rhStr
+      return "nllen(nlstr(" & rstr & "))"
     if rt != nil and rt.kind == tkArray:
       ## `#array` on a bounded array is a compile-time constant (the declared
       ## element count); there is no runtime `nlarrlen` symbol, so fold it.
@@ -714,6 +1048,7 @@ proc genUnaryOp(s: var Gen, node: Node): string =
     # the string-length helper (which expects nlstring and rejects records).
     if rt != nil and rt.kind == tkRecord and rt.methods.hasKey("__len"):
       return s.genMetaCall(rhs, "__len", @[])
+    s.use rhLen
     return "nllen(" & rstr & ")"
   of "not": return "(!" & rstr & ")"
   of "~": return "(~" & rstr & ")"     ## bnot
@@ -763,13 +1098,15 @@ proc genCall(s: var Gen, node: Node): string =
     let cn = if ca != nil and ca.codename != "": ca.codename else: cIdent(caller.str)
     case cn
     of "nelua_error":
-      let msg = if args.len > 0: s.genExpr(args[0]) else: "nlstr(\"error!\")"
+      let msg = if args.len > 0: s.genExpr(args[0]) else:
+        s.use rhStr; "nlstr(\"error!\")"
       return "nelua_error_line(" & msg & ")"
     of "nelua_panic":
       let msg = if args.len > 0: s.genExpr(args[0]) else: "((nlstring){NULL, 0})"
       return "nelua_panic_string(" & msg & ")"
     of "nelua_assert":
       if args.len == 0:
+        s.use rhStr
         return "nelua_assert_line(false, nlstr(\"assertion failed!\"))"
       let condArg = args[0]
       let cond = s.genExpr(condArg)
@@ -780,17 +1117,20 @@ proc genCall(s: var Gen, node: Node): string =
       # strings and does the wrong thing for integers).
       let condType = s.ctx.attrOf.getOrDefault(condArg).typ
       let condStr = if condType != nil and condType.kind != tkBoolean: "true" else: cond
-      let msg = if args.len > 1: s.genExpr(args[1]) else: "nlstr(\"assertion failed!\")"
+      let msg = if args.len > 1: s.genExpr(args[1]) else:
+        s.use rhStr; "nlstr(\"assertion failed!\")"
       return "nelua_assert_line(" & condStr & ", " & msg & ")"
     of "nelua_check":
       if s.nochecks: return ""
       if args.len == 0:
+        s.use rhStr
         return "nelua_assert_line(false, nlstr(\"assertion failed!\"))"
       let condArg = args[0]
       let cond = s.genExpr(condArg)
       let condType = s.ctx.attrOf.getOrDefault(condArg).typ
       let condStr = if condType != nil and condType.kind != tkBoolean: "true" else: cond
-      let msg = if args.len > 1: s.genExpr(args[1]) else: "nlstr(\"assertion failed!\")"
+      let msg = if args.len > 1: s.genExpr(args[1]) else:
+        s.use rhStr; "nlstr(\"assertion failed!\")"
       return "nelua_assert_line(" & condStr & ", " & msg & ")"
   var calleeType: Type = nil
   if ca != nil and ca.typ != nil and ca.typ.kind == tkFunction:
@@ -937,9 +1277,15 @@ proc genCall(s: var Gen, node: Node): string =
             else:
               helper = "nelua_print_nil"; passArg = false
           else: helper = "nelua_print_nil"; passArg = false
+          if ht.kind == tkCstring:
+            s.use rhStr
+        s.notePrintHelper(helper)
         let call = if passArg: helper & "(" & argStr & ")" else: helper & "()"
-        if i > 0: lines.add "nelua_print_sep(); " & call & ";"
+        if i > 0:
+          s.use rhPrintSep
+          lines.add "nelua_print_sep(); " & call & ";"
         else: lines.add call & ";"
+      s.use rhPrintNewline
       if lines.len == 0:
         return "nelua_print_newline()"
       lines.add "nelua_print_newline()"
@@ -1896,9 +2242,8 @@ proc genC*(source: string, path: string, release = false, nochecks = false,
       if not hasAutoParam(if sa != nil: sa.typ else: nil):
         funcEntries.add (spec, i)
 
-  # 1. includes / runtime preamble
-  s.g(RUNTIME_C)
-  s.line ""
+  # 1. includes / runtime preamble: emitted at the END from Gen.refs (see
+  # genPreamble), after every helper-usage site has recorded what this TU calls.
 
   # 2. type descriptors + composite typedefs
   for t in s.typesSeq:
@@ -1964,7 +2309,7 @@ proc genC*(source: string, path: string, release = false, nochecks = false,
 
   if s.unsupported:
     return "/* nelua: " & s.unsupportedMsg & " */"
-  return s.buf
+  return genPreamble(s.refs) & s.buf
 
 # ---------------------------------------------------------------------------
 # Self-test: assert the emitted C string's shape for small programs.

@@ -50,8 +50,12 @@ ORACLE = "/usr/bin/nelua"
 # corpus-convention issue, not a parser bug.  The gate requires M1 to not
 # regress (diffs/crashes at or below baseline) but allows it to improve as
 # gaps close -- "0 regressions", not "0 diffs".
-M1_BASELINE_MATCHES = 24
-M1_BASELINE_DIFFS = 4
+#
+# Bumped 2026-09-03: 25 MATCH / 3 DIFF / 0 CRASH.  _13 moved DIFF->MATCH when
+# the numeric-for <=/>/>= bound-specifier fix (fedf44e, src/parser.nim) landed;
+# the remaining 3 DIFFs are _8/_11/_12 (the @-prefixed type constructor).
+M1_BASELINE_MATCHES = 25
+M1_BASELINE_DIFFS = 3
 M1_BASELINE_CRASHES = 0
 
 
