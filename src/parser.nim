@@ -967,6 +967,23 @@ proc parseFor*(p: var Parser): Node =
       discard p.advance()
       cmpop = "lt"
       endv = p.parseExpr()
+    elif p.check(tkLe):
+      ## `<=expr` inclusive upper bound: the loop runs while `i <= expr`.
+      discard p.advance()
+      cmpop = "le"
+      endv = p.parseExpr()
+    elif p.check(tkGt):
+      ## `>expr` exclusive lower bound: the loop runs while `i > expr`,
+      ## descending.  The oracle writes the bound as `>N` in for-position.
+      discard p.advance()
+      cmpop = "gt"
+      endv = p.parseExpr()
+    elif p.check(tkGe):
+      ## `>=expr` inclusive lower bound: the loop runs while `i >= expr`,
+      ## descending.  `www_neg_for.nelua` uses `for i = 5, >=1, -1 do`.
+      discard p.advance()
+      cmpop = "ge"
+      endv = p.parseExpr()
     else:
       endv = p.parseExpr()
     let step = if p.match(tkComma): p.parseExpr() else: nil
