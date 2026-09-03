@@ -198,7 +198,8 @@ proc compileUnit*(source: string, path: string, config: Config,
     result.success = false
     return
 
-  let cSource = genC(source, path, config.release or config.maxPerf, false, config)
+  let cSource = genC(source, path, config.release or config.maxPerf,
+                     config.release or config.maxPerf, config)
   result.cSource = cSource
   result.success = cSource.len > 0 and not cSource.startsWith("/* nelua")
   if not result.success:
@@ -246,7 +247,7 @@ proc compile*(source: string, path: string, config: Config = defaultConfig()): C
   # captured here rather than written to a file.  Short-circuits before the
   # outputKind switch and the binary-run step, matching the reference.
   if config.printAssembly:
-    var asmCmd = config.cc & " -S " & cfile.quoteShell & " -o -"
+    var asmCmd = config.cc & " -S -fverbose-asm -g0 " & cfile.quoteShell & " -o -"
     if config.cflags.len > 0:
       asmCmd.add " " & config.cflags
     let (asmOut, asmExit) = execCmdEx(asmCmd)
@@ -288,7 +289,7 @@ proc compile*(source: string, path: string, config: Config = defaultConfig()): C
     if config.maxPerf:   " -fwrapv -fno-strict-aliasing -Ofast -march=native -DNDEBUG -fno-plt -flto=auto"
     elif config.release: " -fwrapv -fno-strict-aliasing -O2 -DNDEBUG"
     else:                " -fwrapv -fno-strict-aliasing -g"
-  let asmExtra = if config.outputKind == okAssembly: " -fverbose-asm -g0" else: ""
+  let asmExtra = if config.outputKind == okAssembly: " -fverbose-asm -g0 " else: ""
   var ccCmd: string
   case config.outputKind:
     of okBinary:

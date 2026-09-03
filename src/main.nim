@@ -6,7 +6,7 @@
 ## printed to stderr; the process exits 0 when every input compiled cleanly and
 ## 1 when any input produced a diagnostic or could not be read.
 
-import std/[os, strutils]
+import std/[os, strutils, streams]
 import cli
 import config
 import compile
@@ -245,7 +245,10 @@ proc main(): int =
       source = evalSource
     else:
       try:
-        source = readFile(input)
+        if input == "-":
+          source = stdin.readAll()
+        else:
+          source = readFile(input)
       except OSError, IOError:
         stderr.writeLine("error: Failed to read input file: " & input & ": " & getCurrentExceptionMsg())
         failed = true
@@ -326,7 +329,7 @@ proc main(): int =
       echo dumpAnaled(ar.ctx, ar.root)
     else:
       # Default / -b --binary: compile() already emitted and ran the binary.
-      if c.output.len > 0:
+      if c.outputKind == okBinary and c.output.len > 0:
         # Honor -o by copying the produced binary to the requested name.  The binary
         # was built in the shared cache by compile(); read it back from there.
         let builtBin = cacheDir() / analyzer.computeUnitname(input)
@@ -343,12 +346,17 @@ proc main(): int =
         except OSError, IOError:
           stderr.writeLine("nelua: cannot copy binary to '" & c.output & "': " & getCurrentExceptionMsg())
           failed = true
-      else:
+      elif c.output.len == 0:
         # No -o: the oracle compiles and runs, printing the program's stdout
         # and propagating its exit code. compile() already captured both.
         stdout.write(res.output)
         exitCode = res.exitCode
         timing.printRun(res.runMs)
+      else:
+        # A non-binary artifact (-B/-Y/-A/-H) with -o: gcc/ar already wrote the
+        # object/assembly/library to c.output, so there is no binary to copy --
+        # just propagate the compiler's exit code (matches the oracle's rc=0).
+        exitCode = res.exitCode
 
   timing.printTotal()
   return if failed: 1 elif exitCode != 0: exitCode else: 0

@@ -20,10 +20,11 @@ type
 
 const ShortNoVal = {'r', 'b', 'c', 'a', 'l', 's', 'h', 'v', 'V',
                     'B', 'Y', 'A', 'H',
-                    'w', 'd', 'M', 't', 'T'}
+                    'w', 'd', 'M', 't', 'T',
+                    'S', 'C', 'j', 'q'}
 const LongNoVal: seq[string] = @[
   "release", "binary", "code", "analyze", "lint",
-  "strip-bin", "sanitize", "no-cache",
+  "strip-bin", "sanitize", "no-cache", "verbose",
   "version", "help", "no-warning", "no-color",
   "script",
   "print-ast", "print-analyzed-ast", "print-ppcode", "print-code",
@@ -112,6 +113,8 @@ proc parseArgs*(args: seq[string]): (Config, seq[string]) =
       of "a", "analyze": c.analyze = true
       of "l", "lint": c.lint = true
       of "s", "strip-bin": c.stripBin = true
+      of "S": c.sanitize = true
+      of "C": c.noCache = true
       of "w": c.noWarning = true
       of "d": c.debug = true
       of "M": c.maxPerf = true
@@ -135,6 +138,8 @@ proc parseArgs*(args: seq[string]): (Config, seq[string]) =
           c.parseError = "path '" & p.val & "' is not a valid directory"
           break
         c.addAddPath(p.val)
+      of "j": discard
+      of "q": discard
       else:
         c.parseError = "unknown option '" & ("-" & p.key) & "'"
         break
@@ -154,9 +159,11 @@ proc parseArgs*(args: seq[string]): (Config, seq[string]) =
       of "timing": c.timing = true
       of "more-timing": c.moreTiming = true
       of "stripflags": c.stripflags = p.val
+      of "generator": c.generator = p.val
       of "sanitize": c.sanitize = true
       of "no-cache": c.noCache = true
       of "version": c.version = true; cliTokens.add "version"
+      of "verbose": c.verbose = true
       of "semver": c.semver = true; cliTokens.add "semver"
       of "help", "h": c.help = true
       of "print-ast": c.printAst = true

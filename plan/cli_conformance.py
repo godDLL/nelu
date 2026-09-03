@@ -55,6 +55,21 @@ DEFAULT_CORPUS = os.path.join(ROOT, "examples", "www")
 CRASH_MARKERS = ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGFPE", "Illegal storage",
                  "panicked", "stack overflow", "double free", "heap corruption")
 
+# The oracle's --print-analyzed-ast emits REAL memory addresses
+# (pseudoargattrs = "table: 0x7f7c34948cc0") that change on every run, so the
+# oracle is not even self-comparable and this flagset could never MATCH.  Ours
+# emits the literal placeholder <ptr>.  Both mean "a pointer to a table" -- map
+# them to one token so the dump comparison is deterministic.  Applied to dump
+# output ONLY: in buildrun output a 0x.. is real programme data (e.g. an address
+# a program prints) and must not be masked.
+import re as _re
+_PTR_RE = _re.compile(r'"table: 0x[0-9a-fA-F]+"|<ptr>|0x[0-9a-fA-F]+')
+
+
+def normalize_output(s):
+    """Mask non-deterministic pointer tokens in dump output."""
+    return _PTR_RE.sub("<PTR>", s)
+
 # ---------------------------------------------------------------- flag matrix
 
 # kind="dump": compare the compiler's own stdout+stderr+exit (no binary run).
@@ -315,6 +330,9 @@ def main():
             else:
                 o_out, o_rc = run([ORACLE] + flags + [src], args.timeout)
                 i_out, i_rc = run([OUR] + flags + [src], args.timeout)
+                if kind == "dump":
+                    o_out = normalize_output(o_out)
+                    i_out = normalize_output(i_out)
                 v = verdict_for(kind, o_out, o_rc, i_out, i_rc)
                 detail = "" if v == MATCH else (
                     f"O[{o_out[:40]!r} rc={o_rc}] "
