@@ -1,0 +1,2 @@
+local varautos = 42
+print(varautos)

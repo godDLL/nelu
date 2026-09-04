@@ -1,0 +1,2 @@
+local varanys = 42
+print(varanys)

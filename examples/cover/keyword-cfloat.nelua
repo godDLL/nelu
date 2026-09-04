@@ -1,0 +1,2 @@
+local cfloat = 42
+print(cfloat)

@@ -1,0 +1,3 @@
+local a: integer = 17
+local b: integer = 5
+print(a /// b)

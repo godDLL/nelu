@@ -1,0 +1,6 @@
+local R: type = @record{ v: integer }
+function R:__len(): usize
+  return 42
+end
+local r: R = { v = 1 }
+print(#r)

@@ -1,0 +1,2 @@
+local cint = 42
+print(cint)

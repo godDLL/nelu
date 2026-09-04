@@ -1,0 +1,2 @@
+local cvarargs = 42
+print(cvarargs)

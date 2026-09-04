@@ -1,0 +1,2 @@
+local any = 42
+print(any)

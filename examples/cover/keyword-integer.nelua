@@ -1,0 +1,2 @@
+local integer = 42
+print(integer)

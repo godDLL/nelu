@@ -1,0 +1,4 @@
+## local function addone(x)
+  in (#[x]# + 1)
+## end
+print(#[addone]#(41))

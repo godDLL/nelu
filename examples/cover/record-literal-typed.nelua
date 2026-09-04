@@ -1,0 +1,14 @@
+-- record-literal-typed.nelua -- cover corpus probe.
+--
+-- The TYPED record literal form `(@T){ ... }`, as opposed to the untyped
+-- ordered literal `{ ... }` assigned to an annotated local (see
+-- record-type.nelua, which MATCHes).  The oracle accepts this and prints the
+-- fields; on the current clean-room tree the record type mis-lowers to an
+-- empty `struct nlrec0` and gcc rejects the C, so this is a DIFF until the
+-- lowering is fixed.  Kept as a positive regression probe for that fix.
+
+local Vec2: type = @record{ x: float64, y: float64 }
+local a = (@Vec2){ x = 3.0, y = 4.0 }
+local b = (@Vec2){ x = 1.0, y = 0.0 }
+local c = a
+print(a.x, a.y, b.x, b.y, c.x, c.y)

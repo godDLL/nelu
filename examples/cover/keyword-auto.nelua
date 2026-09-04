@@ -1,0 +1,2 @@
+local auto = 42
+print(auto)

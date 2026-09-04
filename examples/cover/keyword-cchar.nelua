@@ -1,0 +1,2 @@
+local cchar = 42
+print(cchar)

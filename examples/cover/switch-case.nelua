@@ -1,0 +1,9 @@
+local a = 2
+switch a
+case 1 then
+  print 'one'
+case 2, 3 then
+  print 'two or three'
+else
+  print 'other'
+end

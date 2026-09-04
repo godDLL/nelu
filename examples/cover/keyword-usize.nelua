@@ -1,0 +1,2 @@
+local usize = 42
+print(usize)

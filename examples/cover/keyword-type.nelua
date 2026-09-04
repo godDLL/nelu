@@ -1,0 +1,2 @@
+local type = 42
+print(type)

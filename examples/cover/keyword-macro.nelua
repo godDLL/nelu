@@ -1,0 +1,2 @@
+local macro = 42
+print(macro)

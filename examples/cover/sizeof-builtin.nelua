@@ -1,0 +1,3 @@
+print(#integer)
+print(#string)
+print(#usize)

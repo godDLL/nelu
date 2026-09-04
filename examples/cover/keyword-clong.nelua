@@ -1,0 +1,2 @@
+local clong = 42
+print(clong)

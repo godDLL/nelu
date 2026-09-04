@@ -1,0 +1,5 @@
+local function f(x: facultative(string))
+  print(x)
+end
+f("hello")
+f(nil)
