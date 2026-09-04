@@ -1,0 +1,1151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nelu 0.2.1 - Reference Manual</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#30363d;
+  --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --accent2:#79c8ff;
+  --code-bg:#010409; --warn:#d29922; --ok:#3fb950; --bad:#f85149;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+#toc{position:fixed;top:0;left:0;width:270px;height:100vh;overflow-y:auto;
+  background:var(--panel);border-right:1px solid var(--border);padding:14px 12px 60px;
+  font-size:13px;z-index:50}
+#toc h2{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+  margin:14px 0 6px;padding-left:6px}
+#toc .toc-ver{font-size:10px;color:var(--muted);display:block;margin-bottom:10px}
+#toc ul{list-style:none;margin:0;padding:0}
+#toc li{margin:2px 0}
+#toc a{color:var(--text);display:block;padding:3px 6px;border-radius:5px;white-space:nowrap;
+  text-overflow:ellipsis;overflow:hidden}
+#toc a:hover{background:var(--panel2);text-decoration:none}
+#toc .ind{display:inline-block;width:14px;color:var(--muted)}
+main{margin-left:290px;max-width:980px;padding:24px 28px 80px}
+h1{font-size:30px;margin:0 0 4px;border-bottom:1px solid var(--border);padding-bottom:10px}
+h1 small{display:block;font-size:13px;color:var(--muted);font-weight:normal;margin-top:4px}
+h2{font-size:21px;margin:38px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+h3{font-size:16px;margin:26px 0 8px;color:var(--accent2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--text)}
+p{margin:8px 0}
+ul,ol{margin:6px 0 12px;padding-left:22px}
+li{margin:3px 0}
+code,kbd{font-family:var(--mono);font-size:13px;background:var(--code-border,#1b2333);
+  color:var(--accent2);padding:1px 5px;border-radius:4px;white-space:nowrap}
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:7px;padding:12px;
+  overflow-x:auto;margin:10px 0;font-size:13px;line-height:1.5}
+pre code{background:none;padding:0;white-space:pre}
+pre .c{color:var(--muted)}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13px}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;vertical-align:top}
+th{background:var(--panel2);color:var(--accent2)}
+tr:nth-child(even) td{background:#11161d}
+.note{background:var(--panel2);border-left:3px solid var(--accent);padding:10px 14px;
+  border-radius:6px;margin:12px 0}
+.warn{background:#1a1510;border-left:3px solid var(--warn);padding:10px 14px;
+  border-radius:6px;margin:12px 0}
+.bad{background:#1a1012;border-left:3px solid var(--bad);padding:10px 14px;
+  border-radius:6px;margin:12px 0}
+.ok{background:#101a12;border-left:3px solid var(--ok);padding:10px 14px;
+  border-radius:6px;margin:12px 0}
+.tag{display:inline-block;font-size:10px;letter-spacing:.05em;text-transform:uppercase;
+  border-radius:4px;padding:1px 6px;margin-right:6px;vertical-align:middle}
+.tag-parity{background:#1c3a2e;color:var(--ok)}
+.tag-nelu{background:#1a2a4a;color:var(--accent2)}
+.tag-queued{background:#2a1a10;color:var(--warn)}
+.tag-bug{background:#2a1012;color:var(--bad)}
+.kw{color:#ff7b72}.tp{color:#d2a8ff}.mt{color:#ffa657}.bl{color:#79c8ff}
+.fn{color:#d2a8ff}.st{color:#a5d6ff}.num{color:#79e7ff}.cm{color:var(--muted)}
+@media(max-width:980px){
+  #toc{width:64px;overflow:hidden}
+  #toc h2,#toc a span.t{display:none}
+  #toc a{padding:6px 8px}
+  main{margin-left:64px}
+}
+</style>
+</head>
+<body>
+<aside id="toc">
+  <span class="toc-ver">Nelu 0.2.1 &middot; clean-room</span>
+  <ul>
+    <li><a href="#intro"><span class="ind">&gt;</span>What is Nelu</a></li>
+    <li><a href="#first"><span class="ind">&gt;</span>First program</a></li>
+    <li><a href="#lua-legacy"><span class="ind">&gt;</span>What stays from Lua</a></li>
+    <li><a href="#keywords"><span class="ind">&gt;</span>Keywords</a></li>
+    <li><a href="#flow"><span class="ind">&gt;</span>Branching &amp; flow</a></li>
+    <li><a href="#types"><span class="ind">&gt;</span>Type system</a></li>
+    <li><a href="#local"><span class="ind">&gt;</span>local non-hoisting</a></li>
+    <li><a href="#meta"><span class="ind">&gt;</span>Metaprogramming</a></li>
+    <li><a href="#c-interop"><span class="ind">&gt;</span>C interoperability</a></li>
+    <li><a href="#stdlib"><span class="ind">&gt;</span>Standard library</a></li>
+    <li><a href="#nelu-lua"><span class="ind">&gt;</span>Embedded Lua</a></li>
+    <li><a href="#cli"><span class="ind">&gt;</span>CLI usage</a></li>
+    <li><a href="#divergences"><span class="ind">&gt;</span>Divergences</a></li>
+    <li><a href="#quickref"><span class="ind">&gt;</span>Quick reference</a></li>
+    <li><a href="#appendix"><span class="ind">&gt;</span>Appendix: verification</a></li>
+  </ul>
+</aside>
+<main>
+
+<h1>Nelu 0.2.1 Reference Manual</h1>
+<small>Nelua-in-Nim 0.2.1 (clean-room reimplementation) &middot; semver 0.2.1 &middot; Lua-shaped, statically typed, AOT to C &middot; compiled by gcc</small>
+
+<div class="note">
+<strong>How to read this manual.</strong> Three markings recur throughout:
+<span class="tag tag-parity">parity</span> matches the oracle 0.2.0-dev behaviour,
+<span class="tag tag-nelu">Nelu ext</span> is a clean-room addition beyond 0.2.0,
+<span class="tag tag-queued">queued</span> is designed but not yet implemented.
+A fourth mark, <span class="tag tag-bug">bug</span>, flags a known open compiler defect
+in the tree this was written against (see <a href="#appendix">Appendix</a>).
+A reference manual documents the <em>language specification</em>; the current compiler
+build has known bugs and not every example below is known to compile today.
+</div>
+
+<!-- 1 -->
+<h2 id="intro">1. What is Nelu</h2>
+<p>Nelu is a clean-room reimplementation of the Nelua language: <strong>Nelua-in-Nim</strong>.
+The compiler is written in Nim, emits C, and compiles that C to a native binary with
+gcc. Two artifacts ship:</p>
+<ul>
+  <li><code>nelu</code> &mdash; the Nelu compiler (Nim -&gt; C -&gt; native).</li>
+  <li><code>nelu-lua</code> &mdash; a bundled standalone Lua 5.4.3 interpreter, built from C,
+      with the Nelua init layer and the <code>lpeglabel</code> module.</li>
+</ul>
+<p><strong>One-line pitch.</strong> Lua-shaped syntax, statically typed, that compiles to C
+and then to native code: Lua ergonomics with C performance and direct, ergonomic access
+to C functions and headers.</p>
+<p><strong>Build.</strong> The Makefile drives both toolchains:</p>
+<pre><code class="c"># The Nelu compiler (Nim -&gt; C -&gt; native).
+make nelu            # nim c -d:release --path:src -o:nelu src/main.nim
+
+# The bundled Lua interpreter (C).
+make nelu-lua        # gcc ... onelua.c + src/*.c + lpeglabel/*.c -o nelu-lua
+
+make all             # both
+make test            # ./nelu-lua spec/init.lua</code></pre>
+<p>Version output: <code>nelu --version</code> -&gt; <code>Nelua-in-Nim 0.2.1 (clean-room reimplementation)</code>;
+<code>nelu --semver</code> -&gt; <code>0.2.1</code>.</p>
+
+<!-- 2 -->
+<h2 id="first">2. First program</h2>
+<p>You do not write a <code>main</code> function. Top-level statements become the entry
+point; the compiler emits <code>int nelua_main(int, char**)</code>. <code>print</code> is a builtin.</p>
+<pre><code><span class="cm">-- hello.nelua</span>
+print 'Hello world!'</code></pre>
+<p>Build and run (the <code>-L &lt;dir&gt;</code> flag is the library search path for
+<code>require</code>; <code>require 'name'</code> resolves to <code>&lt;dir&gt;/name.nelua</code>):</p>
+<pre><code class="c">nelu -L lib -o hello hello.nelua
+./hello
+<span class="cm"># Hello world!</span></code></pre>
+<p>The compiler is AOT-only: nelua source -&gt; C source -&gt; native binary. There is no
+interpreter and no way to load runtime-generated code. <code>print</code> writes to stdout
+and takes multiple arguments separated by tabs:</p>
+<pre><code>print(1, 2)     <span class="cm">-- 1\t2</span></code></pre>
+
+<!-- 3 -->
+<h2 id="lua-legacy">3. What stays the same from Lua</h2>
+<p>You can read most of a Nelua program as Lua. These are byte-for-byte identical:</p>
+<ul>
+  <li><strong>Comments.</strong> <code>-- line</code>, <code>--[[ ... ]]</code>, and
+      <code>--[=[ ... ]=]</code> (long-bracket comments with any number of <code>=</code>;
+      opening and closing brackets match).</li>
+  <li><strong>String literals.</strong> single/double quoted; the same escape sequences
+      (<code>\n</code>, <code>\t</code>, <code>\u{03C0}</code>, <code>\x41</code>,
+      <code>\65</code>, <code>\z</code> whitespace-trim, <code>\</code> line continuation).
+      Strings are immutable, contiguous, pointer+size, null-terminated for C.</li>
+  <li><strong>Number literals.</strong> decimal, binary <code>0b1010</code>, hex
+      <code>0xff</code>, char <code>'A'_u8</code>, scientific <code>1.2e-100</code>,
+      hex-float <code>0x1.921FB54442D18p+1</code>.</li>
+  <li><strong>Boolean and nil.</strong> <code>true</code>, <code>false</code>, <code>nil</code>.</li>
+  <li><strong>Operators.</strong> <code>+ - * / // /// % %%% ^ .. and or not == ~= &lt; &gt; &lt;= &gt;= #</code>
+      (length/sizeof), plus the bitwise additions <code>| &amp; ~ &lt;&lt; &gt;&gt; &gt;&gt;&gt;</code>
+      (logical shift), <code>&gt;&gt;&gt;</code> arithmetic right shift, <code>~a</code> bitwise NOT,
+      <code>$a</code> deref, <code>&amp;a</code> address-of.</li>
+  <li><strong>Control flow shapes.</strong> <code>if / elseif / else</code>, <code>while</code>,
+      <code>repeat ... until</code>, numeric <code>for</code>, <code>for ... in</code> (iterator),
+      <code>break</code>, <code>continue</code>, <code>do ... end</code>.</li>
+  <li><strong>Multiple assignment.</strong> <code>local a, b = 1, 2</code>;
+      <code>b, a = a, b</code> (safe swap).</li>
+  <li><strong>Functions.</strong> <code>function f(a, b) ... end</code>, anonymous
+      <code>function(x) ... end</code>, first-class values, recursion, multiple returns.</li>
+</ul>
+
+<!-- 4 -->
+<h2 id="keywords">4. Keywords</h2>
+<p>Every reserved keyword and syntactic token in the language, alphabetized.
+Markings: <span class="tag tag-parity">parity</span> oracle 0.2.0-dev,
+<span class="tag tag-nelu">Nelu ext</span> clean-room addition,
+<span class="tag tag-queued">queued</span> designed, not implemented.</p>
+
+<h3>4.1 Reserved keywords</h3>
+<table>
+<tr><th>Keyword</th><th>Meaning</th><th>Example</th></tr>
+<tr><td><code>and</code></td><td>logical conjunction</td><td><code>if a <span class="kw">and</span> b then</code></td></tr>
+<tr><td><code>break</code></td><td>exit the enclosing loop</td><td><code><span class="kw">while</span> x <span class="kw">do</span> ... <span class="kw">break</span> <span class="kw">end</span></code></td></tr>
+<tr><td><code>continue</code></td><td>skip to next loop iteration <span class="tag tag-nelu">Nelu ext</span></td><td><code><span class="kw">for</span> i=0,N <span class="kw">do</span> <span class="kw">if</span> skip <span class="kw">then</span> <span class="kw">continue</span> <span class="kw">end</span> <span class="kw">end</span></code></td></tr>
+<tr><td><code>do</code></td><td>open a block</td><td><code><span class="kw">do</span> local x = 1 <span class="kw">end</span></code></td></tr>
+<tr><td><code>else</code></td><td>alternative branch</td><td><code><span class="kw">if</span> c <span class="kw">then</span> ... <span class="kw">else</span> ... <span class="kw">end</span></code></td></tr>
+<tr><td><code>elseif</code></td><td>chained alternative</td><td><code><span class="kw">elseif</span> c <span class="kw">then</span></code></td></tr>
+<tr><td><code>end</code></td><td>close a block/function/construct</td><td><code><span class="kw">function</span> f() ... <span class="kw">end</span></code></td></tr>
+<tr><td><code>false</code></td><td>boolean false literal</td><td><code>local b <span class="kw">:</span> boolean <span class="kw">= false</span></code></td></tr>
+<tr><td><code>for</code></td><td>numeric or iterator loop</td><td><code><span class="kw">for</span> i=0,N <span class="kw">do</span> ... <span class="kw">end</span></code></td></tr>
+<tr><td><code>function</code></td><td>declare a function</td><td><code><span class="kw">function</span> add(a,b) <span class="kw">return</span> a+b <span class="kw">end</span></code></td></tr>
+<tr><td><code>global</code></td><td>declare a top-scope symbol</td><td><code><span class="kw">global</span> g <span class="kw">:</span> integer <span class="kw">=</span> 1</code></td></tr>
+<tr><td><code>if</code></td><td>conditional</td><td><code><span class="kw">if</span> c <span class="kw">then</span> ... <span class="kw">end</span></code></td></tr>
+<tr><td><code>in</code></td><td>iterator-loop domain; also splice-function keyword <span class="tag tag-parity">parity</span></td><td><code><span class="kw">for</span> x <span class="kw">in</span> iter <span class="kw">do</span> ... <span class="kw">end</span></code></td></tr>
+<tr><td><code>local</code></td><td>block-scoped variable</td><td><code><span class="kw">local</span> x <span class="kw">:</span> integer <span class="kw">=</span> 1</code></td></tr>
+<tr><td><code>nil</code></td><td>the nil value</td><td><code>local x <span class="kw">= nil</span></code></td></tr>
+<tr><td><code>not</code></td><td>logical negation</td><td><code><span class="kw">if</span> <span class="kw">not</span> done <span class="kw">then</span></code></td></tr>
+<tr><td><code>or</code></td><td>logical disjunction</td><td><code>a <span class="kw">or</span> b</code></td></tr>
+<tr><td><code>repeat</code></td><td>open a repeat-until loop</td><td><code><span class="kw">repeat</span> ... <span class="kw">until</span> c</code></td></tr>
+<tr><td><code>return</code></td><td>return value(s) from a function</td><td><code><span class="kw">return</span> a, b</code></td></tr>
+<tr><td><code>then</code></td><td>branch body opener</td><td><code><span class="kw">if</span> c <span class="kw">then</span></code></td></tr>
+<tr><td><code>true</code></td><td>boolean true literal</td><td><code>local b <span class="kw">:</span> boolean <span class="kw">= true</span></code></td></tr>
+<tr><td><code>until</code></td><td>repeat-loop terminator</td><td><code><span class="kw">repeat</span> ... <span class="kw">until</span> c</code></td></tr>
+<tr><td><code>while</code></td><td>open a while loop</td><td><code><span class="kw">while</span> c <span class="kw">do</span> ... <span class="kw">end</span></code></td></tr>
+</table>
+
+<h3>4.2 Type-constructor keywords</h3>
+<table>
+<tr><th>Token</th><th>Meaning</th><th>Example</th></tr>
+<tr><td><code>record</code></td><td>struct-like composite (also <code>@record</code>)</td><td><code>local P: type <span class="kw">= @record</span>{ x: float64 }</code></td></tr>
+<tr><td><code>union</code></td><td>tagged/C union (also <code>@union</code>)</td><td><code>local U: type <span class="kw">= @union</span>{ i: int64, f: float64 }</code></td></tr>
+<tr><td><code>enum</code></td><td>enumerated constants (<code>@enum</code> rejected)</td><td><code>local C: type <span class="kw">= enum</span>{ A=0, B, C }</code></td></tr>
+<tr><td><code>array</code></td><td>fixed-size array type</td><td><code>local A: type <span class="kw">= array</span>(float64, 4)</code></td></tr>
+<tr><td><code>span</code></td><td>fat pointer (pointer + size)</td><td><code>local s: <span class="kw">span</span>(float64) <span class="kw">=</span> &amp;arr</code></td></tr>
+<tr><td><code>pointer</code></td><td>typed pointer (<code>@pointer</code> rejected)</td><td><code>local p: <span class="kw">pointer</span>(integer)</code></td></tr>
+<tr><td><code>function</code></td><td>function-pointer type (<code>@function</code> rejected)</td><td><code>local f: <span class="kw">function</span>(a: integer): integer</code></td></tr>
+<tr><td><code>facultative</code></td><td>optional/nullable type</td><td><code>local x: <span class="kw">facultative</span>(string)</code></td></tr>
+<tr><td><code>type</code></td><td>the meta-type (values are types)</td><td><code>local T: <span class="kw">type</span> <span class="kw">=</span> @record{}</code></td></tr>
+<tr><td><code>auto</code></td><td>compile-time-inferred type</td><td><code>local x: <span class="kw">auto</span> <span class="kw">=</span> 1</code></td></tr>
+<tr><td><code>any</code></td><td>universal type <span class="tag tag-nelu">Nelu ext</span></td><td><code>local x: <span class="kw">any</span></code></td></tr>
+<tr><td><code>niltype</code></td><td>the type of <code>nil</code></td><td>used inside unions/optionals</td></tr>
+<tr><td><code>nilptr</code></td><td>pointer-sized nil literal</td><td><code>local p: *integer <span class="kw">= nilptr</span></code></td></tr>
+<tr><td><code>void</code></td><td>no-value return type</td><td><code>function f(): <span class="kw">void</span></code></td></tr>
+<tr><td><code>varargs</code></td><td>untyped variadic parameter</td><td><code>function f(...: <span class="kw">varargs</span>)</code></td></tr>
+<tr><td><code>cvarargs</code></td><td>C variadic parameter</td><td><code>function f(...: <span class="kw">cvarargs</span>)</code></td></tr>
+<tr><td><code>cvalist</code></td><td><code>va_list</code> type</td><td><code>local ap: <span class="kw">cvalist</span> &lt;noinit&gt;</code></td></tr>
+</table>
+
+<h3>4.3 Primitive type keywords</h3>
+<table>
+<tr><th>Token</th><th>C type</th><th>literal suffix</th></tr>
+<tr><td><code>integer</code></td><td><code>int64_t</code></td><td><code>_i</code>, <code>_integer</code></td></tr>
+<tr><td><code>uinteger</code></td><td><code>uint64_t</code></td><td><code>_u</code></td></tr>
+<tr><td><code>byte</code></td><td><code>uint8_t</code></td><td><code>_b</code></td></tr>
+<tr><td><code>isize</code></td><td><code>intptr_t</code></td><td><code>_is</code></td></tr>
+<tr><td><code>int8</code>..<code>int64</code></td><td>the <code>_t</code> types</td><td><code>_i32</code>, <code>_u32</code> ...</td></tr>
+<tr><td><code>uint8</code>..<code>uint64</code></td><td>the <code>_t</code> types</td><td><code>_u8</code>, <code>_u64</code></td></tr>
+<tr><td><code>number</code></td><td><code>double</code></td><td><code>_n</code></td></tr>
+<tr><td><code>float32</code>/<code>float64</code></td><td><code>float</code>/<code>double</code></td><td><code>_f32</code>, <code>_f64</code></td></tr>
+<tr><td><code>cint</code>/<code>csize</code></td><td><code>int</code>/<code>size_t</code></td><td>-</td></tr>
+<tr><td><code>clong</code>, <code>culong</code>, <code>clonglong</code>, <code>culonglong</code></td><td>the C long/long long types</td><td>-</td></tr>
+<tr><td><code>cchar</code>, <code>cschar</code>, <code>cuchar</code></td><td><code>char</code> / <code>signed char</code> / <code>unsigned char</code></td><td>-</td></tr>
+<tr><td><code>cstring</code></td><td><code>char*</code></td><td>-</td></tr>
+<tr><td><code>cptr</code>/<code>pointer</code></td><td><code>void*</code></td><td>-</td></tr>
+</table>
+
+<h3>4.4 Built-in function identifiers</h3>
+<p>These are not reserved keywords but are predeclared and cannot be redefined:</p>
+<table>
+<tr><th>Identifier</th><th>Meaning</th></tr>
+<tr><td><code>require</code></td><td>load a stdlib module at compile time</td></tr>
+<tr><td><code>print</code></td><td>print values to stdout (tab-separated)</td></tr>
+<tr><td><code>panic</code></td><td>runtime abort <span class="tag tag-parity">parity</span></td></tr>
+<tr><td><code>error</code></td><td>runtime abort with a message <span class="tag tag-parity">parity</span></td></tr>
+<tr><td><code>assert</code></td><td>panic if the condition is false</td></tr>
+<tr><td><code>check</code></td><td>panic if false, no return</td></tr>
+<tr><td><code>likely</code>/<code>unlikely</code></td><td>branch-hint hints</td></tr>
+<tr><td><code>_VERSION</code></td><td>the Nelua version string</td></tr>
+<tr><td><code>type</code></td><td>return the name of a value's type</td></tr>
+<tr><td><code>next</code>/<code>pairs</code>/<code>ipairs</code></td><td>iteration helpers (also in <code>##</code> blocks)</td></tr>
+<tr><td><code>select</code></td><td>only inside <code>##</code> preprocessor blocks (standard Lua fn)</td></tr>
+<tr><td><code>collectgarbage</code></td><td>GC control (where applicable)</td></tr>
+</table>
+
+<h3>4.5 Metamethod identifiers</h3>
+<p>Colon-method names that overload operators and protocol hooks:</p>
+<p><code>__add __sub __mul __div __idiv __mod __pow __unm __len __band __bor __bxor
+__shl __shr __asr __bnot __concat __eq __lt __le __call __index __newindex
+__tostring __close __gc __tostring</code>. Also the static form
+<code>Type:method(...)</code> and <code>Type.staticmethod(...)</code>.</p>
+
+<h3>4.6 Metaprogramming tokens</h3>
+<table>
+<tr><th>Token</th><th>Meaning</th></tr>
+<tr><td><code>##</code></td><td>line/block of compile-time Lua code</td></tr>
+<tr><td><code>##[[ ... ]]</code></td><td>multi-line compile-time Lua block</td></tr>
+<tr><td><code>#[expr]#</code></td><td>replace the token with a value/AST</td></tr>
+<tr><td><code>#|name| #</code></td><td>replace with an identifier</td></tr>
+<tr><td><code>#[node]#</code></td><td>emit an AST-node expression</td></tr>
+<tr><td><code>inject_astnode(node)</code></td><td>inject a statement at the call site</td></tr>
+<tr><td><code>generalize</code></td><td>render a preprocessor function as a generic</td></tr>
+<tr><td><code>concept(...)</code>, <code>facultative(...)</code>, <code>overload(...)</code></td><td>type-matching shortcuts</td></tr>
+<tr><td><code>static_assert</code>, <code>static_error</code></td><td>compile-time assertions</td></tr>
+</table>
+
+<h3>4.7 Attribute tokens (postfix on declarations)</h3>
+<p><code>&lt;cimport&gt;</code>, <code>&lt;cimport 'name'&gt;</code>, <code>&lt;cinclude '...'&gt;</code>,
+<code>&lt;cexport&gt;</code>, <code>&lt;cexport, codename '...'&gt;</code>, <code>&lt;nodecl&gt;</code>,
+<code>&lt;inline&gt;</code>, <code>&lt;alwaysinline&gt;</code>, <code>&lt;noinline&gt;</code>,
+<code>&lt;nosideeffect&gt;</code>, <code>&lt;noinit&gt;</code>, <code>&lt;const&gt;</code>,
+<code>&lt;comptime&gt;</code>, <code>&lt;close&gt;</code>, <code>&lt;align N&gt;</code>,
+<code>&lt;packed&gt;</code>, <code>&lt;native&gt;</code>, <code>&lt;unsafe&gt;</code>.</p>
+
+<h3>4.8 Queued / not-yet-implemented tokens</h3>
+<div class="warn">
+These constructs are part of the Nelu design (NELU-2K section 2) but are
+<strong>not implemented</strong> in the current tree. Using them is a syntax error.
+</div>
+<table>
+<tr><th>Token</th><th>Intended meaning</th><th>Status</th></tr>
+<tr><td><code>try</code>/<code>catch</code>/<code>finally</code></td><td>exception handling on top of panic primitives</td><td><span class="tag tag-queued">queued</span></td></tr>
+<tr><td><code>match</code>/<code>case</code>/<code>cond</code></td><td>pattern matching / condition dispatch</td><td><span class="tag tag-queued">queued</span></td></tr>
+<tr><td><code>yield</code> (keyword)</td><td>generator/iterator suspension</td><td><span class="tag tag-queued">queued</span></td></tr>
+<tr><td><code>T?</code></td><td>sugared <code>facultative(T)</code></td><td><span class="tag tag-queued">queued</span> (currently rejected)</td></tr>
+<tr><td><code>switch</code>/<code>fallthrough</code></td><td>switch statement <span class="tag tag-parity">parity</span></td><td>landed; <code>fallthrough</code> is a node, not a value</td></tr>
+</table>
+
+<!-- 5 -->
+<h2 id="flow">5. Branching and flow constructs</h2>
+
+<h3>5.1 if / elseif / else</h3>
+<pre><code><span class="kw">if</span> x <span class="kw">then</span>
+  <span class="cm">-- one true branch</span>
+<span class="kw">elseif</span> y <span class="kw">then</span>
+  <span class="cm">-- second true branch</span>
+<span class="kw">else</span>
+  <span class="cm">-- everything else</span>
+<span class="kw">end</span></code></pre>
+
+<h3>5.2 while / repeat-until</h3>
+<pre><code><span class="kw">while</span> x <span class="kw">do</span> ... <span class="kw">end</span>
+<span class="kw">repeat</span>
+  ... body ...
+<span class="kw">until</span> x   <span class="cm">-- test is at the bottom; runs at least once</span></code></pre>
+
+<h3>5.3 Numeric for / iterator for</h3>
+<pre><code><span class="kw">for</span> i <span class="kw">:</span> integer <span class="kw">=</span> 0, N <span class="kw">do</span> ... <span class="kw">end</span>   <span class="cm">-- inclusive start, exclusive end</span>
+<span class="kw">for</span> k, v <span class="kw">in</span> iter <span class="kw">do</span> ... <span class="kw">end</span>           <span class="cm">-- iterator form</span></code></pre>
+
+<h3>5.4 break / continue / do / return</h3>
+<pre><code><span class="kw">do</span> ... <span class="kw">end</span>          <span class="cm">-- explicit block scope</span>
+<span class="kw">break</span>               <span class="cm">-- exit enclosing loop</span>
+<span class="kw">continue</span>           <span class="cm">-- next iteration <span class="tag tag-nelu">Nelu ext</span></span>
+<span class="kw">return</span> a, b        <span class="cm">-- multiple returns</span></code></pre>
+
+<h3>5.5 defer / &lt;close&gt; / error / panic</h3>
+<pre><code><span class="kw">defer</span> cleanup()        <span class="cm">-- run at scope exit, reverse order, before return/break/continue</span>
+local r: Resource <span class="kw">&lt;close&gt;</span>   <span class="cm">-- run r.__close() when r leaves scope</span>
+<span class="kw">error</span>('boom')          <span class="cm">-- runtime abort (SIGABRT)</span>
+<span class="kw">panic</span>('boom')          <span class="cm">-- runtime abort</span></code></pre>
+
+<h3>5.6 Queued: try/catch/finally, match/cond</h3>
+<div class="warn">
+<strong>Not implemented.</strong> The queued Nelu extensions for exception handling
+(<code>try ... catch ... finally</code>) and pattern matching (<code>match ... case ...
+else</code>, <code>cond</code>) are designed but not landed. On the current tree they
+are syntax errors. Parity-level building blocks that <em>do</em> exist: the
+<code>switch</code>/<code>case</code>/<code>else</code> statement, the <code>fallthrough</code>
+keyword, and the <code>panic</code>/<code>defer</code>/<code>&lt;close&gt;</code> primitives.
+</div>
+
+<!-- 6 -->
+<h2 id="types">6. The type system</h2>
+
+<h3>6.1 Declarations</h3>
+<pre><code><span class="kw">local</span> b <span class="kw">=</span> false                 <span class="cm">-- deduced boolean</span>
+<span class="kw">local</span> pi: number <span class="kw">=</span> 3.14           <span class="cm">-- explicit annotation</span>
+<span class="kw">local</span> N <span class="kw">&lt;comptime&gt;</span> <span class="kw">=</span> 8            <span class="cm">-- compile-time constant, usable as array size</span>
+<span class="kw">local</span> x <span class="kw">&lt;const&gt;</span> <span class="kw">=</span> 5             <span class="cm">-- runtime-once immutable</span>
+<span class="kw">local</span> a: <span class="kw">auto</span> <span class="kw">=</span> 1                <span class="cm">-- type inferred from first assignment</span>
+<span class="kw">global</span> g <span class="kw">:</span> integer <span class="kw">=</span> 1            <span class="cm">-- top-scope symbol visible to other files</span>
+<span class="kw">local</span> p: *integer <span class="kw">&lt;noinit&gt;</span>        <span class="cm">-- skip zero-initialisation</span></code></pre>
+<p>A declared-but-uninitialized variable is <strong>always zero-initialised</strong>
+(<code>false</code>/<code>0</code>). This is the "Zero Is Initialization" idiom; there are no
+constructors/destructors. Disable it per-variable with <code>&lt;noinit&gt;</code>.</p>
+
+<h3>6.2 Composite types</h3>
+<table>
+<tr><th>Declaration</th><th>C shape</th></tr>
+<tr><td><code>record { x: float64, y: float64 }</code> (also <code>@record{...}</code>)</td><td><code>struct { double x; double y; }</code></td></tr>
+<tr><td><code>union { i: int64, f: float64 }</code> (also <code>@union{...}</code>)</td><td><code>union</code></td></tr>
+<tr><td><code>enum { A=0, B, C }</code> (<code>@enum</code> rejected)</td><td><code>enum</code> (first value must be initialised)</td></tr>
+<tr><td><code>array(T, N)</code> / <code>[N]T</code> (annotation only)</td><td><code>T arr[N]</code>, fixed size, passed by value</td></tr>
+<tr><td><code>*T</code> / <code>pointer(T)</code> (<code>@pointer</code> rejected)</td><td>pointer to T</td></tr>
+<tr><td><code>span(T)</code></td><td>fat pointer: <code>*[0]T</code> + size, runtime bounds-checked</td></tr>
+<tr><td><code>function(a: int): int</code> (<code>@function</code> rejected)</td><td>function pointer (stores callbacks)</td></tr>
+<tr><td><code>facultative(T)</code> (annotation only; <code>T?</code> queued)</td><td>optional</td></tr>
+<tr><td><code>A | B | C</code></td><td>variant (union of types)</td></tr>
+</table>
+<p>Record literals use <code>(@Person){ name = "Mark", age = 20 }</code> (typed) or
+ordered-field <code>{ "Mark", 20 }</code>. A colon method
+<code>function T:m(...)</code> receives <code>self</code> as <code>*T</code> implicitly; method
+calls auto-reference/dereference the receiver. <code>#SomeType</code> on a type returns
+its size in bytes.</p>
+
+<h3>6.3 The <code>@</code> prefix rules</h3>
+<p>The <code>@</code> prefix is accepted on <code>record</code> and <code>union</code> but
+<strong>rejected</strong> on <code>enum</code>, <code>pointer</code>, and <code>function</code>
+(those take bare keywords). Bracket <code>[N]T</code> works in annotation position only,
+not as a standalone expression.</p>
+
+<h3>6.4 nil, any, facultative</h3>
+<ul>
+  <li><strong><code>nil</code></strong> is not the universal "no value" it is in Lua; there is a
+  <code>niltype</code> for unions/optionals.</li>
+  <li><strong><code>nilptr</code></strong> is a separate literal (pointer-sized nil, its own
+  AST node). It is the one value assignable to any pointer type:
+  <code>local p: *integer = nilptr</code>. <code>local p: *integer = nil</code> is a
+  <code>niltype</code> -&gt; <code>pointer</code> error.</li>
+  <li><strong><code>any</code></strong> <span class="tag tag-nelu">Nelu ext</span>: phase 1 rejects
+  deduced <code>any</code> (parity with the oracle); phase 2 (landed) makes it a tagged
+  union (<code>nlany</code>) with runtime construction/dispatch helpers.</li>
+  <li><strong><code>facultative(T)</code></strong> cannot be used in return position; a
+  function that may return "no value" returns a boolean signal plus the value.</li>
+</ul>
+
+<!-- 7 -->
+<h2 id="local">7. <code>local</code> is not hoisted</h2>
+<p>This is the key Lua divergence. A <code>local</code> name enters scope at the line where
+it is declared - unlike Lua, where the whole enclosing block sees it.</p>
+<pre><code><span class="cm">-- WRONG (Lua-hoisted thinking): spins forever at 100% CPU, no error.</span>
+<span class="kw">while</span> true <span class="kw">do</span>
+  pos = advance(s, pos)              <span class="cm">-- uses the OUTER pos</span>
+  <span class="kw">local</span> ok, key, pos = parse(s, pos) <span class="cm">-- declares a NEW local pos</span>
+<span class="kw">end</span>
+
+<span class="cm">-- RIGHT: give the returned position a different name.</span>
+<span class="kw">while</span> true <span class="kw">do</span>
+  <span class="kw">local</span> ok, key, nextpos = parse(s, pos)
+  pos = nextpos
+<span class="kw">end</span></code></pre>
+
+<!-- 8 -->
+<h2 id="meta">8. Metaprogramming: the compile-time Lua preprocessor</h2>
+<p>Nelua embeds a full Lua preprocessor. Between its statements, arbitrary Lua runs at
+compile time. Lines starting with <code>##</code> and blocks between
+<code>##[[ ... ]]</code> are Lua code, evaluated at compile time and persistent across
+modules (declare helpers <code>local</code> so they do not leak).</p>
+
+<h3>8.1 Splice tokens</h3>
+<ul>
+  <li><code>#[expr]#</code> - replace the token with a Nelua value/AST produced by the preprocessor.</li>
+  <li><code>#|name| #</code> - replace with an identifier produced by the preprocessor.</li>
+  <li><code>#[node]#</code> - emit an AST-node expression; <code>inject_astnode(node)</code> injects a statement at the call site.</li>
+</ul>
+
+<h3>8.2 Macros and generics</h3>
+<pre><code><span class="cm">-- preprocessor macro</span>
+<span class="cm">## local function repeat_n(n, body) ... ## end</span>
+<span class="cm">-- called as #[macro]#(...); expr_macro for expression position</span>
+
+<span class="cm">-- generics: preprocessor functions rendered with the generalize macro</span>
+<span class="kw">local</span> FixedStackArray: type <span class="kw">=</span> <span class="mt">#[make_FixedStackArray]#</span></code></pre>
+<p><code>vector</code>, <code>sequence</code>, and <code>span</code> are built this way.
+Generics are memoized per argument set - like C++ templates.</p>
+
+<h3>3.3 Concepts, assertions, C emission</h3>
+<ul>
+  <li><strong>Concepts</strong> decide at compile time whether an argument type matches,
+  returning <code>true</code>, a type to infer to, or <code>(false, 'error message')</code>.
+  <code>facultative(T)</code>, <code>overload(t1, t2, ...)</code> are shortcuts. Type
+  properties live on <code>attr.type</code>: <code>is_scalar</code>, <code>is_stringy</code>,
+  <code>is_integral</code>, <code>is_float</code>, <code>is_pointer</code>, <code>is_array</code>,
+  <code>is_record</code>, <code>is_niltype</code>, plus custom flags.</li>
+  <li><code>static_assert(cond, fmt, ...)</code> and <code>static_error(fmt, ...)</code>.</li>
+  <li>You can iterate and even <strong>modify</strong> already-processed symbols
+  (<code>Weekends.value.fields</code>, <code>Person.value:add_field('age', ...)</code>).</li>
+  <li><code>## cdefine 'X'</code> emits a <code>#define</code>; <code>## linklib 'm'</code>
+  passes <code>-lm</code>; <code>## cflags</code> / <code>## ldflags</code> add flags;
+  <code>## cemit</code> / <code>cemitdecl</code> / <code>cemitdef</code> inject raw C.</li>
+  <li>Share preprocessor helpers from standalone <code>.lua</code> modules:
+  <code>## local foo = require "foo"</code> (set <code>LUA_PATH</code> if needed).</li>
+</ul>
+
+<!-- 9 -->
+<h2 id="c-interop">9. C interoperability</h2>
+
+<h3>9.1 The <code>C</code> namespace and submodules</h3>
+<p><code>require 'C'</code> loads an empty namespace record. C functions come from submodules:</p>
+<pre><code>require <span class="st">'C.stdio'</span>     <span class="cm">-- C.printf, C.scanf, C.fopen, C.stdin, C.stdout ...</span>
+require <span class="st">'C.stdlib'</span>    <span class="cm">-- C.malloc, C.free, C.qsort, C.exit, C.atoi ...</span>
+require <span class="st">'C.stdarg'</span>    <span class="cm">-- C.va_start, C.va_arg, C.va_end</span>
+require <span class="st">'C.string'</span>    <span class="cm">-- C.strcpy, C.memcpy, C.strlen ...</span>
+require <span class="st">'C.arg'</span>       <span class="cm">-- C.argc, C.argv</span>
+require <span class="st">'C.ctype'</span>     <span class="cm">-- C.isalpha, C.isdigit, C.toupper ...</span>
+require <span class="st">'C.errno'</span>     <span class="cm">-- C.errno, C.EDOM, C.ERANGE ...</span>
+require <span class="st">'C.init'</span>      <span class="cm">-- C.atexit</span>
+require <span class="st">'C.locale'</span>    <span class="cm">-- C.setlocale, C.localeconv, C.LC_ALL ...</span>
+require <span class="st">'C.math'</span>      <span class="cm">-- C.fabs, C.fmod, C.sqrt ...</span>
+require <span class="st">'C.signal'</span>    <span class="cm">-- C.signal, C.raise, C.SIGINT ...</span>
+require <span class="st">'C.stdatomic'</span> <span class="cm">-- C atomic ops, C.memory_order_*</span>
+require <span class="st">'C.threads'</span>   <span class="cm">-- C.thrd_create, C.mtx_t, C.cnd_t ...</span>
+require <span class="st">'C.time'</span>      <span class="cm">-- C.clock, C.time, C.mktime, C.strftime ...</span></code></pre>
+
+<h3>9.2 Attributes that drive C emission</h3>
+<table>
+<tr><th>Attribute</th><th>Effect</th></tr>
+<tr><td><code>&lt;cimport&gt;</code></td><td>import a C function (auto-declared; no header needed)</td></tr>
+<tr><td><code>&lt;cimport 'name'&gt;</code></td><td>import under a different symbol</td></tr>
+<tr><td><code>&lt;nodecl&gt;</code></td><td>do not emit a declaration (the C header will)</td></tr>
+<tr><td><code>&lt;cinclude '&lt;stdio.h&gt;'</code></td><td>emit <code>#include</code> at the top of the generated C</td></tr>
+<tr><td><code>&lt;cexport, codename 'foo_f'&gt;</code></td><td>export a Nelua function under a fixed C name</td></tr>
+<tr><td><code>&lt;cimport, nodecl&gt;</code> on a const</td><td>import a C constant</td></tr>
+<tr><td><code>## cdefine 'X'</code></td><td>emit a <code>#define</code></td></tr>
+<tr><td><code>## linklib 'SDL2'</code></td><td>pass <code>-lSDL2</code> to the linker</td></tr>
+<tr><td><code>## cflags '...'</code> / <code>## ldflags '...'</code></td><td>extra C compiler / linker flags</td></tr>
+<tr><td><code>## cemit '...'</code> / <code>cemitdecl</code> / <code>cemitdef</code></td><td>emit raw C into the current scope / declarations / definitions</td></tr>
+</table>
+
+<h3>9.3 Varargs, pointers, the <code>-lm</code> gotcha</h3>
+<p>Direct calls map 1:1. <code>...: cvarargs</code> is the varargs parameter; the compiler
+specializes the call per argument set. For the <code>v*</code> family you pass a
+<code>cvalist</code> as an ordinary parameter - it is never unpacked from <code>...</code>:</p>
+<pre><code><span class="kw">local</span> <span class="kw">function</span> cprintf(fmt: cstring, ...: cvarargs): cint
+  <span class="kw">local</span> ap: cvalist <span class="kw">&lt;noinit&gt;</span>
+  C.va_start(ap, fmt)
+  <span class="kw">local</span> n <span class="kw">=</span> C.vprintf(fmt, ap)
+  C.va_end(ap)
+  <span class="kw">return</span> n
+<span class="kw">end</span></code></pre>
+<p><strong>The <code>-lm</code> gotcha.</strong> Nelua does not add <code>-lm</code> itself. Using
+<code>math.sqrt</code> (or any libm function) without declaring the math library produces
+a linker error: <code>undefined reference to 'sqrt'</code>. Fix it in source with
+<code>## linklib 'm'</code> (or pass <code>-lm</code> on the command line).</p>
+
+<h3>9.4 Reading the generated C</h3>
+<p>The compiler emits one readable C file with sections: declarations, definitions, and
+per-function bodies. The entry point is <code>int nelua_main(int, char**)</code>.
+Use <code>-c</code>/<code>--code</code> to emit C and stop, and <code>--print-code</code> to
+print the generated code.</p>
+
+<!-- 10 -->
+<h2 id="stdlib">10. Standard library</h2>
+<p>All libraries use <code>require 'name'</code>. Builtins (<code>require</code>,
+<code>print</code>, <code>panic</code>, <code>error</code>, <code>assert</code>,
+<code>check</code>, <code>likely</code>, <code>unlikely</code>, <code>_VERSION</code>) are
+not <code>require</code>d. Method names below are read from the <code>lib/</code> source.</p>
+
+<h3>10.1 arg</h3>
+<p>Global <code>arg: sequence(string, GeneralAllocator)</code> of command-line arguments.
+Index 0 is usually the executable name; indices 1..#arg are the arguments.</p>
+
+<h3>10.2 builtins</h3>
+<p>Documentation-only; must never be <code>require</code>d. Documents the predeclared
+builtins: <code>require</code>, <code>print</code>, <code>panic</code>, <code>error</code>,
+<code>assert</code>, <code>check</code>, <code>likely</code>, <code>unlikely</code>,
+<code>_VERSION</code>.</p>
+
+<h3>10.3 coroutine <span class="tag tag-nelu">Nelu ext</span></h3>
+<p>A Nelu addition (the oracle 0.2.0-dev has no <code>coroutine</code> module). Handle type
+lowering to minicoro fibers, C-backend only.
+Methods: <code>create</code>, <code>destroy</code>, <code>push</code>, <code>pop</code>,
+<code>isyieldable</code>, <code>resume</code>, <code>spawn</code>, <code>yield</code>,
+<code>running</code>, <code>status</code>. No varargs on <code>yield</code>/<code>resume</code> -
+values move via <code>push</code>/<code>pop</code> with compile-time-known types.
+<code>coroutine.wrap</code> does <em>not</em> exist.</p>
+
+<h3>10.4 errorhandling</h3>
+<p>Provides <code>pcall</code>, <code>xpcall</code>, plus the panic machinery
+(<code>raise_impl</code>, <code>NELUA_TRAP</code>, <code>NELUA_UBSAN_UNREACHABLE</code>).
+Exports: <code>panic</code>, <code>error</code>, <code>assert</code>, <code>pcall</code>,
+<code>xpcall</code>, <code>abort</code>, <code>exit</code>.</p>
+
+<h3>10.5 filestream</h3>
+<p>The <code>filestream</code> record. Methods:
+<code>open</code>, <code>flush</code>, <code>close</code>, <code>destroy</code>,
+<code>seek</code>, <code>setvbuf</code>, <code>read</code>, <code>write</code>,
+<code>writef</code>, <code>lines</code>, <code>isopen</code>, <code>print</code>,
+<code>printf</code>, <code>__tostring</code>, <code>__close</code>, <code>_fromfp</code>,
+<code>_getfp</code>.</p>
+
+<h3>10.6 hashmap</h3>
+<p><code>hashmap(K, V, HashFunc, Allocator)</code>. Methods:
+<code>make</code>, <code>destroy</code>, <code>__close</code>, <code>clear</code>,
+<code>_find</code>, <code>rehash</code>, <code>reserve</code>, <code>_at</code>,
+<code>__atindex</code>, <code>peek</code>, <code>remove</code>, <code>erase</code>,
+<code>has</code>, <code>has_and_get</code>, <code>loadfactor</code>, <code>bucketcount</code>,
+<code>capacity</code>, <code>__len</code>, <code>__next</code>, <code>__mnext</code>,
+<code>__pairs</code>, <code>__mpairs</code>.</p>
+
+<h3>10.7 hash</h3>
+<p>Functions: <code>short</code>, <code>long</code>, <code>combine</code>, <code>hash</code>.</p>
+
+<h3>10.8 io</h3>
+<p>Functions: <code>open</code>, <code>popen</code>, <code>close</code>, <code>flush</code>,
+<code>input</code>, <code>output</code>, <code>read</code>, <code>write</code>,
+<code>writef</code>, <code>printf</code>, <code>print</code>, <code>lines</code>,
+<code>tmpfile</code>, <code>type</code>. Globals: <code>io.stdin</code>,
+<code>io.stdout</code>, <code>io.stderr</code>.</p>
+
+<h3>10.9 iterators</h3>
+<p>Functions: <code>next</code>, <code>mnext</code>, <code>pairs</code>,
+<code>mpairs</code>, <code>ipairs</code>, <code>mipairs</code>.</p>
+
+<h3>10.10 list</h3>
+<p>Doubly-linked list <code>list(T, Allocator)</code>. Methods:
+<code>make</code>, <code>destroy</code>, <code>__close</code>, <code>clear</code>,
+<code>pushfront</code>, <code>pushback</code>, <code>insert</code>, <code>popfront</code>,
+<code>popback</code>, <code>find</code>, <code>erase</code>, <code>empty</code>,
+<code>__len</code>, <code>__next</code>, <code>__mnext</code>, <code>__pairs</code>,
+<code>__mpairs</code>, <code>__convert</code>.</p>
+
+<h3>10.11 math</h3>
+<p>Functions: <code>abs</code>, <code>acos</code>, <code>acosh</code>, <code>asin</code>,
+<code>asinh</code>, <code>atan</code>, <code>atan2</code>, <code>atanh</code>, <code>cbrt</code>,
+<code>ceil</code>, <code>clamp</code>, <code>cos</code>, <code>cosh</code>, <code>deg</code>,
+<code>exp</code>, <code>exp2</code>, <code>floor</code>, <code>fmod</code>, <code>fract</code>,
+<code>frexp</code>, <code>iceil</code>, <code>ifloor</code>, <code>iround</code>,
+<code>isfinite</code>, <code>isinf</code>, <code>isnan</code>, <code>itrunc</code>,
+<code>ldexp</code>, <code>log</code>, <code>log2</code>, <code>log10</code>, <code>max</code>,
+<code>min</code>, <code>mod</code>, <code>modf</code>, <code>pow</code>, <code>rad</code>,
+<code>random</code>, <code>randomseed</code>, <code>round</code>, <code>sign</code>,
+<code>sin</code>, <code>sinh</code>, <code>sqrt</code>, <code>tan</code>, <code>tanh</code>,
+<code>tointeger</code>, <code>trunc</code>, <code>type</code>, <code>ult</code>.
+Constants: <code>pi</code>, <code>huge</code>, <code>mininteger</code>,
+<code>maxinteger</code>, <code>maxuinteger</code>. <strong>Needs <code>-lm</code>.</strong></p>
+
+<h3>10.12 memory</h3>
+<p>Functions: <code>copy</code>, <code>move</code>, <code>set</code>, <code>zero</code>,
+<code>compare</code>, <code>equals</code>, <code>scan</code>, <code>find</code>,
+<code>spancopy</code>, <code>spanmove</code>, <code>spanset</code>, <code>spanzero</code>,
+<code>spancompare</code>, <code>spanequals</code>, <code>spanfind</code>.</p>
+
+<h3>10.13 os</h3>
+<p>Functions: <code>clock</code>, <code>date</code>, <code>difftime</code>,
+<code>execute</code>, <code>exit</code>, <code>getenv</code>, <code>now</code>,
+<code>realtime</code>, <code>remove</code>, <code>rename</code>, <code>setenv</code>,
+<code>setlocale</code>, <code>sleep</code>, <code>time</code>, <code>tmpname</code>,
+<code>timedesc</code>. <code>os.execute(cmd)</code> returns
+<code>(boolean, string, integer)</code> - a success flag, a status string
+(<code>"exit"</code>), and the raw <code>system()</code> exit value.</p>
+
+<h3>10.14 sequence</h3>
+<p><code>sequence(T, Allocator)</code>, Lua-table-like (1-indexed, grows on past-end
+index, passed by reference). Methods: <code>make</code>, <code>destroy</code>,
+<code>__close</code>, <code>clear</code>, <code>reserve</code>, <code>resize</code>,
+<code>copy</code>, <code>push</code>, <code>pop</code>, <code>insert</code>,
+<code>remove</code>, <code>removevalue</code>, <code>removeif</code>, <code>capacity</code>,
+<code>__atindex</code>, <code>__len</code>, <code>__convert</code>, <code>unpack</code>.</p>
+
+<h3>10.15 span</h3>
+<p>The <code>span(T)</code> fat pointer. Methods: <code>empty</code>, <code>valid</code>,
+<code>sub</code>, <code>as</code>, <code>sizebytes</code>, <code>__atindex</code>,
+<code>__len</code>, <code>__convert</code>.</p>
+
+<h3>10.16 stringbuilder</h3>
+<p>Mutable byte buffer. Methods: <code>make</code>, <code>destroy</code>,
+<code>__close</code>, <code>clear</code>, <code>prepare</code>, <code>commit</code>,
+<code>resize</code>, <code>rollback</code>, <code>writebyte</code>, <code>write</code>,
+<code>writef</code>, <code>view</code>, <code>promote</code>, <code>__len</code>,
+<code>__tostring</code>, <code>__tostringview</code>.</p>
+
+<h3>10.17 string</h3>
+<p>Functions/methods: <code>create</code>, <code>destroy</code>, <code>__close</code>,
+<code>copy</code>, <code>byte</code>, <code>char</code>, <code>sub</code>,
+<code>subview</code>, <code>find</code>, <code>match</code>, <code>matchview</code>,
+<code>gmatch</code>, <code>gmatchview</code>, <code>gsub</code>, <code>rep</code>,
+<code>reverse</code>, <code>upper</code>, <code>lower</code>, <code>format</code>,
+<code>len</code>, <code>span</code>, <code>fillcstring</code>, <code>pack</code>,
+<code>packsize</code>, <code>unpack</code>. Module-level:
+<code>tostring</code>, <code>tonumber</code>, <code>tointeger</code>.
+Operator metamethods: <code>__add</code>, <code>__sub</code>, <code>__mul</code>,
+<code>__div</code>, <code>__idiv</code>, <code>__tdiv</code>, <code>__mod</code>,
+<code>__tmod</code>, <code>__pow</code>, <code>__unm</code>, <code>__concat</code>,
+<code>__eq</code>, <code>__lt</code>, <code>__le</code>, <code>__len</code>,
+<code>__band</code>, <code>__bor</code>, <code>__bxor</code>, <code>__shl</code>,
+<code>__shr</code>, <code>__asr</code>, <code>__bnot</code>, <code>__atindex</code>.</p>
+<div class="warn">
+<strong>string.find and string.match are not like Lua.</strong> <code>string.find</code>
+returns <code>(isize, isize)</code>: start and end positions on a match, or
+<code>(0, 0)</code> on no match (not <code>nil</code>). <code>string.match</code> returns
+<code>(boolean, sequence(string))</code> - a success flag plus captures, not a string.
+</div>
+
+<h3>10.18 table</h3>
+<div class="bad">
+Stubs - <code>table</code> errors on use: "tables are not implement yet". The Lua
+<code>table.*</code> functions are listed as comments in the source for reference.
+</div>
+
+<h3>10.19 traits</h3>
+<p>Functions: <code>type</code>, <code>typeid</code>, <code>typeidof</code>,
+<code>typeinfo</code>, <code>typeinfoof</code>.</p>
+
+<h3>10.20 utf8</h3>
+<p>Functions: <code>char</code>, <code>codepoint</code>, <code>codes</code>,
+<code>len</code>, <code>offset</code>. Constant: <code>charpattern</code>.</p>
+
+<h3>10.21 vector</h3>
+<p><code>vector(T, Allocator)</code> dynamic array. Methods:
+<code>make</code>, <code>destroy</code>, <code>__close</code>, <code>clear</code>,
+<code>reserve</code>, <code>resize</code>, <code>copy</code>, <code>push</code>,
+<code>pop</code>, <code>insert</code>, <code>remove</code>, <code>removevalue</code>,
+<code>removeif</code>, <code>capacity</code>, <code>__atindex</code>, <code>__len</code>,
+<code>__convert</code>.</p>
+
+<h3>10.22 allocators</h3>
+<p>Submodules under <code>lib/allocators/</code>:</p>
+<ul>
+  <li><code>default</code> - aliases <code>default_allocator</code> (GC when GC on, else
+  <code>general_allocator</code>) and <code>DefaultAllocator</code>; exports
+  <code>new(what, size, flags)</code> and <code>delete(v)</code>.</li>
+  <li><code>allocator</code> - the <code>Allocator</code> interface:
+  <code>alloc</code>, <code>alloc0</code>, <code>dealloc</code>, <code>delete</code>,
+  <code>new</code>, <code>realloc</code>, <code>realloc0</code>, <code>spanalloc</code>,
+  <code>spanalloc0</code>, <code>spandealloc</code>, <code>spanrealloc</code>,
+  <code>spanrealloc0</code>, <code>xalloc</code>, <code>xalloc0</code>,
+  <code>xrealloc</code>, <code>xrealloc0</code>, <code>xspanalloc</code>,
+  <code>xspanalloc0</code>, <code>xspanrealloc</code>, <code>xspanrealloc0</code>.</li>
+  <li><code>general</code> - <code>GeneralAllocator</code> (malloc/free);
+  <code>general_allocator</code>.</li>
+  <li><code>gc</code> - <code>GCAllocator</code> + <code>GC</code> control
+  (<code>collect</code>, <code>count</code>, <code>step</code>, <code>stop</code>,
+  <code>restart</code>, <code>isrunning</code>, <code>register</code>,
+  <code>unregister</code>, <code>reregister</code>, <code>setpause</code>,
+  <code>setstacktop</code>, <code>getstacktop</code>); <code>gc_allocator</code>.</li>
+  <li><code>arena</code> - <code>ArenaAllocator</code>.</li>
+  <li><code>stack</code> - <code>StackAllocator</code>.</li>
+  <li><code>pool</code> - <code>PoolAllocator</code>.</li>
+  <li><code>heap</code> - <code>HeapAllocator</code>.</li>
+  <li><code>aligned</code> - <code>AlignedAllocator</code>.</li>
+</ul>
+
+<h3>10.23 C submodules</h3>
+<p>Members are declared on the <code>C</code> namespace record. Full member lists
+(read from <code>lib/C/*.nelua</code>):</p>
+<ul>
+  <li><code>C.stdio</code>: <code>printf</code>, <code>fprintf</code>, <code>snprintf</code>,
+  <code>sprintf</code>, <code>scanf</code>, <code>fscanf</code>, <code>sscanf</code>,
+  <code>vprintf</code>, <code>vfprintf</code>, <code>vsprintf</code>, <code>vsnprintf</code>,
+  <code>vscanf</code>, <code>vfscanf</code>, <code>vsscanf</code>, <code>fopen</code>,
+  <code>freopen</code>, <code>tmpfile</code>, <code>tmpnam</code>, <code>fclose</code>,
+  <code>fgetc</code>, <code>fgets</code>, <code>fputc</code>, <code>fputs</code>,
+  <code>fread</code>, <code>fwrite</code>, <code>getc</code>, <code>getchar</code>,
+  <code>gets</code>, <code>putc</code>, <code>putchar</code>, <code>puts</code>,
+  <code>ungetc</code>, <code>clearerr</code>, <code>feof</code>, <code>ferror</code>,
+  <code>fflush</code>, <code>fgetpos</code>, <code>fsetpos</code>, <code>fseek</code>,
+  <code>ftell</code>, <code>rewind</code>, <code>remove</code>, <code>rename</code>,
+  <code>perror</code>, <code>setbuf</code>, <code>setvbuf</code>. Constants:
+  <code>BUFSIZ</code>, <code>EOF</code>, <code>FILENAME_MAX</code>, <code>FOPEN_MAX</code>,
+  <code>L_tmpnam</code>, <code>TMP_MAX</code>, <code>_IOFBF</code>, <code>_IOLBF</code>,
+  <code>_IONBF</code>, <code>SEEK_SET</code>, <code>SEEK_CUR</code>, <code>SEEK_END</code>,
+  <code>fpos_t</code>. Globals: <code>stdin</code>, <code>stdout</code>, <code>stderr</code>.</li>
+  <li><code>C.stdlib</code>: <code>abort</code>, <code>abs</code>, <code>labs</code>,
+  <code>llabs</code>, <code>div</code>, <code>ldiv</code>, <code>lldiv</code>,
+  <code>atof</code>, <code>atoi</code>, <code>atol</code>, <code>atoll</code>,
+  <code>strtod</code>, <code>strtof</code>, <code>strtold</code>, <code>strtol</code>,
+  <code>strtoll</code>, <code>strtoul</code>, <code>strtoull</code>, <code>malloc</code>,
+  <code>calloc</code>, <code>realloc</code>, <code>aligned_alloc</code>, <code>free</code>,
+  <code>getenv</code>, <code>system</code>, <code>atexit</code>, <code>at_quick_exit</code>,
+  <code>quick_exit</code>, <code>_Exit</code>, <code>exit</code>, <code>rand</code>,
+  <code>srand</code>, <code>bsearch</code>, <code>qsort</code>. Constants:
+  <code>RAND_MAX</code>, <code>EXIT_FAILURE</code>, <code>EXIT_SUCCESS</code>.
+  Types: <code>div_t</code>, <code>ldiv_t</code>, <code>lldiv_t</code>.</li>
+  <li><code>C.stdarg</code>: <code>va_start</code>, <code>va_arg</code>, <code>va_end</code>.</li>
+  <li><code>C.string</code>: <code>memcpy</code>, <code>memmove</code>, <code>memccpy</code>,
+  <code>memcmp</code>, <code>memchr</code>, <code>memset</code>, <code>strcat</code>,
+  <code>strncat</code>, <code>strchr</code>, <code>strrchr</code>, <code>strcmp</code>,
+  <code>strncmp</code>, <code>strcoll</code>, <code>strxfrm</code>, <code>strcpy</code>,
+  <code>strncpy</code>, <code>strdup</code>, <code>strndup</code>, <code>strlen</code>,
+  <code>strcspn</code>, <code>strspn</code>, <code>strpbrk</code>, <code>strstr</code>,
+  <code>strerror</code>.</li>
+  <li><code>C.arg</code>: <code>argc</code>, <code>argv</code>.</li>
+  <li><code>C.ctype</code>: <code>isalnum</code>, <code>isalpha</code>, <code>isblank</code>,
+  <code>iscntrl</code>, <code>isdigit</code>, <code>isgraph</code>, <code>islower</code>,
+  <code>isprint</code>, <code>ispunct</code>, <code>isspace</code>, <code>isupper</code>,
+  <code>isxdigit</code>, <code>tolower</code>, <code>toupper</code>.</li>
+  <li><code>C.errno</code>: <code>errno</code>, <code>EDOM</code>, <code>ERANGE</code>,
+  <code>EILSEQ</code>.</li>
+  <li><code>C.init</code>: <code>atexit</code>.</li>
+  <li><code>C.locale</code>: <code>setlocale</code>, <code>localeconv</code>.
+  Constants: <code>LC_ALL</code>, <code>LC_COLLATE</code>, <code>LC_CTYPE</code>,
+  <code>LC_MONETARY</code>, <code>LC_NUMERIC</code>, <code>LC_TIME</code>.
+  Type: <code>lconv</code>.</li>
+  <li><code>C.math</code>: the full C99 math set - <code>sin/cos/tan</code>,
+  <code>asin/acos/atan</code>, <code>sinh/cosh/tanh</code>, <code>atan2</code>,
+  <code>exp/log/log2/log10/exp2</code>, <code>pow/sqrt/cbrt/hypot</code>,
+  <code>floor/ceil/round/trunc</code>, <code>fabs</code>, <code>fmod/remainder</code>,
+  <code>modf/frexp/ldexp</code>, <code>clamp/fmin/fmax/fma/fdim</code>,
+  <code>signbit/isfinite/isinf/isnan/isnormal</code>, <code>fpclassify</code>,
+  <code>nearbyint/rint/lrint/llrint/lround/llround</code>, <code>scalbn/scalbln</code>,
+  <code>lgamma/tgamma/erf/erfc</code>, <code>ilogb/logb</code>, <code>nextafter</code>,
+  <code>nan</code>, <code>random</code>-equivalents. Each in <code>f</code>/<code>l</code>
+  variants. Constants: <code>MATH_ERRNO</code>, <code>MATH_ERREXCEPT</code>,
+  <code>math_errhandling</code>, <code>HUGE_VAL</code>/<code>HUGE_VALF</code>/<code>HUGE_VALL</code>,
+  <code>INFINITY</code>, <code>NAN</code>, <code>FP_ZERO</code>/<code>FP_NORMAL</code>,
+  <code>FP_SUBNORMAL</code>, <code>FP_INFINITE</code>, <code>FP_NAN</code>,
+  <code>FP_ILOGB0</code>, <code>FP_ILOGBNAN</code>, <code>FP_FAST_FMA*</code>,
+  <code>ATOMIC_*_LOCK_FREE</code> (via stdatomic). <strong>Needs <code>-lm</code>.</strong></li>
+  <li><code>C.signal</code>: <code>signal</code>, <code>raise</code>.
+  Constants: <code>SIGABRT</code>, <code>SIGFPE</code>, <code>SIGILL</code>,
+  <code>SIGINT</code>, <code>SIGSEGV</code>, <code>SIGTERM</code>,
+  <code>SIG_DFL</code>, <code>SIG_IGN</code>, <code>SIG_ERR</code>.</li>
+  <li><code>C.stdatomic</code>: atomic operations
+  (<code>atomic_load</code>/<code>store</code>/<code>exchange</code>/<code>compare_exchange_*_explicit</code>,
+  <code>atomic_fetch_add/sub/and/or</code>, <code>atomic_flag_test_and_set/clear</code>,
+  <code>atomic_init</code>, <code>atomic_is_lock_free</code>, fences).
+  Constants: <code>ATOMIC_BOOL_LOCK_FREE</code>, <code>ATOMIC_INT_LOCK_FREE</code>,
+  <code>ATOMIC_LONG_LOCK_FREE</code>, <code>ATOMIC_LLONG_LOCK_FREE</code>,
+  <code>ATOMIC_POINTER_LOCK_FREE</code>, <code>ATOMIC_FLAG_INIT</code>,
+  <code>memory_order_relaxed</code>/<code>acquire</code>/<code>release</code>/<code>acq_rel</code>/<code>seq_cst</code>,
+  <code>atomic_flag</code>.</li>
+  <li><code>C.threads</code>: <code>thrd_create</code>, <code>thrd_current</code>,
+  <code>thrd_detach</code>, <code>thrd_equal</code>, <code>thrd_exit</code>, <code>thrd_join</code>,
+  <code>thrd_sleep</code>, <code>thrd_yield</code>, <code>thrd_busy</code>/<code>thrd_error</code>,
+  <code>thrd_nomem</code>, <code>thrd_success</code>, <code>thrd_timedout</code>,
+  <code>thrd_start_t</code>, <code>thrd_t</code>; <code>mtx_init</code>, <code>mtx_destroy</code>,
+  <code>mtx_lock</code>, <code>mtx_trylock</code>, <code>mtx_timedlock</code>, <code>mtx_unlock</code>,
+  <code>mtx_t</code>, <code>mtx_plain</code>, <code>mtx_recursive</code>, <code>mtx_timed</code>;
+  <code>cnd_init</code>, <code>cnd_destroy</code>, <code>cnd_wait</code>, <code>cnd_timedwait</code>,
+  <code>cnd_signal</code>, <code>cnd_broadcast</code>, <code>cnd_t</code>;
+  <code>call_once</code>, <code>once_flag</code>, <code>ONCE_FLAG_INIT</code>;
+  <code>tss_create</code>, <code>tss_delete</code>, <code>tss_get</code>, <code>tss_set</code>,
+  <code>tss_t</code>, <code>tss_dtor_t</code>, <code>TSS_DTOR_ITERATIONS</code>.</li>
+  <li><code>C.time</code>: <code>time</code>, <code>clock</code>, <code>difftime</code>,
+  <code>mktime</code>, <code>strftime</code>, <code>gmtime</code>, <code>localtime</code>,
+  <code>ctime</code>, <code>asctime</code>, <code>timespec_get</code>;
+  <code>_r</code> variants of the reentrant forms. Constants: <code>CLOCKS_PER_SEC</code>,
+  <code>TIME_UTC</code>. Types: <code>time_t</code>, <code>clock_t</code>, <code>tm</code>,
+  <code>timespec</code>.</li>
+</ul>
+
+<!-- 11 -->
+<h2 id="nelu-lua">11. The embedded Lua engine (preprocessor + <code>nelu-lua</code>)</h2>
+
+<div class="note">
+<strong>The preprocessor IS Lua.</strong> You cannot understand Nelua metaprogramming
+without understanding that the compile-time preprocessor is a Lua engine embedded in the
+compiler. The <code>##</code> lines and <code>##[[ ... ]]</code> blocks between statements
+are arbitrary Lua evaluated at compile time. Every metaprogramming surface -
+<code>#[expr]#</code>, <code>#|name| #</code>, <code>#[node]#</code>,
+<code>inject_astnode</code>, macros, <code>generalize</code>/generics, concepts,
+<code>static_assert</code>/<code>static_error</code> - is this embedded Lua speaking.
+There is no separate "metaprogramming language"; there is only Lua, running inside the
+compiler before it emits C.
+</div>
+
+<h3>11.1 Two surfaces of the same Lua engine, one implementation</h3>
+<p>There is one Lua 5.4.3 base, and it appears in two places:</p>
+<ul>
+  <li><strong>Compile time.</strong> The compiler runs Lua while analyzing your program,
+  via <code>src/luaengine.nim</code> and the build-time Lua source in
+  <code>lualib/nelua/</code>. This is the preprocessor: it evaluates your <code>##</code>
+  blocks and splice tokens, and it exposes the Nelua AST/attr APIs to you
+  (<code>context.rootscope.symbols</code>, <code>attr.type</code>, the
+  <code>generalize</code>/<code>concept</code>/<code>overload</code> helpers).</li>
+  <li><strong>Standalone.</strong> <code>nelu-lua</code> is the standalone build of that
+  same Lua 5.4.3, from C: <code>src/lua/onelua.c</code> plus <code>src/*.c</code> plus
+  <code>src/lpeglabel/*.c</code>, linked with the Nelua init layer
+  (<code>src/luainit.c</code>, <code>src/luainit.h</code>, <code>src/luainit.lua</code>).
+  It is used for running Lua scripts and for running the spec suite.</li>
+</ul>
+<p>The relationship: same Lua 5.4.3 base; the preprocessor uses the compiler's embedded
+Lua with the Nelua AST/attr APIs exposed to it; <code>nelu-lua</code> is the standalone
+build of that same Lua plus the Nelua init layer and <code>lpeglabel</code>.</p>
+
+<h3>11.2 What the preprocessor Lua can and cannot see</h3>
+<ul>
+  <li><strong>Persists across modules.</strong> <code>##</code> state survives
+  <code>require</code> boundaries. Declare helpers <code>local</code> so they do not leak
+  into other modules.</li>
+  <li><strong><code>require "foo"</code> from a standalone <code>.lua</code> module</strong>
+  works inside <code>##</code> blocks - set <code>LUA_PATH</code> if the module is not on
+  the default path.</li>
+  <li><strong>Standard Lua functions</strong> are available inside <code>##</code> blocks:
+  <code>select</code>, <code>string</code>, <code>table</code>, <code>math</code>,
+  <code>io</code>, and the rest of the Lua 5.4.3 standard library.</li>
+  <li><strong>The boundary.</strong> Runtime Nelua code cannot load runtime-generated
+  code - compilation is AOT only. All code generation happens at compile time, through
+  the preprocessor. This is the one place where the embedded Lua is not a general-purpose
+  runtime: it is a compile-time tool, and its output is frozen into the C that gcc compiles.</li>
+</ul>
+
+<h3>11.3 Building and running <code>nelu-lua</code></h3>
+<p><code>nelu-lua</code> is a bundled standalone Lua 5.4.3 interpreter, built from C:</p>
+<pre><code class="c">make nelu-lua     # gcc -O2 -fno-plt -flto ... -o nelu-lua -lm -ldl</code></pre>
+<p><code>./nelu-lua -v</code> reports <code>Lua 5.4.3 Copyright (C) 1994-2021 Lua.org, PUC-Rio</code>.
+Verified: <code>require "lpeglabel"</code> loads cleanly.</p>
+<ul>
+  <li>Run Lua scripts directly: <code>./nelu-lua script.lua</code>, or
+  <code>nelu --script script.lua</code> (the <code>--script</code> flag runs a Lua file
+  instead of compiling nelua).</li>
+  <li>Run the spec/test suite: <code>make test</code> -&gt;
+  <code>./nelu-lua spec/init.lua</code>.</li>
+</ul>
+<h3>11.4 How <code>nelu-lua</code> differs from stock Lua 5.4.3</h3>
+<ul>
+  <li><strong>The Nelua init layer</strong> (<code>luainit.c/h/lua</code>) - the bootstrap
+  that opens the Nelua-specific libraries and makes this interpreter the runtime for the
+  compiler and its test suite.</li>
+  <li><strong>The <code>lpeglabel</code> module</strong> - a labeled-PG variant of LPeg,
+  included in the build (<code>src/lpeglabel/*.c</code>).</li>
+</ul>
+
+<h3>11.5 Running the test suite</h3>
+<pre><code class="c">make test          # builds nelu-lua if needed, then runs ./nelu-lua spec/init.lua
+make test-quick    # lester quiet + stop-on-fail</code></pre>
+<p><code>spec/</code> contains the spec files: <code>init.lua</code>, <code>aster_spec.lua</code>,
+<code>bn_spec.lua</code>, <code>cgenerator_spec.lua</code>, <code>except_spec.lua</code>,
+<code>luagenerator_spec.lua</code>, <code>pegger_spec.lua</code>, <code>preprocessor_spec.lua</code>,
+<code>runner_spec.lua</code>, <code>stdlib_spec.lua</code>, ...</p>
+
+<!-- 12 -->
+<h2 id="cli">12. CLI usage</h2>
+<p>Usage: <code>nelua [options] [input ...]</code>. Version: <code>Nelua-in-Nim 0.2.1 (clean-room reimplementation)</code>, semver <code>0.2.1</code>.
+Flags verified from <code>./nelu --help</code> on a fresh build.</p>
+
+<h3>12.1 Input / output</h3>
+<table>
+<tr><th>Flag</th><th>Effect</th></tr>
+<tr><td><code>-o &lt;output&gt;</code></td><td>Output file path.</td></tr>
+<tr><td><code>-b, --binary</code></td><td>Produce a binary (default).</td></tr>
+<tr><td><code>-B, --object</code></td><td>Compile to a relocatable object (<code>.o</code>).</td></tr>
+<tr><td><code>-Y, --assembly</code></td><td>Emit assembly (<code>.s</code>).</td></tr>
+<tr><td><code>-A, --static-lib</code></td><td>Archive into a static library (<code>.a</code>).</td></tr>
+<tr><td><code>-H, --shared-lib</code></td><td>Link into a shared library (<code>.so</code>).</td></tr>
+<tr><td><code>-c, --code</code></td><td>Emit C and stop.</td></tr>
+</table>
+
+<h3>12.2 Codegen backends</h3>
+<table>
+<tr><th>Flag</th><th>Effect</th></tr>
+<tr><td><code>-g &lt;generator&gt;</code></td><td>Code generator backend (default: <code>c</code>).</td></tr>
+</table>
+
+<h3>12.3 Analysis / diagnostics</h3>
+<table>
+<tr><th>Flag</th><th>Effect</th></tr>
+<tr><td><code>-a, --analyze</code></td><td>Analyze only, no codegen.</td></tr>
+<tr><td><code>--lint</code></td><td>Check for syntax errors only.</td></tr>
+<tr><td><code>-w, --no-warning</code></td><td>Disable warnings (hook; none emitted yet).</td></tr>
+<tr><td><code>--no-color</code></td><td>Disable ANSI colour (hook; none emitted yet).</td></tr>
+</table>
+
+<h3>12.4 Preprocessor</h3>
+<table>
+<tr><th>Flag</th><th>Effect</th></tr>
+<tr><td><code>-D &lt;define&gt;</code>, <code>--define &lt;define&gt;</code></td><td>Define a preprocessor value.</td></tr>
+<tr><td><code>-P &lt;pragma&gt;</code>, <code>--pragma &lt;pragma&gt;</code></td><td>Set initial compiler pragma.</td></tr>
+</table>
+
+<h3>12.5 Paths</h3>
+<table>
+<tr><th>Flag</th><th>Effect</th></tr>
+<tr><td><code>-L &lt;dir&gt;, --add-path &lt;dir&gt;</code></td><td>Add a module search path. <strong>Accumulating</strong> - repeatable; <code>require 'name'</code> resolves to <code>&lt;dir&gt;/name.nelua</code>.</td></tr>
+<tr><td><code>--path &lt;dir&gt;</code></td><td>Add a module search path.</td></tr>
+<tr><td><code>--cache-dir &lt;dir&gt;</code></td><td>Compilation cache directory.</td></tr>
+</table>
+
+<h3>12.6 Build / link</h3>
+<table>
+<tr><th>Flag</th><th>Effect</th></tr>
+<tr><td><code>--cc &lt;cc&gt;</code></td><td>C compiler to use (default: <code>gcc</code>).</td></tr>
+<tr><td><code>--cflags &lt;flags&gt;</code></td><td>Extra flags for the C compiler.</td></tr>
+<tr><td><code>--ldflags &lt;flags&gt;</code></td><td>Extra flags for the linker.</td></tr>
+<tr><td><code>-s, --strip-bin</code></td><td>Strip symbols from the binary.</td></tr>
+<tr><td><code>--stripflags &lt;flags&gt;</code></td><td>Flags passed to strip (default: <code>-x</code>).</td></tr>
+<tr><td><code>--sanitize</code></td><td>Enable runtime sanitizers.</td></tr>
+</table>
+
+<h3>12.7 Execution / runner</h3>
+<table>
+<tr><th>Flag</th><th>Effect</th></tr>
+<tr><td><code>-R &lt;runner&gt;, --runner &lt;runner&gt;</code></td><td>Execute compiled output with a runner.</td></tr>
+<tr><td><code>-i &lt;code&gt;, --eval &lt;code&gt;</code></td><td>Evaluate a nelua string.</td></tr>
+<tr><td><code>--script</code></td><td>Run a Lua script instead of compiling.</td></tr>
+</table>
+
+<h3>12.8 Timing / debug</h3>
+<table>
+<tr><th>Flag</th><th>Effect</th></tr>
+<tr><td><code>-t, --timing</code></td><td>Print per-stage timing.</td></tr>
+<tr><td><code>-T, --more-timing</code></td><td>Print per-file timing.</td></tr>
+<tr><td><code>-d, --debug</code></td><td>Run the binary under GDB.</td></tr>
+<tr><td><code>-V</code></td><td>Verbose: echo generated C and cc command line.</td></tr>
+</table>
+
+<h3>12.9 Optimisation / cache / version / config</h3>
+<table>
+<tr><th>Flag</th><th>Effect</th></tr>
+<tr><td><code>-r, --release</code></td><td>Release build (optimize, disable checks).</td></tr>
+<tr><td><code>-M, --maximum-performance</code></td><td>Optimize for maximum performance.</td></tr>
+<tr><td><code>--no-cache</code></td><td>Do not use cached compilation.</td></tr>
+<tr><td><code>--version</code></td><td>Print the version and exit.</td></tr>
+<tr><td><code>--semver</code></td><td>Print the semantic version and exit.</td></tr>
+<tr><td><code>--config</code></td><td>Dump the effective configuration and exit.</td></tr>
+<tr><td><code>--help</code></td><td>Show help and exit.</td></tr>
+</table>
+
+<h3>12.10 Print / introspection family</h3>
+<table>
+<tr><th>Flag</th><th>Effect</th></tr>
+<tr><td><code>--print-ast</code></td><td>Print the AST.</td></tr>
+<tr><td><code>--print-analyzed-ast</code></td><td>Print the analyzed AST.</td></tr>
+<tr><td><code>--print-ppcode</code></td><td>Print the preprocessing code.</td></tr>
+<tr><td><code>--print-code</code></td><td>Print the generated code.</td></tr>
+<tr><td><code>--print-assembly</code></td><td>Print the assembly generated code only.</td></tr>
+</table>
+
+<!-- 13 -->
+<h2 id="divergences">13. Divergences cheat-sheet</h2>
+
+<h3>13.1 Lua vs Nelu</h3>
+<table>
+<tr><th>Area</th><th>Lua</th><th>Nelu</th></tr>
+<tr><td><code>local</code> scope</td><td>hoisted to whole block</td><td>enters scope at the declaration line</td></tr>
+<tr><td><code>string.find</code> no match</td><td>returns <code>nil</code></td><td>returns <code>(0, 0)</code></td></tr>
+<tr><td><code>string.match</code></td><td>returns a string</td><td>returns <code>(boolean, sequence(string))</code></td></tr>
+<tr><td><code>os.execute</code></td><td>(Lua has none)</td><td>returns <code>(boolean, string, integer)</code></td></tr>
+<tr><td><code>_</code> discard</td><td>valid</td><td>valid (no special discard)</td></tr>
+<tr><td><code>any</code> return type</td><td>(Lua is untyped)</td><td>rejected (phase 1); phase 2 tagged <code>any</code> <span class="tag tag-nelu">Nelu ext</span></td></tr>
+<tr><td><code>facultative(T)</code> in returns</td><td>-</td><td>not allowed; return <code>(bool, value)</code></td></tr>
+<tr><td>anonymous functions</td><td>closures</td><td>not closures (module-scope capture only <span class="tag tag-nelu">Nelu ext</span>)</td></tr>
+<tr><td><code>math</code> functions</td><td>(Lua's <code>math</code> needs no link)</td><td>require <code>## linklib 'm'</code></td></tr>
+<tr><td>tables</td><td>dynamic, reference types</td><td>use <code>@record</code>/<code>@union</code>/<code>enum</code>/<code>sequence</code>/<code>hashmap</code>; plain tables queued</td></tr>
+<tr><td>runtime code loading</td><td><code>load</code>/<code>loadfile</code></td><td>none - AOT only; generate at compile time with the preprocessor</td></tr>
+<tr><td>entry point</td><td><code>main</code> function</td><td>top-level statements; <code>print</code> builtin</td></tr>
+<tr><td><code>pcall</code></td><td>exists</td><td>exists in Nelu (via <code>errorhandling</code>); oracle 0.2.0-dev rejects it</td></tr>
+</table>
+
+<h3>13.2 Oracle 0.2.0-dev vs Nelu</h3>
+<table>
+<tr><th>Area</th><th>Oracle 0.2.0-dev</th><th>Nelu</th></tr>
+<tr><td><code>coroutine</code> module</td><td>absent</td><td>present (minicoro-backed) <span class="tag tag-nelu">Nelu ext</span></td></tr>
+<tr><td><code>any</code></td><td>rejected everywhere</td><td>phase 1 rejects (parity); phase 2 tagged runtime <code>any</code> <span class="tag tag-nelu">Nelu ext</span></td></tr>
+<tr><td>closures / upvalues</td><td>top-scope only</td><td>module-scope capture landed; function-local capture rejected with the oracle's message <span class="tag tag-nelu">Nelu ext</span></td></tr>
+<tr><td>pointer printing</td><td><code>0x</code> + lowercase hex; null is <code>(null)</code></td><td>same (parity bug fix) <span class="tag tag-parity">parity</span></td></tr>
+<tr><td>metamethod dispatch</td><td><code>__len</code>/<code>__tostring</code>/<code>__call</code>/<code>__index</code></td><td>M1/M2 landed; M3 (<code>__call</code>) prints <code>(null)</code> where oracle prints the value; M4 (<code>__index</code>) unblocked <span class="tag tag-bug">bug</span></td></tr>
+<tr><td>tables</td><td>rejected</td><td>queued (designed, not landed) <span class="tag tag-queued">queued</span></td></tr>
+<tr><td><code>try</code>/<code>catch</code>/<code>finally</code></td><td>not implemented</td><td>queued <span class="tag tag-queued">queued</span></td></tr>
+<tr><td><code>match</code>/<code>cond</code></td><td>not implemented</td><td>queued <span class="tag tag-queued">queued</span></td></tr>
+<tr><td>generators / <code>yield</code></td><td>no <code>yield</code></td><td>queued <span class="tag tag-queued">queued</span></td></tr>
+</table>
+
+<!-- 14 -->
+<h2 id="quickref">14. Quick reference</h2>
+
+<h3>14.1 Type grammar (infix)</h3>
+<p><code>array(T, N)</code> / <code>[N]T</code> (annotation only) array &middot;
+<code>*T</code> / <code>pointer(T)</code> pointer &middot; <code>span(T)</code> slice &middot;
+<code>record {…}</code> / <code>union {…}</code> (the <code>@</code> prefix also works on
+these two) &middot; <code>enum {…}</code> (<code>@enum</code> rejected) &middot;
+<code>function(a: T, …): R</code> function pointer (<code>@function</code> rejected) &middot;
+<code>facultative(T)</code> optional (<code>T?</code> queued) &middot;
+<code>A | B | C</code> variant &middot; <code>type</code> is the meta-type.</p>
+
+<h3>14.2 Attributes (postfix on declarations)</h3>
+<p><code>&lt;cimport&gt;</code>, <code>&lt;cimport 'name'&gt;</code>,
+<code>&lt;cinclude '...'&gt;</code>, <code>&lt;cexport&gt;</code>,
+<code>&lt;cexport, codename '...'&gt;</code>, <code>&lt;nodecl&gt;</code>,
+<code>&lt;inline&gt;</code>, <code>&lt;alwaysinline&gt;</code>, <code>&lt;noinline&gt;</code>,
+<code>&lt;nosideeffect&gt;</code>, <code>&lt;noinit&gt;</code>, <code>&lt;const&gt;</code>,
+<code>&lt;comptime&gt;</code>, <code>&lt;close&gt;</code>, <code>&lt;align N&gt;</code>,
+<code>&lt;packed&gt;</code>, <code>&lt;native&gt;</code>, <code>&lt;unsafe&gt;</code>.</p>
+
+<h3>14.3 <code>@</code> metaprogramming tokens</h3>
+<p><code>#[expr]#</code> value/AST replacement &middot; <code>#|name| #</code> name
+replacement &middot; <code>#[node]#</code> AST-node expression &middot;
+<code>inject_astnode(node)</code> statement injection &middot; <code>generalize</code> for
+generics &middot; <code>concept(...)</code> / <code>facultative(...)</code> /
+<code>overload(...)</code> for specialization.</p>
+
+<h3>14.4 Builtins</h3>
+<p><code>require</code>, <code>print</code>, <code>panic</code>, <code>error</code>,
+<code>assert</code>, <code>check</code>, <code>likely</code>, <code>unlikely</code>,
+<code>_VERSION</code>, <code>type</code>, <code>next</code>, <code>pairs</code>,
+<code>ipairs</code>, <code>sizeof</code>/<code>#</code>, <code>collectgarbage</code>.
+<code>tonumber</code>, <code>tostring</code>, and <code>tointeger</code> are
+<em>not</em> builtins - they are <code>global function</code>s defined in
+<code>lib/string.nelua</code> and need <code>require "string"</code>.
+<code>select</code> is only a standard Lua function available inside <code>##</code>
+preprocessor blocks.</p>
+
+<!-- 15 -->
+<h2 id="appendix">15. Appendix: how this was verified</h2>
+
+<h3>15.1 Ground truth</h3>
+<p>Language semantics and the 0.2.0-dev parity baseline come from
+<code>NELUA-200.md</code> (the oracle reference). Nelu extensions and their
+landed/queued status come from <code>NELU-2K.md</code>. Stdlib method names come from
+the <code>lib/</code> source files (21 runtime modules + <code>lib/C/</code> +<br>
+<code>lib/allocators/</code> + <code>lib/detail/</code>). CLI flags come from
+<code>./nelu --help</code> on a fresh build.</p>
+
+<h3>15.2 What was actually run</h3>
+<p>Because the binary at the repo root is a stale build, this manual's executable
+claims were checked against a fresh build of the committed tree
+(<code>cbd542d</code>): <code>nim c -d:release --path:src -o:tmp/nelua_committed src/main.nim</code>.
+All probes live in <code>tmp/</code> (gitignored) and are named after the construct.</p>
+
+<h3>15.3 Verified working (fresh build, exit 0)</h3>
+<ul>
+  <li>CLI: <code>--help</code>, <code>--version</code> -&gt; <code>Nelua-in-Nim 0.2.1 (clean-room reimplementation)</code>, <code>--semver</code> -&gt; <code>0.2.1</code>.</li>
+  <li><code>nelu-lua</code>: Lua 5.4.3, <code>require "lpeglabel"</code> loads.</li>
+  <li><code>nelu --script</code> running a Lua file.</li>
+  <li>Trivial programs: <code>print</code>, integer/float arithmetic, function
+  definitions and calls, control flow. Probe: <code>tmp/probe_fn.nelua</code>
+  (<code>add(2,3)</code> -&gt; <code>5</code>), <code>tmp/probe_hello.nelua</code>.</li>
+</ul>
+
+<h3>15.4 Verified failing on this tree (open compiler defects)</h3>
+<div class="bad">
+<strong>Honesty note.</strong> The current tree does <em>not</em> compile most
+non-trivial programs. These were confirmed by probe, not assumed:
+</div>
+<ul>
+  <li><strong>Typed record literals mis-lower.</strong> The typed literal form
+  <code>(@T){ ... }</code> emits C using an empty <code>struct nlrec0</code> instead of
+  the record's own type, so gcc rejects it
+  (<code>'struct nlrec0' has no member named 'x'</code>). This is the form used in
+  the manual's record examples; it is tracked as
+  <code>examples/cover/record-literal-typed.nelua</code> (DIFF until fixed).
+  The <em>untyped</em> ordered literal <code>{ x = 1, y = "a" }</code> assigned to
+  an annotated local is NOT affected -- <code>examples/cover/record-type.nelua</code>
+  MATCHes the oracle. Probes: <code>tmp/probe_core.nelua</code>,
+  <code>tmp/probe_rec2.nelua</code>, <code>tmp/probe_rec3.nelua</code>,
+  <code>tmp/probe_rec4.nelua</code>, <code>tmp/v_rec.nelua</code>.</li>
+  <li><strong><code>enum</code> crashes the compiler</strong> (SIGSEGV). Probe:
+  <code>tmp/probe_enum.nelua</code>.</li>
+  <li><strong><code>span</code> emits broken C
+  (<code>static (double[4])* ...</code>). Probe: <code>tmp/probe_span.nelua</code>.</strong></li>
+  <li><strong>The entire stdlib fails to analyze.</strong> Root causes:
+  <code>lib/hash.nelua:73:51: error: unexpected token</code> (affects most modules
+  transitively), <code>lib/iterators.nelua</code> preprocessor error
+  (<code>global 'impl_ipairs_next' is not callable</code>), and parse errors in
+  <code>lib/traits.nelua</code>, <code>lib/builtins.nelua</code>,
+  <code>lib/errorhandling.nelua</code>, <code>lib/detail/xoshiro256.nelua</code>.
+  Consequently <code>require 'C.stdio'</code> and every <code>require 'X'</code>
+  fail. Probes: <code>tmp/probe_*.nelua</code> for each module.</li>
+</ul>
+<p>These are <strong>compiler defects in the tree this was written against</strong>, not
+specification statements. A reference manual documents the language; the reader should
+verify against their own build. The verification bar for Nelu work is
+<code>NELU-2K.md</code> section 3 and <code>plan/GATES.md</code>.</p>
+
+<h3>15.5 What was deliberately not claimed as verified</h3>
+<ul>
+  <li>Anything marked <span class="tag tag-queued">queued</span> (tables, <code>try</code>/<code>catch</code>/<code>finally</code>, <code>match</code>/<code>cond</code>, generators) - designed, not implemented.</li>
+  <li>The <code>coroutine</code> module's C lowering - NELU-2K section 1.1 states it is
+  "not yet wired into <code>cgen.nim</code>"; my probe confirms the module does not
+  compile end-to-end on this tree.</li>
+  <li>Metamethod M3 (<code>__call</code>) and M4 (<code>__index</code>) parity - NELU-2K
+  section 1.7 records M3 as still printing <code>(null)</code> and M4 as unblocked but
+  not re-probed.</li>
+  <li>Record/union/enum/span end-to-end compilation - see 15.4.</li>
+</ul>
+
+<p class="cm" style="color:var(--muted);font-size:12px">Generated for Nelu 0.2.1 (clean-room reimplementation). ASCII-only; no external resources. Probes in tmp/.</p>
+
+</main>
+</body>
+</html>
