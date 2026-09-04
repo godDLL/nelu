@@ -1,0 +1,7 @@
+-- Nested array element assignment: our emitter wraps the RHS in
+-- nlany_from_int(...) even for concrete-typed elements, so gcc rejects it.
+local a: [2][3]integer
+a[0][0] = 5
+a[0][1] = 6
+a[1][2] = 9
+print(a[0][0], a[0][1], a[1][2])

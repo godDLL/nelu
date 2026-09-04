@@ -43,8 +43,20 @@ the sweep in `tmp/corpus_candidates.md`** — no candidate's verdict changed.
 | `tetrix` | RIV fantasy-console game (`require 'riv'`) | external — needs SDK |
 | `seqtoy` | RIV step sequencer (`require 'riv'`) | external — needs SDK |
 | `seqtoy_enum` | bare `@enum{}` (no primitive), `[12]string`, `@record{int8}`, record method, single-record literal init | MATCH |
+| `www_multidim_index-ddx` | multi-dim array indexing, dimension order | DIFF (us wrong) |
+| `www_multidim_assign-ddx` | nested array-element assignment `a[i][j] = v` | FAIL (us, C-compile) |
+| `www_multidim_ret-ddx` | nested array-element read in method return | FAIL (us, C-compile) |
+| `www_comptime_array_size-ddx` | `[N+1]boolean` with `N <comptime>` | DIFF (us wrong) |
 
-**24 entries: 15 MATCH, 6 DIFF, 1 FAIL(us), 2 external.**
+**28 entries: 15 MATCH, 7 DIFF, 3 FAIL(us), 2 external.**
+
+The four `-ddx` probes above were added by the SPECIAL FORCE DEVIL run
+(2026-09-04, report `plan/devil-advocate-findings.md` Run 4). They are the
+first corpus entries for the multi-dimensional-array C-emission family:
+dimension reversal, nested-index write (nlany wrap), nested-index read
+(nlany_load_int wrap), and comptime-sized array with no emitted size. All
+four block real upstream programs (`matmul`, `gameoflife`,
+`tetrix_rotation`) that use 2D arrays.
 
 The 5 FAIL(us) candidates are documented in [Rejected](#rejected) below; the
 1 kept FAIL(us) program (`tetrix_rotation`) is documented in
@@ -842,6 +854,86 @@ Extracted from `zxplayer nelua/queue.nelua` and `nelua/radio.nelua`. Covers:
 - oracle: exit 0, stdout `-5\t7`
 - ours: exit 0, stdout `-5\t7`
 - **MATCH**
+
+### Multi-dimensional array probes (Run 4, SPECIAL FORCE DEVIL)
+
+Added 2026-09-04. Mined from the 2D-array idioms in `matmul`, `gameoflife`,
+`tetrix_rotation`, and `fuzz_prime_sieve`. Full detail in
+`plan/devil-advocate-findings.md` Run 4. All four are `-ddx` (oracle accepts,
+ours diverges) and all four block real upstream programs.
+
+### `www_multidim_index-ddx`
+```lua
+local a: [2][3]integer = {{1, 2, 3}, {4, 5, 6}}
+print(a[0][0], a[1][0], a[0][1], a[1][1], a[0][2], a[1][2])
+```
+- oracle: exit 0, stdout `1\t4\t2\t5\t3\t6`
+- ours: exit 0, stdout `1\t4\t2\t5\t4\t0` — **DIFF (us wrong)**
+- Root cause: the C emitter declares `[2][3]integer` as `int64_t a[3][2]`
+  (dimensions reversed), so the reads and the initializer are applied to the
+  transposed array; `a[0][2]` falls off the `[3][2]` and reads `a[1][0]`.
+
+### `www_multidim_assign-ddx`
+```lua
+local a: [2][3]integer
+a[0][0] = 5
+a[0][1] = 6
+a[1][2] = 9
+print(a[0][0], a[0][1], a[1][2])
+```
+- oracle: exit 0, stdout `5\t6\t9`
+- ours: gcc rejects `a[0][0] = nlany_from_int(5)` ("incompatible types …
+  from type 'nlany'"), exit 1 — **FAIL (us, C-compile)**
+- Root cause: nested-index assignment wraps the RHS in `nlany_from_int(...)`
+  even for concrete-typed elements. Single-index `a[0] = 5` is fine.
+
+### `www_multidim_ret-ddx`
+```lua
+local Grid = @record{ cells: [2][2]integer }
+function Grid:get(i: integer, j: integer): integer
+  return self.cells[i][j]
+end
+local g: Grid
+g.cells[0][0] = 5
+g.cells[1][1] = 8
+print(g:get(0,0), g:get(1,1))
+```
+- oracle: exit 0, stdout `5\t8`
+- ours: gcc rejects `return nlany_load_int(self->cells[i][j])` ("expected
+  'nlany' but argument is of type 'int64_t'"), exit 1 — **FAIL (us, C-compile)**
+- Root cause: same family as `www_multidim_assign-ddx` but on the read path;
+  a nested index in return position is wrapped in `nlany_load_int` (the
+  `nlany`-to-int unwrap), which is backwards for a concrete element.
+
+### `www_comptime_array_size-ddx`
+```lua
+local N <comptime> = 100
+local is_prime: [N + 1]boolean
+for i = 2, N do
+  is_prime[i] = true
+end
+for i = 2, N do
+  if is_prime[i] then
+    for j = i + i, N, i do
+      is_prime[j] = false
+    end
+  end
+end
+local count = 0
+for i = 2, N do
+  if is_prime[i] then
+    count = count + 1
+  end
+end
+print(count)
+```
+- oracle: exit 0, stdout `25`
+- ours: exit 0, stdout `24` — **DIFF (us wrong)**
+- Root cause: the C emitter declares a comptime-sized array as `T name[];`
+  with no size; gcc's tentative-definition rule then assumes one element, so
+  the sieve undercounts. An `integer`-typed version MATCHes (GCC tolerates the
+  tentative `int64_t[]`), which is why the bug is the missing size, not the
+  element type.
 
 ## DIFF programs (our compiler wrong; oracle right)
 
