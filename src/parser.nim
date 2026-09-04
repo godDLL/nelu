@@ -1313,6 +1313,9 @@ proc parseStatement*(p: var Parser): Node =
       return p.parseSwitch()
     else:
       discard
+  if t.kind == tkIdent and t.value == "fallthrough":
+    p.advance()
+    return newFallthrough()
   if t.kind == tkIdent and t.value == "case":
     ## `case` has no meaning outside a `switch`; the reference reports it as
     ## "unexpected syntax".  This check fires only at genuine statement
@@ -1490,6 +1493,7 @@ proc dump*(n: Node, indent = 0): string =
   of nkForIn:       s.add "nkForIn"
   of nkBreak:       s.add "nkBreak"
   of nkContinue:    s.add "nkContinue"
+  of nkFallthrough: s.add "nkFallthrough"
   of nkLabel:       s.add "nkLabel " & quoteStr(n.str)
   of nkGoto:        s.add "nkGoto " & quoteStr(n.str)
   of nkAssign:      s.add "nkAssign"

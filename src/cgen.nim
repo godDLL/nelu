@@ -1912,7 +1912,7 @@ proc bodyEndsInJump(node: Node): bool =
   let stmts = if node.kind == nkBlock: node.children else: @[node]
   if stmts.len == 0: return false
   case stmts[^1].kind
-  of nkReturn, nkBreak, nkContinue, nkGoto: true
+  of nkReturn, nkBreak, nkContinue, nkGoto, nkFallthrough: true
   else: false
 
 proc genSwitch(s: var Gen, node: Node) =
@@ -2101,6 +2101,8 @@ proc genStmt(s: var Gen, node: Node) =
   of nkContinue:
     s.runDefersUpTo(dkLoop)
     s.line "continue;"
+  of nkFallthrough:
+    s.line "__attribute__((fallthrough));"
   of nkCall:
     let e = s.genCall(node)
     if e.len > 0: s.line e & ";"

@@ -62,6 +62,7 @@ type
     nkForIn          ## iterator for
     nkBreak          ## break
     nkContinue       ## continue
+    nkFallthrough    ## fallthrough
     nkLabel          ## ::name::
     nkGoto           ## goto name
     nkVarDecl        ## local/global declaration
@@ -138,7 +139,7 @@ proc layoutFor*(k: NodeKind): seq[NodeField] =
   of nkRepeat:        @[nfChildren]
   of nkForNum:        @[nfStr, nfChildren]
   of nkForIn:         @[nfChildren]
-  of nkBreak, nkContinue: @[]
+  of nkBreak, nkContinue, nkFallthrough: @[]
   of nkLabel, nkGoto: @[nfStr]
   of nkVarDecl:       @[nfStr, nfChildren, nfUnpackable]
   of nkAssign:        @[nfChildren, nfUnpackable, nfIntVal]

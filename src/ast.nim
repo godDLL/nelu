@@ -192,6 +192,7 @@ proc newForIn*(iddecls: seq[Node], exprs: seq[Node], body: Node): Node =
 
 proc newBreak*(): Node = Node(kind: nkBreak)
 proc newContinue*(): Node = Node(kind: nkContinue)
+proc newFallthrough*(): Node = Node(kind: nkFallthrough)
 
 proc newLabel*(name: string): Node =
   Node(kind: nkLabel, str: name)
