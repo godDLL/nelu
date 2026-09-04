@@ -33,5 +33,3 @@ nim_cache/
 /src/typedesc
 /src/types
 /src/main
-# Consolidated design docs + survey probes (scratch, not tracked).
-/plan/
