@@ -21,6 +21,7 @@ import sema
 import parser
 import span
 import preprocessor
+import timing
 import strutils
 import tables
 import hashes
@@ -2519,18 +2520,25 @@ proc analyzeModule(source: string, path: string, config: Config,
   ctx.unitname = computeUnitname(path)
   bootstrap(ctx)
   visited[path] = true
+  let parseStart = timing.nowMs()
   var ast = parse(source, path)
   if ast == nil:
     result.root = nil; result.ctx = ctx
     return
+  timing.markFile("parsed", path, timing.nowMs() - parseStart)
   # P3: run the M6 preprocessor over the parse tree (identity on directive-free
   # source) so every pipeline inherits preprocessing with no signature change.
   var pctx = newPreprocessContext(source, path)
+  var preprocessError = false
+  let ppStart = timing.nowMs()
   try:
     ast = preprocess(ast, pctx)
   except PreprocessError as e:
     ctx.diags.add e.msg
+    preprocessError = true
   ctx.diags &= pctx.diags
+  if not preprocessError:
+    timing.markFile("preprocessed", path, timing.nowMs() - ppStart)
 
   # P3-require: resolve each required module and recursively analyze it before
   # this unit's body is analyzed, so the imported symbols are in scope.
@@ -2558,7 +2566,9 @@ proc analyzeModule(source: string, path: string, config: Config,
   let ra = ctx.getAttr(ast)
   ra.filename = path
   # P4: analyze
+  let analyzeStart = timing.nowMs()
   analyzeBlock(ctx, ast)
+  timing.markFile("analyzed", "", timing.nowMs() - analyzeStart)
   finalize(ctx)
   result.root = ast; result.ctx = ctx; result.specials = ctx.specials
 

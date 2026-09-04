@@ -276,7 +276,11 @@ proc main(): int =
       failed = true
 
     if c.printAst:
-      echo dump(parser.parse(source, input))
+      let parseStart = timing.nowMs()
+      let ast = parser.parse(source, input)
+      if ast != nil:
+        timing.markFile("parsed", input, timing.nowMs() - parseStart)
+      echo dump(ast)
     elif c.printAnalyzedAst:
       var ar = analyzer.analyze(source, input)
       echo dumpAnaled(ar.ctx, ar.root)
@@ -288,15 +292,22 @@ proc main(): int =
       ## PreprocessError (a `##` chunk that errors, an unbalanced `##` block,
       ## `#error`, `static_assert(false)`) is caught and reported to stderr
       ## with a non-zero exit instead of crashing the driver.
+      let parseStart = timing.nowMs()
       var ast = parser.parse(source, input)
       if ast != nil:
+        timing.markFile("parsed", input, timing.nowMs() - parseStart)
         var pctx = preprocessor.newPreprocessContext(source, input)
+        var ppOk = true
+        let ppStart = timing.nowMs()
         try:
           ast = preprocessor.preprocess(ast, pctx)
         except PreprocessError as e:
           stderr.writeLine(e.msg)
           failed = true
           ast = nil
+          ppOk = false
+        if ppOk:
+          timing.markFile("preprocessed", input, timing.nowMs() - ppStart)
         for d in pctx.diags:
           stderr.writeLine(d)
         if pctx.diags.len > 0:
@@ -321,7 +332,10 @@ proc main(): int =
       # diagnostic itself and returns nil on a ParseError; anything that does
       # not parse is a lint failure.  Preprocessor/analyzer/codegen are NOT
       # run, so unresolved `#[expr]#` splices and `##` directives are accepted.
+      let parseStart = timing.nowMs()
       let ast = parser.parse(source, input)
+      if ast != nil:
+        timing.markFile("parsed", input, timing.nowMs() - parseStart)
       if ast == nil:
         failed = true
     elif c.analyze:
