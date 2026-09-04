@@ -76,7 +76,7 @@ type
     rhAnyFromString, rhAnyFromPtr,
     rhAnyLoadInt, rhAnyLoadUint, rhAnyLoadNum, rhAnyLoadBool, rhAnyLoadString,
     rhAnyLoadPtr, rhAnyEq,
-    rhStr, rhStrConcat, rhStrFree, rhIdiv, rhMod, rhPow, rhLen, rhClose,
+    rhStr, rhStrConcat, rhStrFree, rhIdiv, rhMod, rhTdiv, rhTmod, rhAsr, rhPow, rhLen, rhClose,
     rhNltypeInt, rhNltypeDouble, rhNltypeBool, rhNltypeString,
     rhMath, rhCheckInt, rhCheckUint, rhCheckFloat
   Gen = object
@@ -480,6 +480,25 @@ proc genPreamble(refs: set[RuntimeHelper]): string =
     s.add "  int64_t r = a % b;\n"
     s.add "  if (r != 0 && ((a < 0) != (b < 0))) r += b;\n"
     s.add "  return r;\n"
+    s.add "}\n"
+    s.add "\n"
+  if rhTdiv in refs:
+    s.add "static int64_t nltdiv(int64_t a, int64_t b) {\n"
+    s.add "  if (b == 0) return 0;\n"
+    s.add "  return a / b;\n"
+    s.add "}\n"
+    s.add "\n"
+  if rhTmod in refs:
+    s.add "static int64_t nltmod(int64_t a, int64_t b) {\n"
+    s.add "  if (b == 0) return 0;\n"
+    s.add "  return a % b;\n"
+    s.add "}\n"
+    s.add "\n"
+  if rhAsr in refs:
+    s.add "static int64_t nlasr(int64_t a, int64_t b) {\n"
+    s.add "  if (b <= 0) return a;\n"
+    s.add "  if (b >= 64) return (a < 0) ? -1 : 0;\n"
+    s.add "  return a >> b;\n"
     s.add "}\n"
     s.add "\n"
   if rhPow in refs:
@@ -966,7 +985,8 @@ proc genBinaryOp(s: var Gen, node: Node): string =
     return na.value
   let lstr0 = s.genExpr(lhs)
   let rstr0 = s.genExpr(rhs)
-  let arithmetic = node.str in @["+","-","*","/","//","%","^","<<",">>","&","|","~"]
+  let arithmetic = node.str in @["+","-","*","/","//","%","^","<<",">>","&","|","~",
+                                  "tdiv","tmod","asr"]
   let lstr = if arithmetic: s.arithCast(lstr0, lt, rtype) else: lstr0
   let rstr = if arithmetic: s.arithCast(rstr0, rt, rtype) else: rstr0
   let stringy = (lt != nil and lt.isStringy) and (rt != nil and rt.isStringy)
@@ -985,6 +1005,15 @@ proc genBinaryOp(s: var Gen, node: Node): string =
   of "%":
     s.use rhMod
     return "nlmod(" & lstr & ", " & rstr & ")"
+  of "tdiv":
+    s.use rhTdiv
+    return "nltdiv(" & lstr & ", " & rstr & ")"
+  of "tmod":
+    s.use rhTmod
+    return "nltmod(" & lstr & ", " & rstr & ")"
+  of "asr":
+    s.use rhAsr
+    return "nlasr(" & lstr & ", " & rstr & ")"
   of "^":
     s.use rhPow
     s.use rhMath

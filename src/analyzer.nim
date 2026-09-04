@@ -356,6 +356,22 @@ proc valueQuoteKind(t: Type): int =
 
 # ---- constant folding ---------------------------------------------------------
 
+proc floorDiv(a, b: int): int =
+  ## Integer division rounding toward negative infinity (Lua `//`, and the
+  ## arithmetic shift `>>>`).  Nim `div` truncates toward zero, so step the
+  ## quotient down by one when the signs differ and the remainder is non-zero.
+  let q = a div b
+  let r = a mod b
+  if r != 0 and ((a < 0) != (b < 0)): q - 1 else: q
+
+proc arithShr(a, b: int): int =
+  ## Arithmetic (sign-preserving) right shift, saturated at the bit width.
+  ## `>>>` is not C's `>>` (UB for shift >= width): a non-negative value
+  ## shifted by >= 64 becomes 0, a negative one becomes -1.
+  if b <= 0: return a
+  if b >= 63: return if a < 0: -1 else: 0
+  return floorDiv(a, 1 shl b)
+
 proc tryFoldBinary(op: string, lt: Type, lv: string, rt: Type, rv: string): (Type, string) =
   if op == "..":
     return (BuiltinTypes["string"], lv & rv)
@@ -374,6 +390,13 @@ proc tryFoldBinary(op: string, lt: Type, lv: string, rt: Type, rv: string): (Typ
     of "%": return (lt, $(a mod b))
     of "<<": return (lt, $(a shl b))
     of ">>": return (lt, $(a shr b))
+    of "tdiv":
+      if b == 0: return (nil, "")
+      return (lt, $(a div b))
+    of "tmod":
+      if b == 0: return (nil, "")
+      return (lt, $(a mod b))
+    of "asr": return (lt, $(arithShr(a, b)))
     of "&": return (lt, $(a and b))
     of "|": return (lt, $(a or b))
     of "~": return (lt, $(a xor b))

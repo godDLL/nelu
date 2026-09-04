@@ -221,6 +221,16 @@ proc inferBinary*(op: string, l, r: Type): (Type, Conversion, Conversion) =
         (res, convert(l, res, false), convert(r, res, false))
       else:
         (nil, none, none)
+    of "tdiv", "tmod", "asr":
+      ## Truncate division / truncate modulo / arithmetic shift right.  All
+      ## three are integer-only in the oracle; `///` and `%%%` are the C-semantic
+      ## partners of the floor `//` and Lua-mod `%`, and `>>>` is the sign-preserving
+      ## shift (saturating at the bit width, not C's UB shift-by-≥64).
+      if l.isIntegral and r.isIntegral:
+        let res = widerIntegral(l, r)
+        (res, convert(l, res, false), convert(r, res, false))
+      else:
+        (nil, none, none)
     of "..":
       (BuiltinTypes["string"], ident, ident)
     of "<", ">", "<=", ">=", "==", "~=":

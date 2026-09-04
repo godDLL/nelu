@@ -30,7 +30,8 @@ type
 proc isTypeKeyword*(s: string): bool =
   case s
   of "integer", "number", "string", "boolean", "isize", "usize",
-      "cchar", "cshort", "cint", "clong", "cfloat", "cdouble":
+      "cchar", "cshort", "cint", "clong", "cfloat", "cdouble",
+      "auto", "void", "type", "any":
     result = true
 
 proc newParser*(source: string, path: string = ""): Parser =
@@ -229,9 +230,18 @@ proc parseType*(p: var Parser): Node =
       var args: seq[Node] = @[]
       if not p.check(tkRParen):
         while true:
-          let id = p.advance().value
-          let atype = if p.match(tkColon): p.parseType() else: nil
-          args.add newIdDecl(id, atype)
+          # A function-type argument is either a named parameter
+          # (`name: type`) or an unnamed type argument (just `type`, e.g.
+          # `function(*minicoro.Coro): void`).  Distinguish by whether an
+          # identifier is immediately followed by `:`.
+          if p.tok.kind == tkIdent and p.peek(1).kind == tkColon:
+            let id = p.advance().value
+            discard p.advance()  # consume `:`
+            let atype = p.parseType()
+            args.add newIdDecl(id, if atype != nil: atype else: newId("any"))
+          else:
+            let atype = p.parseType()
+            if atype != nil: args.add atype
           if not p.match(tkComma): break
       p.expect(tkRParen, "expected ')' after function type args")
       var returns: seq[Node] = @[]
@@ -283,6 +293,14 @@ proc parseType*(p: var Parser): Node =
   else:
     return nil
   if base == nil: return nil
+  # Dot-index type reference: `os.timedesc`, `primtypes.isize`.  A type
+  # identifier followed by `.field` is a module/type reference, not a generic
+  # type call -- build the dot-index chain before the generic-instantiation
+  # check below so `facultative(os.timedesc)` parses the argument correctly.
+  while p.check(tkDot):
+    discard p.advance()
+    let field = p.advance().value
+    base = newDotIndex(field, base)
   # Generic type instantiation: `facultative(isize)`, `sequence(number)`.
   # A bare type identifier followed by `(...)` is a type-level call, producing
   # a `nkGenericType` node (the shape the reference `--print-ast` emits).
@@ -384,19 +402,34 @@ proc parseTable*(p: var Parser): Node =
   return newInitList(elems)
 
 proc parsePreprocessName*(p: var Parser): Node =
-  ## Parse a `#|name|#` splice placeholder into an `nkPreprocessName` node.
-  ## Returns `nil` when the current token sequence is not a `#|name|#` splice,
-  ## so callers can fall back to ordinary identifier parsing.
+  ## Parse a `#|expr|#` splice placeholder into an `nkPreprocessName` node.
+  ##
+  ## The splice body is a Lua expression evaluated at compile time to produce
+  ## the identifier name -- it is *not* restricted to a single identifier.  The
+  ## reference accepts `#|'a'..i|#`, `#|("field"..tostring(i))|#` and so on, so
+  ## capture the raw source text between the two `|` delimiters rather than
+  ## demanding a single `tkIdent` token.  Returns `nil` when the current token
+  ## sequence is not a `#|...|#` splice, so callers can fall back to ordinary
+  ## identifier parsing.
   if p.tok.kind != tkHash: return nil
   if p.peek(1).kind != tkBor: return nil
-  let nameTok = p.peek(2)
-  if nameTok.kind != tkIdent: return nil
-  if p.peek(3).kind != tkBor: return nil
-  if p.peek(4).kind != tkHash: return nil
+  let openBor = p.peek(1)
+  # Scan forward for the matching `|#` (a tkBor immediately followed by
+  # tkHash).  The expression between the two `|` may be arbitrary Lua, so we
+  # cannot require a single identifier here; capture the raw source text.
+  var closePos = -1
+  for i in (p.pos + 2) ..< p.tokens.len - 1:
+    if p.tokens[i].kind == tkBor and p.tokens[i + 1].kind == tkHash:
+      closePos = i
+      break
+  if closePos < 0: return nil
+  let exprStart = openBor.loc.offset + 1
+  let exprEnd = p.tokens[closePos].loc.offset
+  let name = p.source[exprStart ..< exprEnd]
   discard p.advance()  ## `#`
   discard p.advance()  ## `|`
-  let name = nameTok.value
-  discard p.advance()  ## name
+  while p.pos < closePos:
+    discard p.advance()  ## expression tokens
   discard p.advance()  ## `|`
   discard p.advance()  ## `#`
   return Node(kind: nkPreprocessName, str: name)
@@ -496,9 +529,14 @@ proc parsePrimary*(p: var Parser): Node =
     else:
       # A type keyword used as a static-method receiver, e.g.
       # `string.copy(s)`.  Accepted *only* when immediately followed by `.` so
-      # the `parsePostfix` loop builds the dot-index; bare type keywords are
-      # still rejected as general expression primaries.
+      # the `parsePostfix` loop builds the dot-index.
       if isTypeKeyword(t.value) and p.peek(1).kind == tkDot:
+        p.advance()
+        return newId(t.value)
+      # The oracle permits the type/annotation/declaration keywords as
+      # ordinary identifiers (`local import = 42; print(import)`); the
+      # control-flow, literal and operator keywords stay reserved.
+      if isIdentKeyword(t.value):
         p.advance()
         return newId(t.value)
       raise ParseError(loc: t.loc, msg: "unexpected keyword '" & t.value & "'")
@@ -729,7 +767,6 @@ proc parseBlock*(p: var Parser): Node =
     if t.kind == tkEof: break
     if t.kind == tkKeyword and (t.value == "end" or t.value == "else" or t.value == "elseif" or t.value == "until"):
       break
-    if t.kind == tkColonColon: break
     let s = p.parseStatement()
     if s != nil: stmts.add s
     if p.match(tkSemi): discard

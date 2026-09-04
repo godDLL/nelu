@@ -55,6 +55,24 @@ proc isKeyword*(s: string): bool =
     if s == k: return true
   return false
 
+## The keywords the oracle permits as ordinary identifiers.  It rejects every
+## control-flow keyword (if/for/while/end/then/...), every literal
+## (true/false/nil/nilptr) and every operator (and/or/not/break/goto/continue/
+## defer) -- `local end = 7` is "syntax error: expected an declaration
+## expression".  What survives is exactly the type/annotation/declaration
+## vocabulary, so a user may write `local import = 42; print(import)`.
+const IdentifierKeywords* = [
+  "cond", "require", "import", "macro", "record", "union", "enum",
+  "varargs", "varautos", "varanys", "cvarargs", "any", "auto", "integer",
+  "number", "string", "boolean", "isize", "usize", "cchar", "cshort",
+  "cint", "clong", "cfloat", "cdouble", "void", "type",
+]
+
+proc isIdentKeyword*(s: string): bool =
+  for k in IdentifierKeywords:
+    if s == k: return true
+  return false
+
 proc isIdentStart(c: char): bool =
   c == '_' or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z')
 
