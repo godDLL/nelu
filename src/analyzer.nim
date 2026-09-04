@@ -2054,6 +2054,7 @@ proc analyzeStmt(ctx: var AnalyzerContext, node: Node) =
       let what = if node.kind == nkBreak: "`break`" else: "`continue`"
       ctx.diags.add ctx.path & ": error: " & what & " statement is not inside a loop"
     discard
+  of nkIn: discard   ## consumed by the preprocessor as a splice-function body
   of nkLabel, nkGoto: discard
   of nkCall: discard analyzeCall(ctx, node)
   else: discard analyzeExpr(ctx, node)

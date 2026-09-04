@@ -102,6 +102,24 @@ var gBuiltinsRegistered = false
 var gBlockSplices: seq[Node] = @[]
 var gInBlockSpliceDeferral = false
 
+# ---------------------------------------------------------------------------
+# `in (expr)` splice-function registry.
+#
+# A `## local function f(p, q) in (#[p]# .. #[q]#) ## end` block defines a
+# *splice function*: `f` is a compile-time function whose body is an
+# expression containing `#[param]#` splice points.  A call `#[f]#(a, b)`
+# substitutes each argument for its parameter's splice point and uses the
+# resulting expression as the value.  This mirrors the reference's
+# `## local function rotl(x,n) in (#[x]# << #[n]#) | ... ## end` (see
+# `lib/detail/xoshiro256.nelua`).
+# ---------------------------------------------------------------------------
+type
+  SpliceFuncDef* = object
+    params*: seq[string]
+    body*: Node          ## the `in (expr)` expression, with `#[param]#` splices
+
+var gSpliceFuncs*: TableRef[string, SpliceFuncDef] = newTable[string, SpliceFuncDef]()
+
 proc resetPreprocessorState*() =
   ## Clear every per-compilation scratch buffer so the next compilation starts
   ## clean.  Called by `luaengine.resetLuaState` (via `onResetEngine`) at the
@@ -112,6 +130,39 @@ proc resetPreprocessorState*() =
   gBuiltinsRegistered = false
   gBlockSplices = @[]
   gInBlockSpliceDeferral = false
+  gSpliceFuncs.clear()
+
+proc parseSpliceFuncOpener(text: string): (bool, string, seq[string]) =
+  ## Parse a `##` line's raw text.  Returns `(true, name, params)` when the
+  ## line is a splice-function opener (`local function NAME(p, q)` or
+  ## `function NAME(p, q)` with no body / `end` on the same line); otherwise
+  ## `(false, "", @[])`.
+  let t = text.strip()
+  var prefix: string
+  if t.startsWith("local function "):
+    prefix = "local function "
+  elif t.startsWith("function "):
+    prefix = "function "
+  else:
+    return (false, "", @[])
+  let rest = t[prefix.len .. ^1]
+  let lp = rest.find('(')
+  if lp < 0:
+    return (false, "", @[])
+  let name = rest[0 .. lp-1].strip()
+  if name.len == 0:
+    return (false, "", @[])
+  let rp = rest.find(')', lp + 1)
+  if rp < 0:
+    return (false, "", @[])
+  let paramsStr = rest[lp + 1 .. rp - 1]
+  var params: seq[string] = @[]
+  if paramsStr.strip().len > 0:
+    for p in paramsStr.split(','):
+      let ps = p.strip()
+      if ps.len > 0:
+        params.add ps
+  return (true, name, params)
 
 proc newPreprocessContext*(source = "", path = ""): PreprocessContext =
   ## Construct a fresh preprocessor context with no defines and an empty
@@ -133,6 +184,38 @@ proc cloneNode*(n: Node): Node =
     isIndex: n.isIndex, isOperator: n.isOperator)
   for ch in n.children:
     result.children.add cloneNode(ch)
+
+proc substituteSpliceArgs(body: Node, params: seq[string],
+                          args: seq[Node]): Node =
+  ## Walk a clone of `body` and replace every `#[param]#` splice point
+  ## (`nkPreprocessExpr` whose `str` is a parameter name) with the
+  ## corresponding argument node.  Splice points that name no parameter are
+  ## left untouched (they are ordinary `#[expr]#` splices evaluated later).
+  let node = cloneNode(body)
+  result = node
+  var stack: seq[Node] = @[]
+  stack.add node
+  while stack.len > 0:
+    let n = stack.pop()
+    if n.kind == nkPreprocessExpr:
+      let idx = params.find(n.str)
+      if idx >= 0 and idx < args.len:
+        # Replace in place by copying the arg's children/scalars onto `n`.
+        let a = args[idx]
+        n.kind = if a != nil: a.kind else: nkNil
+        n.str = if a != nil: a.str else: ""
+        n.litType = if a != nil: a.litType else: ""
+        n.boolVal = if a != nil: a.boolVal else: false
+        n.intVal = if a != nil: a.intVal else: 0
+        n.isFunction = if a != nil: a.isFunction else: false
+        n.isCall = if a != nil: a.isCall else: false
+        n.isUnpackable = if a != nil: a.isUnpackable else: false
+        n.isIndex = if a != nil: a.isIndex else: false
+        n.isOperator = if a != nil: a.isOperator else: false
+        n.children = if a != nil: a.children else: @[]
+      continue
+    for i in 0 ..< n.children.len:
+      stack.add n.children[i]
 
 proc parseExprStr*(text: string): Node =
   ## Re-parse an expansion string through the M1 parser and return the
@@ -388,6 +471,22 @@ proc evalIfCondition*(d: Node, ctx: PreprocessContext, kind: string): bool =
     false
 
 proc preprocess*(root: Node, ctx: var PreprocessContext): Node
+
+proc applySpliceFunction(call: Node, ctx: var PreprocessContext): Node =
+  ## Handle `#[name]#(args)` where `name` is a registered splice function.
+  ## Substitute each argument for its parameter's `#[param]#` splice point in
+  ## a clone of the stored body, preprocess the arguments (so nested splices
+  ## and nested splice-function calls compose), and return the resulting
+  ## expression.
+  let callee = call.children[^1]
+  let name = callee.str
+  let def = gSpliceFuncs.getOrDefault(name)
+  let rawArgs = call.children[0 ..< ^1]
+  var args: seq[Node] = @[]
+  for a in rawArgs:
+    args.add preprocess(a, ctx)
+  let body = substituteSpliceArgs(def.body, def.params, args)
+  return preprocess(body, ctx)
 
 proc formatPPMessage(fmt: string, args: seq[string]): string =
   ## Minimal `string.format`-lite for `static_assert`: substitutes `%s`
@@ -1484,6 +1583,28 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
     var frameStack: seq[LuaFrame] = @[]
     var ppNodes: seq[Node] = @[]
     var chunkParts: seq[string] = @[]
+    # Pre-pass: register every `## local function f(p) in (body) ## end`
+    # splice-function definition and remove its three nodes from the block so
+    # they are not fed to the `##` Lua chunk (the opener line is not valid Lua
+    # on its own -- it has no body -- and the `in (body)` is nelua syntax, not
+    # Lua).  The body is stored on the registry for later argument splicing.
+    var filtered: seq[Node] = @[]
+    var spIdx = 0
+    while spIdx < root.children.len:
+      let n = root.children[spIdx]
+      if n.kind == nkPreprocess and not n.boolVal and frameStack.len == 0:
+        let (isOpener, sname, params) = parseSpliceFuncOpener(n.str)
+        if isOpener and spIdx + 2 < root.children.len and
+           root.children[spIdx + 1].kind == nkIn and
+           root.children[spIdx + 2].kind == nkPreprocess and
+           root.children[spIdx + 2].str.strip() == "end":
+          let body = root.children[spIdx + 1].children[0]
+          gSpliceFuncs[sname] = SpliceFuncDef(params: params, body: body)
+          inc spIdx, 3
+          continue
+      filtered.add n
+      inc spIdx
+    root.children = filtered
     for n in root.children:
       if n.kind == nkDirective:
         handleDirective(n, rewritten, condStack, ctx)
@@ -1604,6 +1725,21 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
   of nkPreprocessName:
     ctx.diags.add "#|name|# preprocessor replacement is unsupported in this build; node consumed"
     return newNil()
+  of nkCall:
+    ## `#[name]#(args)` where `name` is a registered splice function: splice
+    ## the arguments into a clone of the stored body and return the resulting
+    ## expression.  Checked before the generic `else` branch so the callee's
+    ## `#[name]#` sentinel is never deferred/evaluated as an ordinary splice.
+    let callee = root.children[^1]
+    if callee.kind == nkPreprocessExpr and gSpliceFuncs.hasKey(callee.str):
+      return applySpliceFunction(root, ctx)
+    for i in 0 ..< root.children.len:
+      root.children[i] = preprocess(root.children[i], ctx)
+    # `require 'name'` lowers to an ordinary call on the builtin `require`
+    # (parser.nim), so it is *not* a directive and is preserved intact here --
+    # the module's resolution/compilation is the driver's job (compile.nim),
+    # which runs on the raw parse tree before this pass is ever invoked.
+    return tryExpand(root, ctx)
   else:
     for i in 0 ..< root.children.len:
       root.children[i] = preprocess(root.children[i], ctx)

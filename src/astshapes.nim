@@ -19,6 +19,7 @@ type
     nkNil            ## nil
     nkVarargs        ## ...
     nkDoExpr         ## (do ... end) expression
+    nkIn             ## `in (expr)` splice-function / do-expression return
     nkPreprocess     ## ## block (removed after run)
     nkPreprocessExpr ## #[expr]#
     nkPreprocessName ## #|name|#
@@ -100,6 +101,7 @@ proc layoutFor*(k: NodeKind): seq[NodeField] =
   of nkBoolean:       @[nfBoolVal]
   of nkNilptr, nkNil, nkVarargs: @[]
   of nkDoExpr:        @[nfChildren]
+  of nkIn:            @[nfChildren]
   of nkPreprocess, nkPreprocessExpr, nkPreprocessName: @[nfStr]
   of nkPair:          @[nfStr, nfChildren]
   of nkInitList:      @[nfChildren, nfUnpackable]

@@ -1231,6 +1231,14 @@ proc parseStatement*(p: var Parser): Node =
     of "while": return p.parseWhile()
     of "repeat": return p.parseRepeat()
     of "for": return p.parseFor()
+    of "in":
+      ## `in (expr)` is the splice-function / do-expression return statement.
+      ## It appears inside a `##` block as the body of a splice function
+      ## (`## local function f(p) in (#[p]#) ## end`) and inside a `(do ... in
+      ## expr end)` do-expression.  Store the expression on an `nkIn` node.
+      discard p.advance()
+      let expr = p.parseExpr()
+      return Node(kind: nkIn, children: @[expr])
     of "do":
       p.advance()
       let body = p.parseBlock()
@@ -1390,6 +1398,7 @@ proc dump*(n: Node, indent = 0): string =
   for _ in 0..<indent: s.add "  "
   case n.kind:
   of nkDoExpr:      s.add "nkDoExpr"
+  of nkIn:          s.add "nkIn"
   of nkPreprocess:  s.add "nkPreprocess " & quoteStr(n.str)
   of nkPreprocessExpr: s.add "nkPreprocessExpr " & quoteStr(n.str)
   of nkPreprocessName: s.add "nkPreprocessName " & quoteStr(n.str)
