@@ -16,6 +16,12 @@
 
 NELU=nelu
 NELUALUA=nelu-lua
+# The compiler artifact the whole toolchain consumes.  Every gate script
+# (plan/cmp.py, plan/regress.py, plan/examples_parity.py, plan/cover_gate.py,
+# plan/cli_conformance.py, plan/wwwcheck.py) runs ROOT/tmp/nelua, so `make nelu`
+# must build *here*, not at the repo root.  `nelu` is a phony marker over the
+# real file so make skips the 40s Nim compile when tmp/nelua is current.
+NELU_OUT=$(CURDIR)/tmp/nelua
 NELU_RUN=./$(NELU)
 
 ###############################################################################
@@ -56,7 +62,12 @@ NIM=nim
 NIMCACHE?=$(CURDIR)/.cache/nim
 NIMFLAGS=-d:release --path:src --nimcache:$(NIMCACHE) --passL:-s
 
-$(NELU): src/main.nim $(shell find src -name '*.nim' 2>/dev/null)
+.PHONY: $(NELU)
+$(NELU): $(NELU_OUT)
+	@mkdir -p $(CURDIR)/tmp
+
+$(NELU_OUT): src/main.nim $(shell find src -name '*.nim' 2>/dev/null)
+	@mkdir -p $(CURDIR)/tmp
 	$(NIM) c $(NIMFLAGS) -o:$@ src/main.nim
 
 ###############################################################################
@@ -96,7 +107,7 @@ PREFIX_LIB=$(DPREFIX)/lib/nelua
 .PHONY: install install-as-symlink uninstall
 install: $(NELU) $(NELUALUA)
 	install -d "$(PREFIX_BIN)"
-	install -m755 $(NELU) "$(PREFIX_BIN)/$(NELU)"
+	install -m755 $(NELU_OUT) "$(PREFIX_BIN)/$(NELU)"
 	install -m755 $(NELUALUA) "$(PREFIX_BIN)/$(NELUALUA)"
 	install -d "$(PREFIX_LIB)"
 	cp -R lualib "$(PREFIX_LIB)/lualib"
@@ -115,7 +126,7 @@ CACHE_DIR=$(CURDIR)/.cache
 .PHONY: clean clean-nelu clean-nelu-lua clean-cache
 clean: clean-nelu clean-nelu-lua clean-cache
 clean-nelu:
-	rm -f $(NELU)
+	rm -f $(NELU_OUT) $(NELU)
 clean-nelu-lua:
 	rm -f $(NELUALUA)
 clean-cache:
