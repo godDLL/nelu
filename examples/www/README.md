@@ -43,12 +43,12 @@ the sweep in `tmp/corpus_candidates.md`** — no candidate's verdict changed.
 | `tetrix` | RIV fantasy-console game (`require 'riv'`) | external — needs SDK |
 | `seqtoy` | RIV step sequencer (`require 'riv'`) | external — needs SDK |
 | `seqtoy_enum` | bare `@enum{}` (no primitive), `[12]string`, `@record{int8}`, record method, single-record literal init | MATCH |
-| `www_multidim_index-ddx` | multi-dim array indexing, dimension order | DIFF (us wrong) |
-| `www_multidim_assign-ddx` | nested array-element assignment `a[i][j] = v` | FAIL (us, C-compile) |
-| `www_multidim_ret-ddx` | nested array-element read in method return | FAIL (us, C-compile) |
-| `www_comptime_array_size-ddx` | `[N+1]boolean` with `N <comptime>` | DIFF (us wrong) |
+| `www_multidim_index-ddx` | multi-dim array indexing, dimension order | MATCH |
+| `www_multidim_assign-ddx` | nested array-element assignment `a[i][j] = v` | MATCH |
+| `www_multidim_ret-ddx` | nested array-element read in method return | MATCH |
+| `www_comptime_array_size-ddx` | `[N+1]boolean` with `N <comptime>` | MATCH |
 
-**28 entries: 15 MATCH, 7 DIFF, 3 FAIL(us), 2 external.**
+**28 entries: 19 MATCH, 6 DIFF, 1 FAIL(us), 2 external.**
 
 The four `-ddx` probes above were added by the SPECIAL FORCE DEVIL run
 (2026-09-04, report `plan/devil-advocate-findings.md` Run 4). They are the
@@ -859,8 +859,12 @@ Extracted from `zxplayer nelua/queue.nelua` and `nelua/radio.nelua`. Covers:
 
 Added 2026-09-04. Mined from the 2D-array idioms in `matmul`, `gameoflife`,
 `tetrix_rotation`, and `fuzz_prime_sieve`. Full detail in
-`plan/devil-advocate-findings.md` Run 4. All four are `-ddx` (oracle accepts,
-ours diverges) and all four block real upstream programs.
+`plan/devil-advocate-findings.md` Run 4. All four were `-ddx` (oracle accepts,
+ours diverges) and all four blocked real upstream programs; **all four are
+now MATCH** -- the multi-dimensional / comptime-sized-array C-emission family
+was fixed 2026-09-04 (dimension ordering, nested-index `nlany` round-trip, and
+comptime array size). The www sweep improved from 91 PASS to 97 PASS as a
+result.
 
 ### `www_multidim_index-ddx`
 ```lua
@@ -869,6 +873,7 @@ print(a[0][0], a[1][0], a[0][1], a[1][1], a[0][2], a[1][2])
 ```
 - oracle: exit 0, stdout `1\t4\t2\t5\t3\t6`
 - ours: exit 0, stdout `1\t4\t2\t5\t4\t0` — **DIFF (us wrong)**
+  - Now **MATCH** (fixed 2026-09-04, multi-dim C-emission agent).
 - Root cause: the C emitter declares `[2][3]integer` as `int64_t a[3][2]`
   (dimensions reversed), so the reads and the initializer are applied to the
   transposed array; `a[0][2]` falls off the `[3][2]` and reads `a[1][0]`.
@@ -884,6 +889,7 @@ print(a[0][0], a[0][1], a[1][2])
 - oracle: exit 0, stdout `5\t6\t9`
 - ours: gcc rejects `a[0][0] = nlany_from_int(5)` ("incompatible types …
   from type 'nlany'"), exit 1 — **FAIL (us, C-compile)**
+  - Now **MATCH** (fixed 2026-09-04, multi-dim C-emission agent).
 - Root cause: nested-index assignment wraps the RHS in `nlany_from_int(...)`
   even for concrete-typed elements. Single-index `a[0] = 5` is fine.
 
@@ -901,6 +907,7 @@ print(g:get(0,0), g:get(1,1))
 - oracle: exit 0, stdout `5\t8`
 - ours: gcc rejects `return nlany_load_int(self->cells[i][j])` ("expected
   'nlany' but argument is of type 'int64_t'"), exit 1 — **FAIL (us, C-compile)**
+  - Now **MATCH** (fixed 2026-09-04, multi-dim C-emission agent).
 - Root cause: same family as `www_multidim_assign-ddx` but on the read path;
   a nested index in return position is wrapped in `nlany_load_int` (the
   `nlany`-to-int unwrap), which is backwards for a concrete element.
@@ -929,6 +936,7 @@ print(count)
 ```
 - oracle: exit 0, stdout `25`
 - ours: exit 0, stdout `24` — **DIFF (us wrong)**
+  - Now **MATCH** (fixed 2026-09-04, multi-dim C-emission agent).
 - Root cause: the C emitter declares a comptime-sized array as `T name[];`
   with no size; gcc's tentative-definition rule then assumes one element, so
   the sieve undercounts. An `integer`-typed version MATCHes (GCC tolerates the

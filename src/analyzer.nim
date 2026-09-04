@@ -468,6 +468,12 @@ proc isComptime(node: Node, ctx: AnalyzerContext): bool =
   of nkBinaryOp, nkUnaryOp:
     let a = ctx.attrOf.getOrDefault(node)
     a != nil and a.comptime
+  of nkId:
+    ## A reference to a `<comptime>` variable (e.g. `local N <comptime> = 100`)
+    ## is a compile-time constant; without this, `N + 1` in an array size
+    ## never folded and the array was emitted with no bound.
+    let a = ctx.attrOf.getOrDefault(node)
+    a != nil and a.comptime
   else: false
 
 # ---- expression analysis ------------------------------------------------------

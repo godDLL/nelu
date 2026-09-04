@@ -1645,9 +1645,17 @@ proc cDecl(t: Type, name: string): string =
     return cType(t)
   case t.kind
   of tkArray:
-    let inner = cDecl(t.subtype, name)
-    let sz = if t.arraySize <= 0: "[]" else: "[" & $t.arraySize & "]"
-    return inner & sz
+    # Collect dimensions outermost-to-innermost; a C declarator puts the
+    # outermost bound leftmost after the identifier (`int64_t a[2][3]` for a
+    # nelua `[2][3]integer`).  The old recursion nested the outer bound AFTER
+    # the inner declaration, producing `int64_t a[3][2]` -- a transposed array.
+    var dims: seq[string] = @[]
+    var sub = t
+    while sub != nil and sub.kind == tkArray:
+      dims.add(if sub.arraySize <= 0: "[]" else: "[" & $sub.arraySize & "]")
+      sub = sub.subtype
+    let base = if sub == nil: "void " & name else: cDecl(sub, name)
+    return base & dims.join("")
   of tkFunction:
     # Function-pointer declarator: the identifier nests INSIDE the parens,
     # `ret (*name)(params)` -- `cType` spells the value form `ret (*)(params)`
@@ -1712,6 +1720,8 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool,
       if vtype != nil:
         s.collectType(vtype)
       if a != nil and a.isTypeBinding:
+        continue
+      if a != nil and a.comptime:
         continue
       if vtype == nil: continue
       let cn = if a != nil and a.codename != "": a.codename else: cIdent(iddecl.str)
@@ -1823,13 +1833,13 @@ proc genAssign(s: var Gen, node: Node) =
     let sym = s.ctx.symOf.getOrDefault(t)
     typeTargets.add sym != nil and sym.kind == skType
     targets.add s.genLvalue(t)
-    ttypes.add s.ctx.attrOf.getOrDefault(t).typ
+    ttypes.add s.realType(t)
   var values: seq[string] = @[]
   var vtypes: seq[Type] = @[]
   for i in ntargets ..< node.children.len:
     let v = node.children[i]
     values.add s.genExpr(v)
-    vtypes.add s.ctx.attrOf.getOrDefault(v).typ
+    vtypes.add s.realType(v)
   if values.len == 1 and ntargets > 1 and node.children[ntargets].kind == nkCall:
     let callNode = node.children[ntargets]
     var rets = s.ctx.callRetTypes.getOrDefault(callNode)
@@ -2039,14 +2049,14 @@ proc genReturn(s: var Gen, node: Node) =
     if rets.len == 1:
       let c = node.children[0]
       let expr = s.genExpr(c)
-      let et = s.ctx.attrOf.getOrDefault(c).typ
+      let et = s.realType(c)
       retPrefix = " " & s.coerce(expr, et, rets[0])
     else:
       let tag = multiRetTag(rets)
       var parts: seq[string] = @[]
       for i, c in node.children:
         let expr = s.genExpr(c)
-        let et = s.ctx.attrOf.getOrDefault(c).typ
+        let et = s.realType(c)
         let rt = if i < rets.len: rets[i] else: nil
         parts.add ".field" & $i & " = " & s.coerce(expr, et, rt)
       retPrefix = " (struct " & tag & "){" & parts.join(", ") & "}"

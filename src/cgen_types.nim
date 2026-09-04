@@ -141,11 +141,17 @@ proc cType*(t: Type): string =
     of tkNilptr:
       "nilptr"
     of tkArray:
-      let e = if t.subtype == nil: "void" else: cType(t.subtype)
-      if t.arraySize <= 0:
-        e & "[]"
-      else:
-        e & "[" & $t.arraySize & "]"
+      # Collect dimensions outermost-to-innermost.  A nelua `[M][N]T` is an
+      # array-of-M of array-of-N of T, which maps to C `T[M][N]` (outermost
+      # bound leftmost).  The old recursion spelled the inner array first and
+      # appended the outer bound, producing `T[N][M]` -- a transposed array.
+      var dims: seq[string] = @[]
+      var sub = t
+      while sub != nil and sub.kind == tkArray:
+        dims.add(if sub.arraySize <= 0: "[]" else: "[" & $sub.arraySize & "]")
+        sub = sub.subtype
+      let e = if sub == nil: "void" else: cType(sub)
+      e & dims.join("")
     of tkRecord:
       "struct " & cTag(t)
     of tkUnion:
