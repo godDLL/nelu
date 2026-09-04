@@ -20,6 +20,7 @@ type
     pos*: int
     source*: string
     path*: string
+    forInCount*: int          ## number of `for ... in` iterator forms lowered so far
 
 ## Type keywords that may appear as a static-method receiver (`string.copy(s)`).
 ## Only the concrete primitive value types are listed: a type keyword is accepted
@@ -33,7 +34,8 @@ proc isTypeKeyword*(s: string): bool =
     result = true
 
 proc newParser*(source: string, path: string = ""): Parser =
-  Parser(tokens: tokenize(source, path), pos: 0, source: source, path: path)
+  Parser(tokens: tokenize(source, path), pos: 0, source: source, path: path,
+         forInCount: 0)
 
 proc tok*(p: Parser): Token =
   if p.pos < p.tokens.len: p.tokens[p.pos] else: p.tokens[^1]
@@ -946,6 +948,52 @@ proc parseRepeat*(p: var Parser): Node =
   let cond = p.parseExpr()
   return newRepeat(body, cond)
 
+proc newForInLowering(iddecls: seq[Node], inexp: seq[Node], body: Node,
+                      n: int): Node =
+  ## Lower `for <vars> in <exprs> do <body> end` to the oracle's stateless-iterator
+  ## while loop (analyzer.lua `visitors.ForIn`): the `in` expression list yields
+  ## the iterator function, the state and the initial control value, and each
+  ## iteration calls `iter(state, control)`, stopping when the first return is
+  ## false/nil.  Lowering here (instead of a ForIn-specific codegen path) lets
+  ## the existing analyzer multi-return inference and cgen call/VarDecl lowering
+  ## handle the state machine with no new machinery.
+  ##
+  ##   do
+  ##     local __fornext, __forstate, __fornextit = <exprs>
+  ##     while true do
+  ##       local __forcont, <vars...> = __fornext(__forstate, __fornextit)
+  ##       if not __forcont then break end
+  ##       __fornextit = <vars[0]>
+  ##       <body>
+  ##     end
+  ##   end
+  ##
+  ## The outer `do` scopes the iterator locals so two `for in` loops in the same
+  ## function do not redeclare `__fornext`.  The first loop variable doubles as
+  ## the iterator control variable (the oracle advances `__fornextit` to it after
+  ## every call), which is exactly the stateless-iterator protocol `ipairs` and
+  ## `pairs` use: their next function returns `(true, newkey, value)`.
+  let sfx = "_" & $n
+  let fnId = newId("__fornext" & sfx)
+  let fsId = newId("__forstate" & sfx)
+  let fiId = newId("__fornextit" & sfx)
+  let fcId = newId("__forcont" & sfx)
+  let iterIddecls = @[newIdDecl("__fornext" & sfx), newIdDecl("__forstate" & sfx),
+                      newIdDecl("__fornextit" & sfx)]
+  let iterVarDecl = newVarDecl("local", iterIddecls, inexp)
+  let iterCall = newCall(@[fsId, fiId], fnId)
+  var loopIddecls: seq[Node] = @[newIdDecl("__forcont" & sfx)]
+  for id in iddecls: loopIddecls.add id
+  let loopVarDecl = newVarDecl("local", loopIddecls, @[iterCall])
+  let cond = newUnaryOp("not", fcId)
+  let ifNode = newIf(@[(cond, newBlock(@[newBreak()]))], nil)
+  let controlAssign = newAssign(@[fiId], @[newId(iddecls[0].str)])
+  let bodyDo = newDo(body)
+  let whileBody = newBlock(@[loopVarDecl, ifNode, controlAssign, bodyDo])
+  let whileNode = newWhile(newBoolean(true), whileBody)
+  let outerBlock = newBlock(@[iterVarDecl, whileNode])
+  return newDo(outerBlock)
+
 proc parseFor*(p: var Parser): Node =
   p.advance()
   # The loop variable may carry a type annotation, e.g.
@@ -991,17 +1039,27 @@ proc parseFor*(p: var Parser): Node =
     let body = p.parseBlock()
     p.expectKeyword("end", "expected 'end' to close for")
     return newForNum(firstDecl, beginv, cmpop, endv, step, body)
-  # `for ... in` (iterator for) is not supported.  The oracle rejects every
-  # `for ... in` form, and ours SIGSEGVs in the C generator (genCall in
-  # cgen.nim) when the iterator expression's type resolves to nil.  Reject
-  # it here as a parse error so the compiler exits 1 with a diagnostic
-  # instead of crashing.  Only the numeric `for i = a, b do ... end` form
-  # (handled above) is valid.  Consume the loop-variable list first so the
-  # diagnostic points at the `in` keyword that distinguishes this form.
+  # `for ... in` iterator form.  The loop variable list may carry type
+  # annotations (`for i: integer, v in ... do`); each is parsed as an IdDecl so
+  # the annotation is preserved.  The `in` expression list yields the iterator
+  # function, the state and the initial control value (the stateless-iterator
+  # protocol used by `ipairs`/`pairs`/`utf8.iter`).
+  var iddecls: seq[Node] = @[]
+  iddecls.add firstDecl
   while p.match(tkComma):
-    discard p.advance()
-  raise p.error("expected '=' in for loop; the 'for ... in' iterator form " &
-                "is not supported")
+    iddecls.add p.parseIdDecl()
+  p.expectKeyword("in", "expected 'in' in for loop")
+  var inexp: seq[Node] = @[]
+  inexp.add p.parseExpr()
+  while p.match(tkComma):
+    if p.isStmtEnd() or p.checkKeyword("do"): break
+    inexp.add p.parseExpr()
+  p.expectKeyword("do", "expected 'do' in for")
+  let body = p.parseBlock()
+  p.expectKeyword("end", "expected 'end' to close for")
+  let n = p.forInCount
+  p.forInCount += 1
+  return newForInLowering(iddecls, inexp, body, n)
 
 proc parseReturn*(p: var Parser): Node =
   p.advance()

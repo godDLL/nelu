@@ -1696,21 +1696,6 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool,
         s.line qual & cDecl(vtype, cn) & ";"
     return
 
-  # initializers, emitted as assignments
-  if inits.len == 1 and iddecls.len > 1 and isCall(inits[0]):
-    let callNode = inits[0]
-    let rets = s.ctx.callRetTypes.getOrDefault(callNode)
-    if rets.len == iddecls.len and rets.len > 1:
-      let tag = multiRetTag(rets)
-      inc s.mrCounter
-      let tmp = "__mr" & $s.mrCounter
-      s.line tag & " " & tmp & " = " & s.genCall(callNode) & ";"
-      for i, iddecl in iddecls:
-        let a = s.ctx.attrOf.getOrDefault(iddecl)
-        if a != nil and a.comptime: continue
-        let cn = if a != nil and a.codename != "": a.codename else: cIdent(iddecl.str)
-        s.line cn & " = " & tmp & ".field" & $i & ";"
-      return
   # Function-body locals and block-scoped locals at unit scope need a C
   # declaration emitted here; top-level variables were already declared as
   # `static` in the globals pass (genC step 3b) and their initialisers run here
@@ -1718,7 +1703,10 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool,
   # `int64_t tmp_x;`.  The `isGlobal` flag is set from `s.inFunc`, so it is true
   # exactly for function-body locals.  A comptime local is folded away entirely
   # -- it has no storage and every reference is inlined -- so neither a
-  # declaration nor an assignment emits.
+  # declaration nor an assignment emits.  Declarations run FIRST, before the
+  # multi-return initializer below: the multi-return path used to `return`
+  # early, which skipped the declarations and left function-body locals like
+  # `local m, n = f()` undeclared in C (a SIGSEGV-shaped compile failure).
   if isGlobal or not alreadyDeclared:
     for iddecl in iddecls:
       let a = s.ctx.attrOf.getOrDefault(iddecl)
@@ -1735,6 +1723,25 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool,
         s.line cDecl(vtype, cn) & " = {0};"
       else:
         s.line cDecl(vtype, cn) & ";"
+  # initializers, emitted as assignments
+  if inits.len == 1 and iddecls.len > 1 and isCall(inits[0]):
+    let callNode = inits[0]
+    let rets = s.ctx.callRetTypes.getOrDefault(callNode)
+    # The call may return MORE values than there are targets (the iterator
+    # protocol's `for v in iter(s, c)` form binds only the control variable and
+    # drops the per-element value), so `>=` rather than `==`; extra trailing
+    # returns are simply left in the struct unused.
+    if rets.len >= iddecls.len and rets.len > 1:
+      let tag = multiRetTag(rets)
+      inc s.mrCounter
+      let tmp = "__mr" & $s.mrCounter
+      s.line tag & " " & tmp & " = " & s.genCall(callNode) & ";"
+      for i, iddecl in iddecls:
+        let a = s.ctx.attrOf.getOrDefault(iddecl)
+        if a != nil and a.comptime: continue
+        let cn = if a != nil and a.codename != "": a.codename else: cIdent(iddecl.str)
+        s.line cn & " = " & tmp & ".field" & $i & ";"
+      return
   for i in 0 ..< min(iddecls.len, inits.len):
     let iddecl = iddecls[i]
     let init = inits[i]
@@ -1805,7 +1812,7 @@ proc genAssign(s: var Gen, node: Node) =
       let ca = s.ctx.attrOf.getOrDefault(callNode)
       if ca != nil and ca.calleeType != nil:
         rets = ca.calleeType.returns
-    if rets.len == ntargets and rets.len > 1:
+    if rets.len >= ntargets and rets.len > 1:
       let tag = multiRetTag(rets)
       inc s.mrCounter
       let tmp = "__mr" & $s.mrCounter
