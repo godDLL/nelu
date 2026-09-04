@@ -249,6 +249,43 @@ proc unaryOpName(op: string): string =
   of "&": "ref"
   else: op
 
+# ---- builtin / recognized-name tables ----------------------------------------
+##
+## The set of names the oracle treats as *not* "undeclared symbols": the Lua
+## builtins it exposes as globals (`print`, `tonumber`, ...), the type keywords
+## it accepts as first-class type values (`any`, `integer`, ...), and the
+## `likely`/`unlikely` branch hints it accepts as call-only builtins.  An
+## identifier that is out of scope but is one of these is NOT an "undeclared
+## symbol" -- the oracle either resolves it or (for the ones we do not fully
+## implement) leaves it to a generic lowering -- so the undeclared-symbol
+## diagnostic must exempt them all.
+
+const BuiltinNames* = ["print", "tonumber", "tostring", "type", "error", "assert",
+                       "select", "pcall", "setmetatable", "getmetatable", "rawget",
+                       "rawset", "rawlen", "rawequal", "unpack", "require",
+                       "collectgarbage", "next", "pairs", "ipairs", "len"]
+
+const HintNames* = ["likely", "unlikely"]
+
+proc isBuiltinName*(s: string): bool = s in BuiltinNames
+proc isHintName*(s: string): bool = s in HintNames
+proc isTypeKeywordName*(s: string): bool =
+  ## Type keywords the oracle accepts as first-class type values in value
+  ## position (`any == integer` is a legal comparison).  `parser.isTypeKeyword`
+  ## covers exactly this set; mirror it here so the analyzer's name resolution
+  ## does not reject a type value as an undeclared symbol.
+  case s
+  of "integer", "number", "string", "boolean", "isize", "usize",
+      "cchar", "cshort", "cint", "clong", "cfloat", "cdouble",
+      "auto", "void", "type", "any":
+    result = true
+
+proc isRecognizedName*(s: string): bool =
+  ## A name the oracle does NOT report as an "undeclared symbol" when it is out
+  ## of scope: a builtin, a type keyword, or a hint.  Used by the call-callee
+  ## check, which has no builtin fallback of its own.
+  result = isBuiltinName(s) or isTypeKeywordName(s) or isHintName(s)
+
 # ---- bootstrap ----------------------------------------------------------------
 
 proc bootstrap*(ctx: var AnalyzerContext) =
@@ -494,6 +531,8 @@ proc isComptime(node: Node, ctx: AnalyzerContext): bool =
 proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type
 proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Type
 proc analyzeBlock(ctx: var AnalyzerContext, node: Node)
+proc replaceSplices(ctx: var AnalyzerContext, node: Node,
+                    stopAtNestedBlock: bool): Node
 proc dumpAnaled*(ctx: var AnalyzerContext, node: Node, indent = 0): string
 proc dumpExprString(ctx: var AnalyzerContext, node: Node): string
 proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string = "")
@@ -608,6 +647,21 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
       else:
         a.typ = BuiltinTypes["void"]
     else:
+      # An undeclared identifier used as a call callee is a reference to an
+      # undeclared symbol (the oracle reports `undeclared symbol 'h'` for
+      # `return h()` where `h` is a later/missing `local function`), not a
+      # generic call.  Emit the diagnostic; analysis continues with a generic
+      # function type so the rest of the pipeline stays consistent.
+      #
+      # Exempt the names the oracle does NOT call "undeclared": the Lua builtins
+      # we do not register as symbols (`tonumber`, `tostring`, `type`, `pcall`,
+      # `select`, ...), the type keywords accepted as type values, and the
+      # `likely`/`unlikely` branch hints.  For those the oracle either resolves
+      # them or (for the ones we do not fully implement) lowers them generically;
+      # rejecting them here would break `tonumber("5")` and `likely(true)`, which
+      # the oracle accepts.
+      if sym == nil and not isRecognizedName(nm):
+        ctx.diags.add ctx.path & ": error: undeclared symbol '" & nm & "'"
       # unknown: build a generic function type
       calleeType = Type(kind: tkFunction, name: "function", codename: "function")
       calleeType.name = "function"; calleeType.codename = "function"
@@ -1019,11 +1073,7 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
           d.funcdefined = true
         return sym.typ
     # not in scope: treat as builtin name fallback
-    let builtinNames = ["print", "tonumber", "tostring", "type", "error", "assert",
-                        "select", "pcall", "setmetatable", "getmetatable", "rawget",
-                        "rawset", "rawlen", "rawequal", "unpack", "require",
-                        "collectgarbage", "next", "pairs", "ipairs", "len"]
-    if nm in builtinNames:
+    if isBuiltinName(nm):
       let bsym = Symbol(name: nm, kind: skBuiltin, typ: BuiltinTypes["any"])
       bsym.codename = "nelua_" & nm
       bsym.isConst = true
@@ -1040,6 +1090,15 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
       d.builtin = true
       d.isConst = true
       return a.typ
+    # Not in scope, not a builtin name, and not a type keyword used as a type
+    # value: an undeclared symbol.  The oracle rejects this at the reference
+    # site instead of resolving it to nil; emit the diagnostic so the program
+    # fails to compile (exit 1) rather than silently lowering to a nil value.
+    # Type keywords (`any`, `integer`, ...) are exempt: the oracle accepts them
+    # as first-class type values, and we do not implement that -- preserve the
+    # pre-existing lowering rather than rejecting it.
+    if not isTypeKeywordName(nm):
+      ctx.diags.add ctx.path & ": error: undeclared symbol '" & nm & "'"
     return nil
   of nkType:
     # `@record{...}` / `@enum(integer){...}` in value position: build a nominal
@@ -1287,11 +1346,20 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
       discard analyzeInitList(ctx, init, pt)
     else:
       discard analyzeExpr(ctx, init)
-    if i < syms.len and syms[i].comptime:
+    # Stage 4: propagate the comptime literal value to the Symbol for *every*
+    # constant-initialized local (not just `<comptime>`-annotated ones), so a
+    # splice like `#[x]#` can read `local x = 5`'s value.  `sym.value` is only
+    # read in type-position contexts and by the splice symbol wrapper, so this
+    # is safe for non-comptime vars.  The attr `a.value` is *not* set here for
+    # non-comptime vars: cgen reads it only when `a.comptime`, but the
+    # `--print-analyzed-ast` dump renders it unconditionally, so setting it
+    # would perturb the M2 gate.
+    if i < syms.len:
       let ia = ctx.attrOf.getOrDefault(init)
       if ia != nil and ia.comptime and ia.value != "":
         syms[i].value = ia.value
-        ctx.attrOf[iddecls[i]].value = ia.value
+        if syms[i].comptime:
+          ctx.attrOf[iddecls[i]].value = ia.value
 
 # ---- D1: polymorphic (`auto`-param) function monomorphization ----------------
 ##
@@ -1548,6 +1616,15 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
       recordType = rsym.typ
       isMethod = true
       methodName = nameNode.str
+  # Divergence 2: a bare `function g()` (no `global`/`local` qualifier) is a
+  # reference to an undeclared symbol, matching the oracle.  Reject unless `g`
+  # was already declared (e.g. `global g` before `function g()`).  Methods
+  # (colon/dot index names) are exempt: their name is not a plain identifier
+  # reference and the oracle accepts `function Point:sum()`.
+  if node.str == "" and nameNode.kind == nkId:
+    if ctx.lookup(nameStr) == nil:
+      ctx.diags.add ctx.path & ": error: undeclared symbol '" & nameStr &
+        "', maybe you forgot to declare it as 'global' or 'local'?"
   var selfDecl: Node = nil
   if isMethod and nameNode.kind == nkColonIndex:
     selfDecl = newIdDecl("self", nil)
@@ -2200,8 +2277,37 @@ proc analyzeStmt(ctx: var AnalyzerContext, node: Node) =
 
 proc analyzeBlock(ctx: var AnalyzerContext, node: Node) =
   if node == nil: return
-  for c in node.children:
-    analyzeStmt(ctx, c)
+  for i in 0 ..< node.children.len:
+    let c = node.children[i]
+    # Stage 4 block-entry pre-pass: evaluate every `#[expr]#` in this
+    # statement's subtree (stopping at nested blocks) *before* the statement is
+    # analyzed, so the splice sees the symbols of the statements that precede
+    # it (source-order law) but not its own or later ones.  Splices that sit in
+    # a nested block/func body are left for that block's own pre-pass, which
+    # runs with the correct (nested) scope live.
+    let r = replaceSplices(ctx, c, stopAtNestedBlock = true)
+    if r != c: node.children[i] = r
+    analyzeStmt(ctx, node.children[i])
+
+proc replaceSplices(ctx: var AnalyzerContext, node: Node,
+                    stopAtNestedBlock: bool): Node =
+  ## Walk `node`; evaluate every `nkPreprocessExpr` in its subtree in place,
+  ## returning the (possibly replaced) node.  When `stopAtNestedBlock` is true,
+  ## do NOT descend into a nested `nkBlock` -- it gets its own pre-pass when it
+  ## is analyzed, with the correct scope.  FuncDefs are recursed into (their
+  ## name/args/returns/annotations may carry splices, resolved against the
+  ## enclosing scope) but their body is an nkBlock and so is stopped here too.
+  if node == nil: return nil
+  if node.kind == nkPreprocessExpr:
+    let (r, errMsg) = evaluateSplice(ctx.scope, node, ctx.path, ctx.source)
+    if errMsg.len > 0: ctx.diags.add errMsg
+    return r
+  if stopAtNestedBlock and node.kind == nkBlock:
+    return node
+  for i in 0 ..< node.children.len:
+    let r = replaceSplices(ctx, node.children[i], stopAtNestedBlock = true)
+    if r != node.children[i]: node.children[i] = r
+  return node
 
 # ---- finalize: propagate used/mutate from symbols to attrs --------------------
 

@@ -125,10 +125,12 @@ proc lua_createtable*(L: PLuaState, narr: int, nrec: int) {.importc: "lua_create
 proc lua_setfield*(L: PLuaState, idx: int, name: cstring) {.importc: "lua_setfield".}
 proc lua_rawseti*(L: PLuaState, idx: int, n: int) {.importc: "lua_rawseti".}
 proc lua_rawgeti*(L: PLuaState, idx: int, n: int) {.importc: "lua_rawgeti".}
+proc lua_rawget*(L: PLuaState, idx: int) {.importc: "lua_rawget".}
 proc lua_rawlen*(L: PLuaState, idx: int): int {.importc: "lua_rawlen".}
 proc lua_absidx*(L: PLuaState, idx: int): int {.importc: "lua_absindex".}
 proc lua_getfield*(L: PLuaState, idx: int, name: cstring) {.importc: "lua_getfield".}
 proc lua_setmetatable*(L: PLuaState, idx: int) {.importc: "lua_setmetatable".}
+proc lua_setupvalue*(L: PLuaState, funcIdx: int, u: int): int {.importc: "lua_setupvalue".}
 proc lua_pushvalue*(L: PLuaState, idx: int) {.importc: "lua_pushvalue".}
 proc lua_isinteger*(L: PLuaState, idx: int): int {.importc: "lua_isinteger".}
 proc lua_tonumberx*(L: PLuaState, idx: int, isnum: ptr cint): cdouble {.importc: "lua_tonumberx".}

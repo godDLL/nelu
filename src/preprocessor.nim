@@ -88,6 +88,10 @@ type
 # injected node pushes its own frame.
 # ---------------------------------------------------------------------------
 var gActiveCtx: ptr PreprocessContext = nil
+## The live analyzer scope, set by `evaluateSplice` for the duration of one
+## `#[expr]#` evaluation.  `cSpliceEnvIndex` walks it so a bare identifier in a
+## splice resolves to the enclosing nelua scope's symbols (Stage 4).
+var gActiveScope: Scope = nil
 var gCapturedBodies: TableRef[string, seq[Node]] = newTable[string, seq[Node]]()
 var gInjectStack: seq[seq[seq[Node]]] = @[]
 var gInjectCurrent = 0
@@ -101,6 +105,14 @@ var gBuiltinsRegistered = false
 ## self-contained (this is the `stopAtNestedBlock` boundary).
 var gBlockSplices: seq[Node] = @[]
 var gInBlockSpliceDeferral = false
+## Hybrid splice results: the value each `#[expr]#` produced when it was run
+## interleaved into its block's `##` chunk at preprocess time (keyed by the
+## sentinel's node pointer).  `evaluateSplice` (analysis) prefers a non-nil
+## entry here -- that is how a `##`-local such as `## local x = 7` is visible
+## to `#[x]#` -- and falls back to the live scope for nelua-scope splices,
+## whose preprocess value is `nil` (the scope does not exist yet at preprocess
+## time).
+var gSpliceResults: TableRef[uint, Node] = newTable[uint, Node]()
 
 # ---------------------------------------------------------------------------
 # `in (expr)` splice-function registry.
@@ -130,6 +142,7 @@ proc resetPreprocessorState*() =
   gBuiltinsRegistered = false
   gBlockSplices = @[]
   gInBlockSpliceDeferral = false
+  gSpliceResults.clear()
   gSpliceFuncs.clear()
 
 proc parseSpliceFuncOpener(text: string): (bool, string, seq[string]) =
@@ -1087,6 +1100,136 @@ proc pushTypeWrapper(L: PLuaState, t: Type) =
   L.lua_pushcfunction(cTypeIndex); L.lua_setfield(-2, "__index")
   L.lua_setmetatable(-2)
 
+# ---------------------------------------------------------------------------
+# Symbol wrapper + per-evaluation splice environment (§2 / Step 4).
+#
+# A bare identifier in `#[...]#` resolves through the per-evaluation environment
+# table's `__index` metamethod (`cSpliceEnvIndex`), which walks the live
+# analyzer scope (`gActiveScope`) and pushes a Symbol wrapper for any symbol
+# found, falling through to the standard globals (math, primtypes, typedefs,
+# type names) otherwise.  Undefined bare identifier -> nil (silent), matching
+# the oracle.  The Symbol wrapper (`cSymIndex`) exposes `.name`, `.type` (a
+# Type wrapper), `.value`, `.is_type`, `.is_signed`, `.kind`, `.codename`,
+# `.is_const`, `.is_comptime`.
+
+proc lookup(scope: Scope, name: string): Symbol =
+  ## Walk `scope` and its parents for `name`; nil if absent.
+  var s = scope
+  while s != nil:
+    if s.symbols.hasKey(name): return s.symbols[name]
+    s = s.parent
+  return nil
+
+proc resolveTypeKey(key: string): Type =
+  ## Resolve a type-as-value lookup key ("integer", "Record", ...) to a Type,
+  ## for the builtin/typedef surface only (user type bindings need the analyzer's
+  ## `ctx.lookup`, which is not available here).
+  if key.len == 0: return nil
+  if BuiltinTypes.hasKey(key): return BuiltinTypes[key]
+  if PrimitiveTypes.hasKey(key): return PrimitiveTypes[key]
+  return nil
+
+proc getWrapperSymbol(L: PLuaState, idx: int): Symbol =
+  ## Read the `__nelua_symbol` lightuserdata off a wrapper table at `idx`.
+  let base = L.lua_absidx(idx)
+  L.lua_getfield(base, "__nelua_symbol")
+  let p = L.lua_touserdata(-1)
+  L.lua_pop(1)
+  if p != nil: result = cast[Symbol](p)
+
+proc cSymIndex(L: PLuaState): int {.cdecl.}   # forward, see below
+
+proc pushSymbolWrapper(L: PLuaState, sym: Symbol) =
+  ## Push `sym` as a wrapper table (with `cSymIndex` `__index`).
+  L.lua_createtable(0, 4)
+  if sym != nil:
+    L.lua_pushlightuserdata(cast[pointer](sym))
+    L.lua_setfield(-2, "__nelua_symbol")
+  L.lua_createtable(0, 1)
+  L.lua_pushcfunction(cSymIndex); L.lua_setfield(-2, "__index")
+  L.lua_setmetatable(-2)
+
+proc cSymIndex(L: PLuaState): int {.cdecl.} =
+  ## `Symbol.__index(self, key)` -- map a field name to its value.
+  let sym = getWrapperSymbol(L, 1)
+  if sym == nil:
+    discard L.luaL_error("nelua: attempt to index a non-symbol value")
+    return 0
+  let keyPtr = L.lua_tolstring(2, nil)
+  let key = if keyPtr != nil: $keyPtr else: ""
+  case key
+  of "name":      pushStr(L, sym.name)
+  of "type":      pushTypeWrapper(L, sym.typ)
+  of "value":
+    if sym.typ != nil and sym.typ == BuiltinTypes["type"] and sym.value.len > 0:
+      let rt = resolveTypeKey(sym.value)
+      if rt != nil: pushTypeWrapper(L, rt)
+      else: pushStr(L, sym.value)
+    else:
+      pushStr(L, sym.value)
+  of "is_type":   pushBool(L, sym.typ != nil and sym.typ == BuiltinTypes["type"])
+  of "is_signed": pushBool(L, sym.typ != nil and sym.typ.isSigned)
+  of "is_const":  pushBool(L, sym.isConst)
+  of "is_comptime": pushBool(L, sym.comptime)
+  of "kind":      pushStr(L, $sym.kind)
+  of "codename":  pushStr(L, sym.codename)
+  else:           L.lua_pushlightuserdata(nil)
+  return 1
+
+proc cSpliceEnvIndex(L: PLuaState): int {.cdecl.} =
+  ## `__index` metamethod for the per-evaluation splice environment: resolve a
+  ## bare identifier to the live analyzer scope's Symbol, falling through to the
+  ## standard globals when the name is not a scope symbol.  Undefined bare
+  ## identifier -> nil (silent), matching the oracle.
+  let keyPtr = L.lua_tolstring(2, nil)
+  let key = if keyPtr != nil: $keyPtr else: ""
+  let sym = lookup(gActiveScope, key)
+  if sym != nil:
+    pushSymbolWrapper(L, sym)
+  else:
+    L.lua_getglobal(cstring(key))
+  return 1
+
+proc createSpliceEnv(L: PLuaState, scope: Scope) =
+  ## Push a fresh per-evaluation environment table whose `__index` is
+  ## `cSpliceEnvIndex`, and set `gActiveScope` so the metamethod can walk it.
+  gActiveScope = scope
+  L.lua_createtable(0, 1)              # env table
+  L.lua_createtable(0, 1)              # env's metatable
+  L.lua_pushcfunction(cSpliceEnvIndex); L.lua_setfield(-2, "__index")
+  L.lua_setmetatable(-2)
+
+proc runChunkWithEnv(L: PLuaState, text: string, chunkName: string,
+                     scope: Scope): (string, int) =
+  ## Load `text` as a Lua chunk, install `createSpliceEnv(scope)` as the chunk's
+  ## `_ENV` (so bare identifiers resolve through the scope feed), and run it.
+  ## Returns (errorMessage, nresults); on success the results are left on the
+  ## stack.  `luaL_loadbufferx`'s 4th arg is the load *mode* ("t"), not an
+  ## environment -- the environment is set on the loaded closure via
+  ## `lua_setupvalue` (Lua 5.4's `_ENV` upvalue).
+  let loadRes = luaL_loadbufferx(L, text.cstring, text.len.csize_t,
+                                 chunkName.cstring, "t")
+  if loadRes != LUA_OK:
+    var msg = ""
+    if lua_gettop(L) > 0:
+      let s = lua_tolstring(L, -1, nil)
+      msg = if s != nil: $s else: "lua error (no message)"
+      lua_settop(L, -2)
+    return ((if msg.len > 0: msg else: "lua load error (code " & $loadRes & ")"), 0)
+  # Closure at -1; set its `_ENV` (upvalue 1) to the env table.
+  createSpliceEnv(L, scope)            # env at -1, closure at -2
+  discard L.lua_setupvalue(-2, 1)  # closure._ENV = env; pop env
+  let pcRes = lua_pcallk(L, 0, LUA_MULTIPLE, 0, 0, nil)
+  if pcRes != LUA_OK:
+    var msg = ""
+    if lua_gettop(L) > 0:
+      let s = lua_tolstring(L, -1, nil)
+      msg = if s != nil: $s else: "lua error (no message)"
+      lua_settop(L, -2)
+    return ((if msg.len > 0: msg else: "lua run error (code " & $pcRes & ")"), 0)
+  let n = lua_gettop(L)
+  return ("", n)
+
 proc cConcept(L: PLuaState): int {.cdecl.} =
   ## `concept(func)` -- build a ConceptType carrying `func` (§6 / Step 6).
   ## The reference calls `func` during analysis whenever a type tries to match
@@ -1224,6 +1367,17 @@ proc registerPreprocessorBuiltins*(L: PLuaState) =
     L.lua_setglobal(nm)
 
 proc luaTableToNode*(L: PLuaState, idx: int): Node   # forward, see below
+
+proc luaRawGetField(L: PLuaState, idx: int, name: string) =
+  ## Raw field access (`lua_pushstring` + `lua_rawget`) that does NOT trigger the
+  ## table's `__index` metamethod.  Used to read the wrapper marker fields
+  ## (`__nelua_symbol`, `__nelua_type`, `_bn`) off a wrapper table without
+  ## re-entering `cSymIndex`/`cTypeIndex`, which would happen with `lua_getfield`
+  ## and is unsafe when called outside a protected Lua call (e.g. here).
+  let base = L.lua_absidx(idx)
+  L.lua_pushstring(cstring(name))
+  L.lua_rawget(base)
+
 proc luaValueToNode*(L: PLuaState, idx: int): Node =
   ## Convert a Lua value on the stack at `idx` into a Nelua AST node -- the Nim
   ## analogue of the reference's `aster.value`.  Conversion is by Lua type:
@@ -1258,21 +1412,46 @@ proc luaValueToNode*(L: PLuaState, idx: int): Node =
         return newType(newId(nm))
     return newNil()
   of LUA_TTABLE:
+    # Read the wrapper marker fields with RAW access (`luaRawGetField`), which
+    # does not trigger the wrapper's own `__index` metamethod.  `lua_getfield`
+    # would re-enter `cSymIndex`/`cTypeIndex` here, which is unsafe outside a
+    ## protected Lua call and aborts the process.
+    # A Symbol wrapper table carries a `__nelua_symbol` lightuserdata field.
+    # A bare symbol splice (`#[x]#`) resolves to the symbol itself, so unwrap
+    # it to the symbol's comptime value: a Type for a type-typed symbol, else
+    # its comptime literal string (nil when the symbol has no known value).
+    L.luaRawGetField(idx, "__nelua_symbol")
+    if L.lua_type(-1) == LUA_TLIGHTUSERDATA:
+      let p = L.lua_touserdata(-1)
+      L.lua_pop(1)
+      if p != nil:
+        let sym = cast[Symbol](p)
+        if sym != nil:
+          if sym.typ != nil and sym.typ == BuiltinTypes["type"] and
+             sym.value.len > 0:
+            let rt = resolveTypeKey(sym.value)
+            if rt != nil:
+              let nm = if rt.name.len > 0: rt.name else: "any"
+              return newType(newId(nm))
+            return newString(sym.value)
+          if sym.value.len > 0:
+            return newString(sym.value)
+          return newNil()
+    L.lua_pop(1)
     # A bigint value (primtypes.isize.min / .max) carries a `_bn=true` marker
     # and its exact decimal form in `dec`; splice it as a number literal so the
     # nelua parser re-applies its magnitude >= 2^63 -> float rule.
-    let base = L.lua_absidx(idx)
-    L.lua_getfield(base, "_bn")
+    L.luaRawGetField(idx, "_bn")
     if L.lua_type(-1) == LUA_TBOOLEAN and L.lua_toboolean(-1) != 0:
       L.lua_pop(1)
-      L.lua_getfield(base, "dec")
+      L.luaRawGetField(idx, "dec")
       let s = if L.lua_type(-1) == LUA_TSTRING: $L.lua_tolstring(-1, nil) else: "0"
       L.lua_pop(1)
       return newNumber(s)
     L.lua_pop(1)
     # A Type wrapper table carries a `__nelua_type` lightuserdata field;
     # recognise it before falling through to the InitList path.
-    L.lua_getfield(base, "__nelua_type")
+    L.luaRawGetField(idx, "__nelua_type")
     if L.lua_type(-1) == LUA_TLIGHTUSERDATA:
       let p = L.lua_touserdata(-1)
       L.lua_pop(1)
@@ -1301,27 +1480,41 @@ proc luaTableToNode*(L: PLuaState, idx: int): Node =
     lua_pop(L, 1)
   return newInitList(elems)
 
-proc evalSpliceExpr(ctx: var PreprocessContext, node: Node): Node =
-  ## Evaluate a `#[expr]#` splice: run `node.str` as a Lua chunk in the shared
-  ## engine, convert the first return value to a Node, and return it.  Lua
-  ## errors are surfaced as `PreprocessError` with the reference's
-  ## `error while preprocessing block: <chunk>: <msg>` shape.
-  let L = getLuaEngine(ctx.path)
+proc evaluateSplice*(scope: Scope, node: Node, path: string,
+                       source: string): (Node, string) =
+  ## Evaluate `#[expr]#` against the live analyzer `scope` (Stage 4).  When the
+  ## splice was already run interleaved into its block's `##` chunk at
+  ## preprocess time and produced a non-nil value, that value is used directly:
+  ## this is how a `##`-local such as `## local x = 7` is visible to `#[x]#`
+  ## (with correct source-order and `##`-local precedence).  Otherwise the
+  ## splice is evaluated here against the live scope, which is what makes a
+  ## nelua-scope symbol such as `local x = 5` resolve inside `#[x]#`.
+  ## On error returns `(newNil(), errMsg)`; the caller adds it to `ctx.diags`.
+  let p = cast[uint](node)
+  if gSpliceResults.hasKey(p):
+    let r = gSpliceResults[p]
+    gSpliceResults.del(p)
+    gActiveScope = nil
+    if r != nil and r.kind != nkNil:
+      return (r, "")
+  let L = getLuaEngine(path)
   registerPreprocessorBuiltins(L)
-  gActiveCtx = addr ctx
-  let chunkName = "@" & ctx.path & ":splice"
+  let chunkName = "@" & path & ":splice"
   let src = node.str.strip()
   let chunkText = if src.len == 0: "" else: "return (" & src & ")"
-  let (errMsg, nres) = runChunkGetResult(L, chunkText, chunkName)
-  gActiveCtx = nil
+  let (errMsg, nres) = runChunkWithEnv(L, chunkText, chunkName, scope)
+  gActiveScope = nil
   if errMsg.len > 0:
-    raise PreprocessError(loc: newSourceLoc(ctx.path, ctx.source, 0),
-      msg: "error while preprocessing block: " & chunkName & ": " & errMsg)
+    return (newNil(), "error while preprocessing block: " & chunkName & ": " & errMsg)
   if nres == 0:
-    return newNil()
-  let result = luaValueToNode(L, -nres)
-  lua_settop(L, 0)
-  return result
+    return (newNil(), "")
+  try:
+    let result = luaValueToNode(L, -nres)
+    lua_settop(L, 0)
+    return (result, "")
+  except PreprocessError as e:
+    lua_settop(L, 0)
+    return (newNil(), e.msg)
 
 proc executeLuaBuffer*(ctx: var PreprocessContext) =
   ## Concatenate every `##` line collected during this pass into one Lua chunk
@@ -1592,16 +1785,23 @@ proc constructFrameChunk(frame: LuaFrame, ctx: var PreprocessContext): string =
 
 proc collectSpliceParts(node: Node, parts: var seq[string], splices: var seq[Node]) =
   ## Walk `node` (recursively, but stopping at nested blocks) appending a
-  ## `__nelua_spliceN = (expr)` capture line for every `#[expr]#` encountered,
-  ## in source order, and recording the splice nodes in `splices` (parallel).
+  ## `__nelua_spliceN = ...` capture line for every `#[expr]#` encountered, in
+  ## source order, and recording the splice nodes in `splices` (parallel).
   ## Stopping at nested blocks keeps each block's splices in that block's own
   ## chunk (the `stopAtNestedBlock` boundary).
+  ##
+  ## The capture is wrapped in `pcall(...)` returning `nil` on error.  This is
+  ## the safety net that lets the same splice be run in the `##` chunk (where a
+  ## nelua-scope symbol such as `x` is an *undefined global*, so `x.name` would
+  ## raise) without aborting the whole block: a capture that raises here simply
+  ## yields `nil`, and `evaluateSplice` falls back to the live-scope evaluation
+  ## at analysis time, which resolves `x` to its Symbol wrapper.
   if node == nil:
     return
   if node.kind == nkPreprocessExpr:
     let idx = splices.len
     splices.add node
-    parts.add "__nelua_splice" & $idx & " = (" & node.str & ")"
+    parts.add "__nelua_splice" & $idx & " = (function() local __ok, __r = pcall(function() return (" & node.str & ") end); if __ok then return __r else return nil end end)()"
     return
   if node.kind == nkBlock:
     return
@@ -1773,11 +1973,15 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
               chunkParts.add "__nelua_mark(" & $(ppNodes.len - 1) & ") " & n.str
       elif n.kind == nkPreprocessExpr:
         if condStack.len == 0 or condStack[^1].active:
-          # Defer evaluation until after this block's `##` chunk has run, and
-          # evaluate it in that same chunk scope (see runPreprocessChunk), so a
-          ## `local` declared earlier in the block is visible to the splice.
+          # Hybrid: leave the sentinel in place (analysis-time `replaceSplices`
+          # resolves it) but ALSO collect it into this block's `##` chunk so a
+          # `##`-local defined above is visible to it.  `evaluateSplice` prefers
+          # the non-nil preprocess result and falls back to the live scope for
+          # nelua-scope splices (whose preprocess value is `nil`).
           rewritten.add n
-          collectSpliceParts(n, chunkParts, gBlockSplices)
+          let idx = gBlockSplices.len
+          gBlockSplices.add n
+          chunkParts.add "__nelua_splice" & $idx & " = (function() local __ok, __r = pcall(function() return (" & n.str & ") end); if __ok then return __r else return nil end end)()"
       elif n.kind == nkPreprocessName:
         ctx.diags.add "#|name|# preprocessor replacement is unsupported in this build; node consumed"
       else:
@@ -1785,12 +1989,12 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
           frameStack[^1].parts.add LuaFramePart(isBody: true, nodes: @[n])
         else:
           if condStack.len == 0 or condStack[^1].active:
-            rewritten.add preprocess(n, ctx)
-            # Record any splices nested inside `n` (in source order) for the
-            # block's chunk.  `preprocess` leaves them as sentinels while
-            # deferral is on; this walk collects them and emits their capture
-            # lines interleaved with the `##` lines.
+            # Extract any `#[expr]#` nested in this statement into the block's
+            # `##` chunk (interleaved in source order) so a `##`-local defined
+            # above is visible to them; the sentinels stay in the tree and are
+            # resolved by `replaceSplices` at analysis time.
             collectSpliceParts(n, chunkParts, gBlockSplices)
+            rewritten.add preprocess(n, ctx)
     if frameStack.len > 0:
       ctx.diags.add "unbalanced ## block: unclosed Lua construct in " & ctx.path
     if gBlockSplices.len > 0:
@@ -1802,6 +2006,12 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
       chunkParts.add "return " & ret
     if ppNodes.len > 0 or gBlockSplices.len > 0:
       let (injected, spliceResults) = runPreprocessChunk(ctx, chunkParts, ppNodes, gBlockSplices)
+      # Record each splice's preprocess value (keyed by sentinel pointer) so
+      # `evaluateSplice` can prefer it at analysis time.  Sentinels are left in
+      # the tree -- they are resolved by `replaceSplices`, which calls
+      # `evaluateSplice`.
+      for i in 0 ..< gBlockSplices.len:
+        gSpliceResults[cast[uint](gBlockSplices[i])] = spliceResults[i]
       # Splices have been collected and evaluated; turn deferral off so any
       # `#[expr]#` still in the tree (e.g. inside an injected `##` node) is
       # evaluated immediately as a standalone chunk rather than re-deferred
@@ -1809,7 +2019,6 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
       gInBlockSpliceDeferral = false
       var newList: seq[Node] = @[]
       var injIdx = 0
-      var spIdx = 0
       for r in rewritten:
         if injIdx < ppNodes.len and r == ppNodes[injIdx]:
           for inj in injected[injIdx]:
@@ -1818,9 +2027,9 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
               newList.add processed
           inc injIdx
         else:
-          # Substitute any splice sentinels nested inside `r` (a splice may
-          # sit deep inside an expression, not just at the top level).
-          newList.add substituteSplices(r, gBlockSplices, spliceResults, ctx, spIdx)
+          # Leave splice sentinels in place; `replaceSplices` (analysis) resolves
+          # them via `evaluateSplice`, which prefers the preprocess result.
+          newList.add r
       rewritten = newList
     root.children = rewritten
     return root
@@ -1836,15 +2045,11 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
     discard runPreprocessChunk(ctx, @[root])
     return nil
   of nkPreprocessExpr:
-    # A splice nested inside an expression (e.g. inside a call).  When we are
-    # walking a block that defers splices, leave the node in place as a
-    # sentinel -- `collectSpliceParts` (called by the block walk) records it
-    # and emits its capture line in source order; otherwise (top-level
-    # splice, or a block that is not deferring) evaluate it immediately as a
-    # standalone chunk.
-    if gInBlockSpliceDeferral:
-      return root
-    return evalSpliceExpr(ctx, root)
+    # Stage 4: leave the splice in place.  It is evaluated later by
+    # `replaceSplices` in the analyzer against the live scope; evaluating it
+    # here (preprocess time) sees only the shared Lua globals, never the
+    # enclosing nelua scope, so bare scope symbols resolved to `nil`.
+    return root
   of nkPreprocessName:
     ctx.diags.add "#|name|# preprocessor replacement is unsupported in this build; node consumed"
     return newNil()
