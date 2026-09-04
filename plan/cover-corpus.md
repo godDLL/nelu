@@ -37,9 +37,10 @@ Every file below is `ORACLE_ACCEPT` (oracle exit 0); no file is `ORACLE_REJECT`.
 | `tdiv.nelua` | `///` (truncate division) | B | `3` + 0 | `3` + 0 | MATCH |
 | `tmod.nelua` | `%%%` (truncate modulo) | B | `2` + 0 | `2` + 0 | MATCH |
 | `asr.nelua` | `>>>` (arithmetic shift right) | B | `4` + 0 | `4` + 0 | MATCH |
-| `splice-ident.nelua` | `#[x]#` splice of a variable reference | B | `5` + 0 | `nil` + 0 | DIFF |
+| `splice-ident.nelua` | `#[x]#` splice of a variable reference | B | `5` + 0 | `5` + 0 | MATCH |
 | `fallthrough.nelua` | `fallthrough` keyword in `switch` | A | `one` + 0 | `one` + 0 | MATCH |
 | `record-type.nelua` | `@record{ ... }` type form | B | `1 a` + 0 | `1 a` + 0 | MATCH |
+| `record-literal-typed.nelua` | typed record literal `(@T){ ... }` | B | `3.0 4.0 1.0 0.0 3.0 4.0` + 0 | (C compile failed: `struct nlrec0`) + 1 | NELU_CRASH |
 | `union-type.nelua` | `@union{ ... }` type form | B | `1` + 0 | `1` + 0 | MATCH |
 | `enum-type.nelua` | `@enum{ A=0, B=1 }` type form | B | `0` + 0 | `0` + 0 | MATCH |
 | `meta-binary-dispatch.nelua` | `__add` binary-op metamethod dispatch | A | `3` + 0 | `3` + 0 | MATCH |
@@ -87,22 +88,36 @@ Every file below is `ORACLE_ACCEPT` (oracle exit 0); no file is `ORACLE_REJECT`.
     `meta-binary-dispatch.nelua`, `meta-unary-dispatch.nelua`,
     `meta-len.nelua`, `meta-tostring.nelua`, `meta-call.nelua`,
     `meta-bnot.nelua`.
-- Nelu exits 0 but prints the wrong value (DIFF): **1**
-  - `splice-ident.nelua` (prints `nil` instead of `5`)
+- Nelu exits 0 but prints the wrong value (DIFF): **0**
 - Nelu rejects with a parse/keyword error (NELU_REJECT): **0**
-- Nelu parses but the generated C fails to compile (NELU_CRASH): **0**
+- Nelu parses but the generated C fails to compile (NELU_CRASH): **1**
+  - `record-literal-typed.nelua` (typed record literal `(@T){ ... }` mis-lowers
+    to an empty `struct nlrec0`; gcc rejects it)
 
-Open gaps this corpus documents: **1 of 43** files is not yet handled by Nelu
-(`splice-ident.nelua`, a DIFF). The 42 MATCH files are gaps that have since
-closed (`macro-def`, `tdiv`, `tmod`, `asr`, `goto-label`, `fallthrough`,
-`sizeof-builtin`, the 23 `keyword-*` files, the 9 metamethod/record/union/
-`enum` probes above) or were already rated C in the gap doc.
+Open gaps this corpus documents: **1 of 44** files is not yet handled by Nelu
+(`record-literal-typed.nelua`, a NELU_CRASH).  The 43 MATCH files are gaps that
+have since closed (`macro-def`, `tdiv`, `tmod`, `asr`, `goto-label`,
+`fallthrough`, `sizeof-builtin`, the 23 `keyword-*` files, the 9
+metamethod/record/union/enum probes, and `splice-ident.nelua`) or were already
+rated C in the gap doc.
 
 ## 3. Gates
 
 `plan/cmp.py` and `plan/regress.py` both scan their own scratch corpora
 (`tmp/corpus_nelua/`, `tmp/m2_corpus/`, and cmp.py's inline 40 cases); neither
-discovers `examples/cover/`. Confirmed run on the current tree:
+discovers `examples/cover/`.  The cover corpus now has its own runner:
+
+- `python3 plan/cover_gate.py` - execution-parity gate over **all 44 files in
+  `examples/cover/`**.  Compiles and runs each through `tmp/nelua` and the
+  oracle, classifies MATCH / DIFF / NELU_REJECT / NELU_CRASH / BOTH_FAIL, and
+  compares against the recorded baseline in `tmp/cover_baseline.json`
+  (gitignored).  Exit 0 when no file's status regressed; `--record`
+  re-captures the baseline.  **Current: 43 MATCH / 0 DIFF / 1 NELU_CRASH, 0
+  regressions.**  The NELU_CRASH is `record-literal-typed.nelua` (the
+  typed-record-literal lowering bug); `splice-ident.nelua` closed DIFF->MATCH
+  when the splice scope-symbol gap was fixed.
+
+Confirmed run on the current tree:
 
 - `python3 plan/cmp.py` - report-only, exit 0, 1 diff out of 40 (case 25, a
   known oracle-rejects-but-Nelu-parses case). Unaffected by the corpus.
@@ -113,7 +128,7 @@ discovers `examples/cover/`. Confirmed run on the current tree:
   `lib/sequence.nelua:233` `for i,field in ipairs(...)`), not regressions from
   the corpus.
 
-None of the 43 cover files produces a SIGSEGV or "Illegal storage access" in
+None of the cover files produces a SIGSEGV or "Illegal storage access" in
 Nelu; the exit-1 files are all C-compile failures, so they add no CRASH to any
 gate count.
 
@@ -335,8 +350,15 @@ multi-dim, and primtypes) was:
     metatype. This is what makes `record-type`/`union-type`/`enum-type`
     compile and run instead of failing in C emission.
 
-`splice-ident.nelua` is the only remaining open gap in the corpus (1 of 43):
-`#[x]#` splice of a variable reference still prints `nil` instead of `5`.
+`splice-ident.nelua` was the last DIFF in the corpus; it is now MATCH.  The
+gap was that a bare identifier in a `#[x]#` splice resolved against the
+preprocess-time Lua scope, which does not yet exist for nelua-scope symbols, so
+`local x = 5; print(#[x]#)` printed `nil`.  The fix (Stage 4) walks the live
+analyzer scope at analysis time and pushes a Symbol wrapper for any symbol
+found, so `#[x]#` reads `x`'s value; `## local x = 7` splices are served from
+the per-evaluation `gSpliceResults` table instead.  The only remaining open gap
+in the corpus is `record-literal-typed.nelua` (the typed-record-literal
+lowering bug, a NELU_CRASH).
 
 Gates after integration, all unchanged from baseline: `cmp` 1 diff/40,
 `regress` GREEN (M2 14/14 MATCH; M1 25 MATCH / 3 DIFF / 0 CRASH),
