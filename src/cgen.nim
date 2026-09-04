@@ -1786,7 +1786,7 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool,
   # early, which skipped the declarations and left function-body locals like
   # `local m, n = f()` undeclared in C (a SIGSEGV-shaped compile failure).
   if isGlobal or not alreadyDeclared:
-    for iddecl in iddecls:
+    for i, iddecl in iddecls:
       let a = s.ctx.attrOf.getOrDefault(iddecl)
       if a != nil and a.isTypeBinding:
         if a.typ != nil: s.collectType(a.typ)
@@ -1797,7 +1797,16 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool,
       if vtype == nil: continue
       s.collectType(vtype)
       let cn = if a != nil and a.codename != "": a.codename else: cIdent(iddecl.str)
-      if vtype.isAny:
+      # The oracle zero-initialises every no-initialiser local
+      # (int64_t x = 0; double x = 0.0; bool x = false; records -> (T){0}).
+      # A bare `int64_t x;` is undefined behaviour in C if the local is read
+      # before assignment, so emit a type-appropriate zero initializer.  An
+      # iddecl with an initialiser keeps a bare declaration -- its value comes
+      # from the assignment below (the oracle combines decl+init into one
+      # statement, but the two forms are observably identical).  `= {0};` is
+      # valid C for every variable type the emitter produces and zeroes the
+      # whole object, matching the oracle's semantics for all of them.
+      if vtype.isAny or i >= inits.len:
         s.line cDecl(vtype, cn) & " = {0};"
       else:
         s.line cDecl(vtype, cn) & ";"

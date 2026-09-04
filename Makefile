@@ -54,7 +54,7 @@ endif
 
 NIM=nim
 NIMCACHE?=$(CURDIR)/.cache/nim
-NIMFLAGS=-d:release --path:src --nimcache:$(NIMCACHE)
+NIMFLAGS=-d:release --path:src --nimcache:$(NIMCACHE) --passL:-s
 
 $(NELU): src/main.nim $(shell find src -name '*.nim' 2>/dev/null)
 	$(NIM) c $(NIMFLAGS) -o:$@ src/main.nim
