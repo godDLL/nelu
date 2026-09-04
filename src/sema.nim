@@ -98,7 +98,7 @@ proc convert*(fromT, toT: Type, explicit: bool = false): Conversion =
   if fromT.isPointer and toT.isPointer:
     return Conversion(kind: ckImplicit, check: false)
   # other scalar -> scalar
-  if fromT.isScalar and toT.isScalar:
+  if fromT.isScalar() and toT.isScalar():
     return Conversion(kind: ckImplicit, check: true)
   # record value to record field of the same type
   if fromT.isRecord and toT.isRecord and fromT == toT:
@@ -163,7 +163,14 @@ proc inferUnary*(op: string, rhs: Type): (Type, Conversion) =
         # sizeOf a type -> usize
         (BuiltinTypes["usize"], ident)
       elif rhs.isArray or rhs.isStringy:
+        # length of an array/string *value* -> integer (isize at the call site)
         (BuiltinTypes["integer"], ident)
+      elif rhs.isScalar or rhs.isPointer or rhs.isNilptr or rhs.isOptional or
+           rhs.isVoid or rhs.isAny or rhs.isNiltype or rhs.isCstring:
+        # sizeOf a primitive/container *type* -> usize (the analyzer resolves
+        # the `#` operand as a type expression first, so a string/array TYPE
+        # lands here as usize while a string/array VALUE lands above).
+        (BuiltinTypes["usize"], ident)
       else:
         (nil, Conversion(kind: ckNone))
     of "bnot":

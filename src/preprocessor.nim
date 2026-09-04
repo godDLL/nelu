@@ -27,7 +27,7 @@
 ## "none survive into analysis" invariant still holds.
 
 import
-  ast, astshapes, parser, span, strutils, tables, types
+  ast, astshapes, parser, span, strutils, tables, types, ./sema
 import std/streams
 import ./luaengine
 
@@ -893,6 +893,83 @@ proc pushTypeWrapper(L: PLuaState, t: Type)
 proc pushBool(L: PLuaState, b: bool) =
   L.lua_pushboolean(if b: 1 else: 0)
 
+proc power2str(n: int): string =
+  ## 2^n as a decimal string (n >= 0).  Small n only (<= 128), so the O(n^2)
+  ## repeated doubling is fine and avoids any int64/uint64 overflow edge case
+  ## for the 128-bit types' min/max.
+  var digits = "1"
+  for _ in 0..<n:
+    var carry = 0
+    var res = ""
+    for i in countdown(digits.len - 1, 0):
+      let d = (digits[i].ord - ord('0')) * 2 + carry
+      res = $(d mod 10) & res
+      carry = d div 10
+    if carry > 0:
+      res = $carry & res
+    digits = res
+  return digits
+
+proc decSub1(s: string): string =
+  ## s - 1 for a positive decimal string s >= "1".
+  var res = s
+  var i = res.len - 1
+  while i >= 0 and res[i] == '0':
+    res[i] = '9'
+    dec i
+  if i >= 0:
+    res[i] = chr(ord(res[i]) - 1)
+  var start = 0
+  while start < res.len - 1 and res[start] == '0':
+    inc start
+  return res[start..^1]
+
+proc integralMinMax(t: Type): (string, string) =
+  ## (min, max) decimal strings for an integral type, computed as bigints so
+  ## the 64-bit unsigned max (2^64-1) and the 128-bit extremes are exact.
+  let bits = 8 * size(t)
+  if t.isSigned:
+    let mag = power2str(bits - 1)      # 2^(bits-1)
+    return ("-" & mag, decSub1(mag))   # -2^(bits-1), 2^(bits-1)-1
+  let mag = power2str(bits)            # 2^bits
+  return ("0", decSub1(mag))           # 0, 2^bits-1
+
+proc pushMinMax(L: PLuaState, dec: string) =
+  ## Push a min/max value.  Magnitudes that fit int64 go out as Lua *integers*:
+  ## arithmetic is then exact and Lua 5.4's integer-overflow-to-float conversion
+  ## reproduces the oracle's `isize.max + 1 -> 9.2233720368548e+18` exactly.
+  ## Larger magnitudes (uint64 max, the 128-bit extremes) go out as Lua floats,
+  ## which is what the oracle splices them to as well.
+  let neg = dec.len > 0 and dec[0] == '-'
+  let absStr = if neg: dec[1 ..< dec.len] else: dec
+  let fits = if neg:
+      absStr.len < 19 or (absStr.len == 19 and absStr <= "9223372036854775808")
+    else:
+      absStr.len < 19 or (absStr.len == 19 and absStr <= "9223372036854775807")
+  if fits:
+    var mag: uint64 = 0
+    for c in absStr:
+      mag = mag * 10 + uint64(ord(c) - ord('0'))
+    let val = if neg:
+        if mag == 0x8000000000000000'u64: cast[int64](mag)   # -2^63 = INT64_MIN
+        else: -(mag.int64)
+      else:
+        mag.int64
+    L.lua_pushinteger(val)
+  else:
+    L.lua_pushnumber(parseFloat(dec))
+
+proc cIsConvertibleFrom(L: PLuaState): int {.cdecl.} =
+  ## `t:is_convertible_from(arg)` -- is the wrapper `arg` convertible to `t`?
+  let self = getWrapperType(L, 1)
+  let arg = getWrapperType(L, 2)
+  if self == nil or arg == nil:
+    discard L.luaL_error("is_convertible_from: argument is not a type")
+    return 0
+  let c = convert(arg, self, false)
+  L.lua_pushboolean(if c.kind != ckNone: 1 else: 0)
+  return 1
+
 proc cTypeIndex(L: PLuaState): int {.cdecl.} =
   ## `Type.__index(self, key)` -- map a field name to its value.
   let t = getWrapperType(L, 1)
@@ -966,6 +1043,35 @@ proc cTypeIndex(L: PLuaState): int {.cdecl.} =
   of "is_varanys":     pushBool(L, t.is_varanys)
   of "is_void":        pushBool(L, t.is_void)
   of "is_niltype":     pushBool(L, t.is_niltype)
+  of "size":           L.lua_pushinteger(size(t))
+  of "align":          L.lua_pushinteger(alignof(t))
+  of "bitsize":        L.lua_pushinteger(size(t) * 8)
+  of "min":
+    if t.isIntegral:
+      let (mn, _) = integralMinMax(t)
+      pushMinMax(L, mn)
+    else:
+      L.lua_pushlightuserdata(nil)
+  of "max":
+    if t.isIntegral:
+      let (_, mx) = integralMinMax(t)
+      pushMinMax(L, mx)
+    else:
+      L.lua_pushlightuserdata(nil)
+  of "mantdigits":
+    if t.kind == tkFloat32: L.lua_pushinteger(24)
+    elif t.kind == tkFloat64: L.lua_pushinteger(53)
+    elif t.kind == tkFloat128: L.lua_pushinteger(113)
+    elif t.kind == tkClongdouble: L.lua_pushinteger(64)
+    else: L.lua_pushlightuserdata(nil)
+  of "decimaldigits":
+    if t.kind == tkFloat32: L.lua_pushinteger(9)
+    elif t.kind == tkFloat64: L.lua_pushinteger(17)
+    elif t.kind == tkFloat128: L.lua_pushinteger(34)
+    elif t.kind == tkClongdouble: L.lua_pushinteger(19)
+    else: L.lua_pushlightuserdata(nil)
+  of "is_convertible_from":
+    L.lua_pushcfunction(cIsConvertibleFrom)
   else:
     L.lua_pushlightuserdata(nil)
   return 1
@@ -1094,8 +1200,11 @@ proc registerPreprocessorBuiltins*(L: PLuaState) =
   # `__index`) so attribute splices like `#[atype.is_oneindexing and 1 or 0]#`
   # work; `luaValueToNode` recognises the wrapper and re-derives the same
   # `nkType(@nkId(name))` node the bare lightuserdata used to produce.
-  L.lua_createtable(0, BuiltinTypes.len)
+  L.lua_createtable(0, BuiltinTypes.len + PrimitiveTypes.len)
   for nm, ty in BuiltinTypes:
+    pushTypeWrapper(L, ty)
+    L.lua_setfield(-2, nm)
+  for nm, ty in PrimitiveTypes:
     pushTypeWrapper(L, ty)
     L.lua_setfield(-2, nm)
   L.lua_setglobal("primtypes")
@@ -1108,6 +1217,9 @@ proc registerPreprocessorBuiltins*(L: PLuaState) =
   # the type-query function) so those keep their Lua meaning.
   for nm, ty in BuiltinTypes:
     if nm == "string" or nm == "nil" or nm == "type": continue
+    pushTypeWrapper(L, ty)
+    L.lua_setglobal(nm)
+  for nm, ty in PrimitiveTypes:
     pushTypeWrapper(L, ty)
     L.lua_setglobal(nm)
 
@@ -1146,9 +1258,20 @@ proc luaValueToNode*(L: PLuaState, idx: int): Node =
         return newType(newId(nm))
     return newNil()
   of LUA_TTABLE:
+    # A bigint value (primtypes.isize.min / .max) carries a `_bn=true` marker
+    # and its exact decimal form in `dec`; splice it as a number literal so the
+    # nelua parser re-applies its magnitude >= 2^63 -> float rule.
+    let base = L.lua_absidx(idx)
+    L.lua_getfield(base, "_bn")
+    if L.lua_type(-1) == LUA_TBOOLEAN and L.lua_toboolean(-1) != 0:
+      L.lua_pop(1)
+      L.lua_getfield(base, "dec")
+      let s = if L.lua_type(-1) == LUA_TSTRING: $L.lua_tolstring(-1, nil) else: "0"
+      L.lua_pop(1)
+      return newNumber(s)
+    L.lua_pop(1)
     # A Type wrapper table carries a `__nelua_type` lightuserdata field;
     # recognise it before falling through to the InitList path.
-    let base = L.lua_absidx(idx)
     L.lua_getfield(base, "__nelua_type")
     if L.lua_type(-1) == LUA_TLIGHTUSERDATA:
       let p = L.lua_touserdata(-1)

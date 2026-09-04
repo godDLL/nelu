@@ -164,6 +164,7 @@ type
 # underlying real functions instead.
 proc lua_pushcfunction*(L: PLuaState, fn: lua_CFunction, n: int = 0) {.importc: "lua_pushcclosure".}
 proc lua_pushboolean*(L: PLuaState, b: int) {.importc: "lua_pushboolean".}
+proc lua_pushinteger*(L: PLuaState, n: int64) {.importc: "lua_pushinteger".}
 proc lua_toboolean*(L: PLuaState, idx: int): int {.importc: "lua_toboolean".}
 proc lua_tointegerx*(L: PLuaState, idx: int, isnum: ptr cint): int64 {.importc: "lua_tointegerx".}
 proc lua_error*(L: PLuaState): int {.importc: "lua_error".}

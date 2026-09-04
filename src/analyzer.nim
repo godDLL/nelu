@@ -74,6 +74,7 @@ type
     specTable*: Table[string, Node]      ## D1: dedup key -> specialized FuncDef
     specCounter*: Table[string, int]     ## D1: per-function specialization counter
     specInFlight*: Table[string, bool]   ## D1: re-entrancy guard (recursion)
+    funcReturnType*: Type                ## current function's return type (for init-list-in-return)
 
   AnalyzerResult* = object
     root*: Node
@@ -318,7 +319,19 @@ proc numberTypeAndValue(text: string): (Type, string, int) =
     fv = parseFloat(num)
     isFloat = true
   else:
-    iv = parseInt(num)
+    # Integer literal.  The oracle (Lua 5.4 tonumber) treats any magnitude
+    # >= 2^63 as a float -- including -2^63 itself, whose magnitude is exactly
+    # 2^63 -- so `#[primtypes.isize.min]#` splices to a float literal and
+    # `print(-9223372036854775808)` yields `-9.2233720368548e+18`.  Parse the
+    # unsigned magnitude: 19 digits and greater than 2^63-1, or 20+, is a
+    # float; everything else is a signed int64.
+    let neg = num.len > 0 and num[0] == '-'
+    let absStr = if neg: num[1 ..< num.len] else: num
+    if absStr.len > 19 or (absStr.len == 19 and absStr > "9223372036854775807"):
+      fv = parseFloat(num)
+      isFloat = true
+    else:
+      iv = parseInt(num)
   if suffix != "":
     let tname = NumberSuffixTable.getOrDefault(suffix, "")
     if tname == "":
@@ -748,12 +761,38 @@ proc analyzeBinaryOp(ctx: var AnalyzerContext, node: Node): Type =
       a.comptime = true
       a.typ = ft
       a.value = fv
+  # M5: metamethod dispatch -- when both operands are records carrying the
+  # matching binary metamethod, the expression's type is the method's return
+  # type (so a downstream field access like `(a + b).v` resolves to the field
+  # type instead of collapsing to `any`).  The C emitter re-derives the same
+  # dispatch; the analyzer just needs the result type.
+  if rtype == nil and lt != nil and rt != nil:
+    let metaBinName = case node.str
+      of "+": "__add"
+      of "-": "__sub"
+      of "*": "__mul"
+      of "/": "__div"
+      of "%": "__mod"
+      of "^": "__pow"
+      of "&": "__band"
+      of "|": "__bor"
+      of "~": "__bxor"
+      of "<<": "__shl"
+      of ">>": "__shr"
+      of "..": "__concat"
+      else: ""
+    if metaBinName != "":
+      for operandType in [lt, rt]:
+        if operandType != nil and operandType.kind == tkRecord and
+           operandType.methods.hasKey(metaBinName):
+          let m = operandType.methods[metaBinName]
+          if m.ftype.returns.len > 0:
+            a.typ = m.ftype.returns[0]
+            return a.typ
   return rtype
 
 proc analyzeUnaryOp(ctx: var AnalyzerContext, node: Node): Type =
   let rhs = node.children[0]
-  let rt = analyzeExpr(ctx, rhs)
-  var (rtype, conv) = inferUnary(node.str, rt)
   let nop = case node.str
     of "-": "unm"
     of "#": "len"
@@ -761,17 +800,57 @@ proc analyzeUnaryOp(ctx: var AnalyzerContext, node: Node): Type =
     of "$": "deref"
     of "&": "ref"
     else: node.str
-  if nop == "len" and rtype != nil and rtype.kind == tkInteger:
-    rtype = BuiltinTypes["isize"]
+  var rt: Type
+  var typeOperand = false
+  if nop == "len":
+    # sizeof: the operand is a *type* (a type keyword, a nominal type, a
+    # type-typed variable) rather than a value expression.  Resolve it as a
+    # type expression first; if that fails (e.g. `#"hi"`, `#arr`) fall back to
+    # the ordinary value analysis so string/array *length* still works.
+    rt = analyzeTypeExpr(ctx, rhs)
+    if rt != nil:
+      typeOperand = true
+    else:
+      rt = analyzeExpr(ctx, rhs)
+  else:
+    rt = analyzeExpr(ctx, rhs)
+  var (rtype, conv) = inferUnary(nop, rt)
   var a = ctx.getAttr(node)
-  a.typ = rtype
-  if isComptime(rhs, ctx):
-    let rv = ctx.attrOf[rhs].value
-    let (ft, fv) = tryFoldUnary(nop, rt, rv)
-    if ft != nil:
-      a.comptime = true
-      a.typ = ft
-      a.value = fv
+  if typeOperand:
+    # sizeof(T): a comptime usize whose value is the byte size of T.  The
+    # oracle folds `#integer`/`#string`/`#usize` to 8/16/8 at compile time.
+    rtype = BuiltinTypes["usize"]
+    a.typ = rtype
+    a.comptime = true
+    a.value = $size(rt)
+  else:
+    a.typ = rtype
+    if nop == "len" and rtype != nil and rtype.kind == tkInteger:
+      rtype = BuiltinTypes["isize"]
+      a.typ = rtype
+    if isComptime(rhs, ctx):
+      let rv = ctx.attrOf[rhs].value
+      let (ft, fv) = tryFoldUnary(nop, rt, rv)
+      if ft != nil:
+        a.comptime = true
+        a.typ = ft
+        a.value = fv
+  # M5: metamethod dispatch -- when the operand is a record carrying the
+  # matching unary metamethod, the expression's type is the method's return
+  # type.  Without this `-r` on a record-with-`__unm` collapses to `any`, so a
+  # downstream use (e.g. `print(-r)`) routes through `nelua_print_any` with a
+  # struct payload instead of the typed print helper.
+  if rtype == nil and rt != nil:
+    let metaUnaryName = case node.str
+      of "-": "__unm"
+      of "~": "__bnot"
+      else: ""
+    if metaUnaryName != "" and rt.kind == tkRecord and
+       rt.methods.hasKey(metaUnaryName):
+      let m = rt.methods[metaUnaryName]
+      if m.ftype.returns.len > 0:
+        a.typ = m.ftype.returns[0]
+        return a.typ
   return rtype
 
 proc analyzeDotIndex(ctx: var AnalyzerContext, node: Node): Type =
@@ -1178,6 +1257,22 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
         a.value = tv
         if not isTypeBinding:
           a.isTypeBinding = true
+        # M5: a `local R: type = @record{...}` / `@enum(...){...}` type
+        # binding carries its concrete type on the symbol so that a later
+        # type-position use `r: R` resolves to the record/enum Type instead
+        # of the `type` metatype (which cgen renders as the opaque `nltype`
+        # and drops the struct body + init list).  Type aliases (`local T:
+        # type = integer`, `isTypeBinding` false) keep `sym.typ` = `type`
+        # so the A2 dereference path in analyzeTypeExpr still fires.
+        if isTypeBinding and ct != BuiltinTypes["type"]:
+          # A6-naming: nominal record/enum types get the C tag
+          # <unit>_<binding> (matches the oracle's typedef shape).  The
+          # name-setting at line ~1115 only fires when vtype is already the
+          # record type, but for `local R: type = @record{...}` vtype is the
+          # `type` metatype here -- so set the name on ct directly.
+          if ct.kind in {tkRecord, tkEnum} and ct.name == "":
+            ct.name = ctx.unitname & "_" & iddecl.str
+          sym.typ = ct
     if not isTypeBinding:
       a.lvalue = true
       a.staticstorage = true
@@ -1554,8 +1649,14 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
     ctx.symOf[arg] = asym
     if arg.children.len > 0:
       discard analyzeTypeExpr(ctx, arg.children[0], false)
+  # An init list in `return { ... }` inherits this function's return type so
+  # it is typed as the record/enum the function returns, not an anonymous
+  # empty struct.  Save/restore so nested functions keep their own context.
+  let savedFuncRet = ctx.funcReturnType
+  ctx.funcReturnType = if ftype.returns.len > 0: ftype.returns[0] else: nil
   analyzeBlock(ctx, body)
   ctx.scope = saved
+  ctx.funcReturnType = savedFuncRet
   # An untyped function (no `: T` on the return) has its return type deduced
   # from the return expressions in its body, matching the oracle: collect every
   # reachable return (all control-flow branches, but not nested functions),
@@ -2021,7 +2122,14 @@ proc analyzeAssign(ctx: var AnalyzerContext, node: Node) =
 
 proc analyzeReturn(ctx: var AnalyzerContext, node: Node) =
   for c in node.children:
-    discard analyzeExpr(ctx, c)
+    ## An init list in return position inherits the enclosing function's
+    ## return type, so `return { v = 1 }` in a `function f(): R` is typed as
+    ## the record `R` rather than an anonymous empty struct (which would drop
+    ## the field list and emit `struct nlrec0 {}`).
+    if c.kind == nkInitList and ctx.funcReturnType != nil:
+      discard analyzeInitList(ctx, c, ctx.funcReturnType)
+    else:
+      discard analyzeExpr(ctx, c)
 
 proc analyzeSwitch(ctx: var AnalyzerContext, node: Node) =
   ## Validate and analyze an `nkSwitch`:

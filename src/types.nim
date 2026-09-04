@@ -245,8 +245,12 @@ proc primitiveSize(k: TypeKind): int =
     of tkInteger, tkUinteger, tkNumber, tkIsize, tkUsize,
         tkInt64, tkUint64, tkClong, tkCulong, tkClonglong, tkCulonglong,
         tkCptrdiff, tkCsize, tkCdouble, tkFloat64, tkPointer, tkNilptr,
-        tkFunction, tkCstring, tkMetatype:
+        tkFunction, tkCstring:
           8
+    of tkAny:
+      16
+    of tkMetatype:
+      0
     of tkString:
       16
     of tkInt128, tkUint128, tkFloat128, tkClongdouble:
@@ -326,8 +330,12 @@ proc primitiveAlign(k: TypeKind): int =
     of tkInteger, tkUinteger, tkNumber, tkIsize, tkUsize,
         tkInt64, tkUint64, tkClong, tkCulong, tkClonglong, tkCulonglong,
         tkCptrdiff, tkCsize, tkCdouble, tkFloat64, tkPointer, tkNilptr,
-        tkFunction, tkCstring, tkString, tkMetatype:
+        tkFunction, tkCstring, tkString:
       8
+    of tkAny:
+      16
+    of tkMetatype:
+      0
     of tkInt128, tkUint128, tkFloat128, tkClongdouble:
       16
     of tkInt32, tkUint32, tkCint, tkCuint, tkFloat32, tkCfloat:

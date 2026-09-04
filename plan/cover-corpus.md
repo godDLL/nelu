@@ -39,17 +39,17 @@ Every file below is `ORACLE_ACCEPT` (oracle exit 0); no file is `ORACLE_REJECT`.
 | `asr.nelua` | `>>>` (arithmetic shift right) | B | `4` + 0 | `4` + 0 | MATCH |
 | `splice-ident.nelua` | `#[x]#` splice of a variable reference | B | `5` + 0 | `nil` + 0 | DIFF |
 | `fallthrough.nelua` | `fallthrough` keyword in `switch` | A | `one` + 0 | `one` + 0 | MATCH |
-| `record-type.nelua` | `@record{ ... }` type form | B | `1 a` + 0 | `C compile failed` + 1 | NELU_CRASH |
-| `union-type.nelua` | `@union{ ... }` type form | B | `1` + 0 | `C compile failed` + 1 | NELU_CRASH |
-| `enum-type.nelua` | `@enum{ A=0, B=1 }` type form | B | `0` + 0 | `C compile failed` + 1 | NELU_CRASH |
-| `meta-binary-dispatch.nelua` | `__add` binary-op metamethod dispatch | A | `3` + 0 | `C compile failed` + 1 | NELU_CRASH |
-| `meta-unary-dispatch.nelua` | `__unm` unary metamethod dispatch | A | `-5` + 0 | `C compile failed` + 1 | NELU_CRASH |
-| `meta-len.nelua` | `__len` metamethod (M1) | B | `42` + 0 | `C compile failed` + 1 | NELU_CRASH |
-| `meta-tostring.nelua` | `__tostring` metamethod (M2) | B | `R` + 0 | `C compile failed` + 1 | NELU_CRASH |
-| `meta-call.nelua` | `__call` metamethod (M3) | B | `6` + 0 | `C compile failed` + 1 | NELU_CRASH |
-| `meta-bnot.nelua` | `__bnot` unary metamethod | B | `-6` + 0 | `C compile failed` + 1 | NELU_CRASH |
+| `record-type.nelua` | `@record{ ... }` type form | B | `1 a` + 0 | `1 a` + 0 | MATCH |
+| `union-type.nelua` | `@union{ ... }` type form | B | `1` + 0 | `1` + 0 | MATCH |
+| `enum-type.nelua` | `@enum{ A=0, B=1 }` type form | B | `0` + 0 | `0` + 0 | MATCH |
+| `meta-binary-dispatch.nelua` | `__add` binary-op metamethod dispatch | A | `3` + 0 | `3` + 0 | MATCH |
+| `meta-unary-dispatch.nelua` | `__unm` unary metamethod dispatch | A | `-5` + 0 | `-5` + 0 | MATCH |
+| `meta-len.nelua` | `__len` metamethod (M1) | B | `42` + 0 | `42` + 0 | MATCH |
+| `meta-tostring.nelua` | `__tostring` metamethod (M2) | B | `R` + 0 | `R` + 0 | MATCH |
+| `meta-call.nelua` | `__call` metamethod (M3) | B | `6` + 0 | `6` + 0 | MATCH |
+| `meta-bnot.nelua` | `__bnot` unary metamethod | B | `-6` + 0 | `-6` + 0 | MATCH |
 | `goto-label.nelua` | `goto` / `::label::` | A/B | `done` + 0 | `done` + 0 | MATCH |
-| `sizeof-builtin.nelua` | `#integer` `#string` `#usize` sizeof on builtin types | A | `8` + 0 | `nil` + 0 | DIFF |
+| `sizeof-builtin.nelua` | `#integer` `#string` `#usize` sizeof on builtin types | A | `8` + 0 | `8` + 0 | MATCH |
 | `keyword-import.nelua` | `import` used as identifier | B | `42` + 0 | `42` + 0 | MATCH |
 | `keyword-macro.nelua` | `macro` used as identifier | B | `42` + 0 | `42` + 0 | MATCH |
 | `keyword-cond.nelua` | `cond` used as identifier | B | `42` + 0 | `42` + 0 | MATCH |
@@ -78,24 +78,25 @@ Every file below is `ORACLE_ACCEPT` (oracle exit 0); no file is `ORACLE_REJECT`.
 
 - Files written: **43**
 - Oracle accepts (exit 0): **43** (all of them)
-- Nelu MATCH (same output and exit): **32**
+- Nelu MATCH (same output and exit): **42**
   - `macro-def.nelua`, `switch-case.nelua`, `facultative-type.nelua`,
     `type-value-position.nelua`, `tdiv.nelua`, `tmod.nelua`, `asr.nelua`,
-    `goto-label.nelua`, `fallthrough.nelua`, and the 23 `keyword-*` files.
-- Nelu exits 0 but prints the wrong value (DIFF): **2**
-  - `sizeof-builtin.nelua` (prints `nil` instead of `8`),
-    `splice-ident.nelua` (prints `nil` instead of `5`)
-- Nelu rejects with a parse/keyword error (NELU_REJECT): **0**
-- Nelu parses but the generated C fails to compile (NELU_CRASH): **9**
-  - `record-type.nelua`, `union-type.nelua`, `enum-type.nelua`,
+    `goto-label.nelua`, `fallthrough.nelua`, `sizeof-builtin.nelua`,
+    the 23 `keyword-*` files, and (since the metamethods + record/union/enum
+    integration) `record-type.nelua`, `union-type.nelua`, `enum-type.nelua`,
     `meta-binary-dispatch.nelua`, `meta-unary-dispatch.nelua`,
     `meta-len.nelua`, `meta-tostring.nelua`, `meta-call.nelua`,
-    `meta-bnot.nelua`
+    `meta-bnot.nelua`.
+- Nelu exits 0 but prints the wrong value (DIFF): **1**
+  - `splice-ident.nelua` (prints `nil` instead of `5`)
+- Nelu rejects with a parse/keyword error (NELU_REJECT): **0**
+- Nelu parses but the generated C fails to compile (NELU_CRASH): **0**
 
-Open gaps this corpus documents: **11 of 43** files are not yet handled by Nelu
-(2 DIFF + 9 NELU_CRASH). The 32 MATCH files are gaps that have since closed
-(`macro-def`, `tdiv`, `tmod`, `asr`, `goto-label`, `fallthrough`, the 23
-`keyword-*` files) or were already rated C in the gap doc.
+Open gaps this corpus documents: **1 of 43** files is not yet handled by Nelu
+(`splice-ident.nelua`, a DIFF). The 42 MATCH files are gaps that have since
+closed (`macro-def`, `tdiv`, `tmod`, `asr`, `goto-label`, `fallthrough`,
+`sizeof-builtin`, the 23 `keyword-*` files, the 9 metamethod/record/union/
+`enum` probes above) or were already rated C in the gap doc.
 
 ## 3. Gates
 
@@ -268,6 +269,78 @@ MATCH too: a plain switch with no fallthrough, chained fallthroughs
 is still `1 diffs out of 40` and `python3 plan/regress.py` is still GREEN
 (M2 14/14 MATCH; M1 25 MATCH / 3 DIFF / 0 CRASH) -- both unchanged from
 baseline.
+
+### 4.7 `sizeof-builtin.nelua` - gap CLOSED (was DIFF, now MATCH)
+
+`#integer` / `#string` / `#usize` printed `nil` because the preprocessor's Lua
+state had no `primtypes` reflection table, so the splice evaluated to nil.
+The fix exposes `primtypes` (built from both `BuiltinTypes` and
+`PrimitiveTypes`) with `size`, `align`, `bitsize`, `min`, `max`,
+`mantdigits`, `decimaldigits`, and `is_convertible_from`; min/max are pushed
+as Lua integers when the value fits int64 (exact arithmetic, overflow wraps
+like Lua 5.4) and as floats otherwise. Four inseparable pieces landed together:
+
+- `src/preprocessor.nim`: the `primtypes` table plus the `cTypeIndex` cases
+  (`size`, `align`, `min`, `max`, ...) and the `cIsConvertibleFrom` callback.
+- `src/luaengine.nim`: an FFI `lua_pushinteger` so `#integer`/`#usize` print
+  `8`, not `8.0`.
+- `src/analyzer.nim` `analyzeUnaryOp`: `#` now resolves its operand as a type
+  expression first (`analyzeTypeExpr`), folding `size(type)` into a comptime
+  value; the integer-result path converts to `isize` to match the oracle.
+  Integer literals with magnitude >= 2^63 parse as float (the oracle is Lua
+  5.4 `tonumber`, so `#[primtypes.isize.min]#` splices to a float literal and
+  `print(-9223372036854775808)` yields `-9.2233720368548e+18`).
+- `src/cgen.nim` `genUnaryOp`: comptime short-circuit for `#` -- emit the
+  folded value directly instead of routing through `nllen()`.
+
+`sizeof-builtin.nelua` now MATCHes the oracle (`8` / `16` / `8`), and
+`#[primtypes.isize.min]#` == `-9.2233720368548e+18` exactly. `cmp` still
+`1 diffs out of 40`, `regress` still GREEN (M2 14/14; M1 25 MATCH / 3 DIFF /
+0 CRASH), `examples_parity` 2/5/3, www sweep 97 PASS / 2 DIFF -- all
+unchanged from baseline. The remaining `require 'nelua.<module>'` item was
+investigated and determined non-applicable: the oracle behaves identically
+(looks for `.nelua` files; the `nelua` global is nil in both states).
+
+### 4.8 The 9 metamethod / record / union / enum probes - gap CLOSED (all were NELU_CRASH, now MATCH)
+
+The metamethods agent (`tmp/2026-09-04-METAMETHODS/`) closed the remaining
+NELU_CRASH block in one pass. All nine now MATCH the oracle exactly:
+`record-type` (`1 a`), `union-type` (`1`), `enum-type` (`0`),
+`meta-binary-dispatch` (`3`), `meta-unary-dispatch` (`-5`), `meta-len`
+(`42`), `meta-tostring` (`R`), `meta-call` (`6`), `meta-bnot` (`-6`).
+
+The agent's copy was based on `d01c8a1` (pre-fallthrough) and touched only
+two files. Integration onto the live tree (which already carries fallthrough,
+multi-dim, and primtypes) was:
+
+- `src/cgen.nim`: the agent's patch applied cleanly -- M5 binary metamethod
+  dispatch in `genBinaryOp` (a record carrying `__add`/.../`__concat` routes
+  through `genMetaCall`) and M5 unary dispatch in `genUnaryOp` (`__unm`,
+  `__bnot`).
+- `src/analyzer.nim`: the agent's patch did **not** apply cleanly -- the
+  primtypes rewrite had restructured `analyzeUnaryOp`, so the M5-unary hunk's
+  context no longer matched. All six analyzer hunks were applied manually at
+  their now-correct anchors:
+  - M5 binary result-type dispatch in `inferBinary` and M5 unary in
+    `analyzeUnaryOp` (so `(a + b).v` resolves the field type instead of
+    collapsing to `any`).
+  - a `funcReturnType` field on the analyzer context, saved/restored around
+    `analyzeFunc`'s body, so an init list in `return { ... }` inherits the
+    function's return type rather than becoming an anonymous empty struct.
+  - `analyzeReturn` routes `nkInitList` children through `analyzeInitList`
+    with the enclosing return type.
+  - a `local R: type = @record{...}` / `@enum(...){...}` type binding carries
+    its concrete type on the symbol (and the C tag `<unit>_<binding>`), so a
+    later `r: R` resolves to the record/enum Type instead of the opaque `type`
+    metatype. This is what makes `record-type`/`union-type`/`enum-type`
+    compile and run instead of failing in C emission.
+
+`splice-ident.nelua` is the only remaining open gap in the corpus (1 of 43):
+`#[x]#` splice of a variable reference still prints `nil` instead of `5`.
+
+Gates after integration, all unchanged from baseline: `cmp` 1 diff/40,
+`regress` GREEN (M2 14/14 MATCH; M1 25 MATCH / 3 DIFF / 0 CRASH),
+`examples_parity` 2 MATCH / 5 DIFF / 3 SKIP, www sweep 97 PASS / 2 DIFF.
 
 ## 5. Findings that could not be turned into oracle-accepted probes
 

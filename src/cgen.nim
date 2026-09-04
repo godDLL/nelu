@@ -990,6 +990,29 @@ proc genBinaryOp(s: var Gen, node: Node): string =
   let lstr = if arithmetic: s.arithCast(lstr0, lt, rtype) else: lstr0
   let rstr = if arithmetic: s.arithCast(rstr0, rt, rtype) else: rstr0
   let stringy = (lt != nil and lt.isStringy) and (rt != nil and rt.isStringy)
+  # M5: binary-operator metamethod dispatch.  A record that defines `__add`
+  # (etc.) routes the operator through that method instead of the default C
+  # operator, matching the oracle.  This is the fifth metamethod-dispatch
+  # path; M1/M2/M4 dispatch on `#`, `print`, and `[]`, and M3 dispatches on
+  # `(...)`.  Records are not stringy, so this check is mutually exclusive
+  # with the string-concatenation arms below.
+  let metaBinName = case node.str
+    of "+": "__add"
+    of "-": "__sub"
+    of "*": "__mul"
+    of "/": "__div"
+    of "%": "__mod"
+    of "^": "__pow"
+    of "&": "__band"
+    of "|": "__bor"
+    of "~": "__bxor"
+    of "<<": "__shl"
+    of ">>": "__shr"
+    of "..": "__concat"
+    else: ""
+  if metaBinName != "" and lt != nil and lt.kind == tkRecord and
+     lt.methods.hasKey(metaBinName):
+    return s.genMetaCall(lhs, metaBinName, @[rhs])
   case node.str
   of "+":
     if stringy:
@@ -1056,10 +1079,26 @@ proc genBinaryOp(s: var Gen, node: Node): string =
   else: return "/*op " & node.str & "*/"
 
 proc genUnaryOp(s: var Gen, node: Node): string =
+  let a = s.ctx.attrOf.getOrDefault(node)
+  # sizeof(T) is folded to its comptime usize value by the analyzer; emit it
+  # directly instead of routing through nllen() (which expects a string/array
+  # runtime value and would dereference a type keyword).
+  if a != nil and a.comptime and a.value != "" and node.str == "#":
+    return a.value
   let rhs = node.children[0]
   let ra = s.ctx.attrOf.getOrDefault(rhs)
   let rt = if ra != nil: ra.typ else: nil
   let rstr = s.genExpr(rhs)
+  # M5: unary-operator metamethod dispatch.  A record that defines `__unm` or
+  # `__bnot` routes `-r`/`~r` through that method instead of the C unary
+  # operator, matching the oracle.
+  let metaUnaryName = case node.str
+    of "-": "__unm"
+    of "~": "__bnot"
+    else: ""
+  if metaUnaryName != "" and rt != nil and rt.kind == tkRecord and
+     rt.methods.hasKey(metaUnaryName):
+    return s.genMetaCall(rhs, metaUnaryName, @[])
   case node.str
   of "-": return "(-" & rstr & ")"
   of "#":
