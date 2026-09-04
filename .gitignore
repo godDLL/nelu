@@ -6,6 +6,8 @@
 # Build artefacts.
 /*.bin
 /*.c
+/nelu
+/nelu-lua
 
 # Upstream Nelua launcher scripts (we ship our own under src/; these are the
 # reference compiler's entry points and must not be published as ours).
@@ -16,6 +18,7 @@
 
 # Nim compile artefacts from `nim c -r --path:src src/<module>.nim` self-tests.
 nim_cache/
+.cache/
 *.o
 /src/analyzer
 /src/ast
