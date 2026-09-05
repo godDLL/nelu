@@ -1,0 +1,8 @@
+local c: type = #[concept(function(x)
+  if x.type.is_integral then return integer end
+  return false, "not integral"
+end)]#
+local function f(x: c): integer
+  return x + 1
+end
+print(f(5))

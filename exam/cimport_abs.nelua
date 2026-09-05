@@ -1,0 +1,4 @@
+local function abs(x: cint): cint <cimport"abs", c>
+  return x
+end
+print(abs(-9))

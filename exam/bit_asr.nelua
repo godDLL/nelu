@@ -1,0 +1,2 @@
+local seed = 0xFF00
+print(seed >>> 4)

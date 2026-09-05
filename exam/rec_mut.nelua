@@ -1,0 +1,4 @@
+local R: type = @record{ v: integer }
+local r: R = { v = 3 }
+r.v = r.v + 1
+print(r.v)

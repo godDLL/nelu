@@ -1,0 +1,7 @@
+local function find(n: usize): usize
+  for i = 1, 100 do
+    if i == n then return i end
+  end
+  return 0
+end
+print(find(5))

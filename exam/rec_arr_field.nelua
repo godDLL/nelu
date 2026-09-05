@@ -1,0 +1,3 @@
+local R: type = @record{ data: array(integer, 3) }
+local r: R = { data = { 1, 2, 3 } }
+print(r.data[1])

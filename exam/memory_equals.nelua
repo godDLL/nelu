@@ -1,0 +1,4 @@
+local memory = require("memory")
+local a: [3]byte = { 1, 2, 3 }
+local b: [3]byte = { 1, 2, 3 }
+print(memory.equals(&a, &b, 3))

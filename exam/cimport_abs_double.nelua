@@ -1,0 +1,4 @@
+local function fabsf(x: cdouble): cdouble <cimport"fabs", c>
+  return x
+end
+print(fabsf(-3.5))

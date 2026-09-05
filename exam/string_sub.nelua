@@ -1,0 +1,4 @@
+local string = require("string")
+local s = "nelua"
+local sub = string.sub(s, 2, 4)
+print(sub.size)

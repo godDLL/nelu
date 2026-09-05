@@ -1,0 +1,3 @@
+local U: type = @union{ a: integer, b: cstring }
+local v: U = { a = 5 }
+print(v.a)

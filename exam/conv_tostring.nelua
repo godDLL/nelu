@@ -1,0 +1,2 @@
+local x = 42
+print(tostring(x))

@@ -1,0 +1,3 @@
+local string = require("string")
+local s = "nelua"
+print(string.len(s))

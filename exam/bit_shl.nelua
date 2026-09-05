@@ -1,0 +1,2 @@
+local seed = 1
+print((seed << 5) + (seed >> 2))

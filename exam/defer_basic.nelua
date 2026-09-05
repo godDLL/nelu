@@ -1,0 +1,7 @@
+local function f(v: integer): integer
+  local x: integer = v
+  defer print(x) end
+  x = x + 100
+  return x
+end
+print(f(1))

@@ -1,0 +1,4 @@
+local function f(x: cdouble): cdouble
+  return x * 2.0
+end
+print(f(3.0))

@@ -1,0 +1,6 @@
+local function clamp(x: integer, limit: integer): integer
+  check(x >= 0, "neg")
+  if x > limit then return limit end
+  return x
+end
+print(clamp(5, 10))

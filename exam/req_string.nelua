@@ -1,0 +1,5 @@
+local string = require("string")
+local function len(s: string): isize
+  return string.len(s)
+end
+print(len("nelua"))

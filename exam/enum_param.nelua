@@ -1,0 +1,5 @@
+local E: type = @enum{ A = 0, B = 1, C = 2 }
+local function f(e: E): integer
+  return e
+end
+print(f(E.B))

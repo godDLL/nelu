@@ -1,0 +1,5 @@
+local s = "abc"
+local function f(s: string): cstring
+  return (@cstring)(s)
+end
+print(f(s))

@@ -1,0 +1,5 @@
+global g: integer = 42
+local function readit(): integer
+  return g
+end
+print(readit())

@@ -1,0 +1,5 @@
+local t: array(integer, 4) = { 10, 20, 30, 40 }
+local function get(i: usize): integer
+  return t[i]
+end
+print(get(2))

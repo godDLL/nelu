@@ -1,0 +1,5 @@
+local s = 0
+for i = 1, 10 do
+  if unlikely(i == 5) then s = s + 1 end
+end
+print(s)

@@ -1,0 +1,4 @@
+local string = require("string")
+local s = "abc"
+local u = string.upper(s)
+print(u.size)

@@ -1,0 +1,4 @@
+local a = 5
+local b = 10
+local c = 15
+print(a < b and b < c)

@@ -1,0 +1,4 @@
+local function combine(seed: usize, value: usize): usize
+  return seed ~ (value + (@usize)(0x9e3779b9) + (seed<<6) + (seed>>2))
+end
+print(combine(0, 1))

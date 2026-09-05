@@ -252,6 +252,21 @@ local function draw()
 end
 
 local function go()
+  -- Headless: run the game logic off-screen, no SDL window.  Flip HEADLESS
+  -- to false to restore the original live-window demo.
+  local HEADLESS = true
+  if HEADLESS then
+    SDL_Init(SDL_INIT_VIDEO)
+    init_game()
+    local N = 0
+    while not quit and N < 2000 do
+      poll_game()
+      N = N + 1
+    end
+    print('headless done', N, 'moves score', score)
+    return
+  end
+
   -- init sdl
   SDL_Init(SDL_INIT_VIDEO)
 

@@ -1,0 +1,3 @@
+local a = "foo"
+local b = "bar"
+print(a .. b)

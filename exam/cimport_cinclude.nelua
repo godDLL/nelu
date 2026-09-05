@@ -1,0 +1,4 @@
+local function sqrtf(x: cdouble): cdouble <cimport"sqrt", cinclude"<math.h>", c>
+  return x
+end
+print(sqrtf(16.0))

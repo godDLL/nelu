@@ -286,6 +286,18 @@ end
 
 
 local function go()
+  -- Headless: run the particle simulation off-screen, no SDL window.  Flip
+  -- HEADLESS to false to restore the original live-window demo.
+  local HEADLESS = true
+  if HEADLESS then
+    local N = 120
+    for i=0,N do
+      draw_scene()
+    end
+    print('headless ok', N, 'frames')
+    return
+  end
+
   -- init sdl
   SDL_Init(SDL_INIT_VIDEO)
 

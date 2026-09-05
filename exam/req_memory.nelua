@@ -1,0 +1,5 @@
+local memory = require("memory")
+local dst: [4]byte
+local src: [4]byte = { 10, 20, 30, 40 }
+memory.copy(&dst, &src, 4)
+print(dst[0])

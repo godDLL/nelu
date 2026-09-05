@@ -1,0 +1,5 @@
+local x = #[1 + 1]#
+local function f(): integer
+  return x
+end
+print(f())

@@ -1,0 +1,4 @@
+local buf: [4]byte = { 1, 2, 3, 4 }
+local p: *[0]byte = &buf
+local q = (@*[0]byte)(p)
+print(q[0])

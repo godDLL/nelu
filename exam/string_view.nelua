@@ -1,0 +1,5 @@
+local s = "nelua"
+local function sub1(s: string): usize
+  return s.size
+end
+print(sub1(s))

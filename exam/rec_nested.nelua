@@ -1,0 +1,4 @@
+local Inner: type = @record{ x: integer }
+local R: type = @record{ inner: Inner }
+local r: R = { inner = { x = 5 } }
+print(r.inner.x)

@@ -1,0 +1,3 @@
+local U: type = @union{ a: integer, b: uint8 }
+local u: U = { a = 0x00000041 }
+print(u.b)

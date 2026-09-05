@@ -1,0 +1,5 @@
+local x = 5.0
+local function f(x: number): integer
+  return (@integer)(x)
+end
+print(f(x))

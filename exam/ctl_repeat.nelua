@@ -1,0 +1,6 @@
+local function go(n: usize): usize
+  local i: usize = 0
+  repeat i = i + 1 until i >= n
+  return i
+end
+print(go(3))

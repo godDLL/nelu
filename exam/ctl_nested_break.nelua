@@ -1,0 +1,11 @@
+local function count(): usize
+  local c: usize = 0
+  for i = 1, 10 do
+    for j = 1, 10 do
+      if j == 3 then break end
+      c = c + 1
+    end
+  end
+  return c
+end
+print(count())

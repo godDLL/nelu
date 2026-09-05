@@ -1,0 +1,5 @@
+local A: type = @record{ x: integer }
+local B: type = @record{ a: A }
+local C: type = @record{ b: B }
+local c: C = { b = { a = { x = 7 } } }
+print(c.b.a.x)

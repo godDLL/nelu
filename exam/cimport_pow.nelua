@@ -1,0 +1,4 @@
+local function powf(x: cdouble, y: cdouble): cdouble <cimport"pow", c>
+  return x
+end
+print(powf(2.0, 3.0))

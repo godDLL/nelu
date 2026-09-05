@@ -1,0 +1,3 @@
+local R: type = @record{ x: integer, y: usize }
+local r: R = { x = 3, y = 4 }
+print(r.x + r.y)

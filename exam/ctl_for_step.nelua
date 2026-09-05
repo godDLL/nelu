@@ -1,0 +1,6 @@
+local function sum(): usize
+  local s: usize = 0
+  for i = 1, 10, 2 do s = s + i end
+  return s
+end
+print(sum())

@@ -1,0 +1,2 @@
+local p: *integer = nilptr
+print(p == nilptr)

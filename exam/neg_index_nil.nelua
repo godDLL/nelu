@@ -1,0 +1,2 @@
+local x = nil
+print(x[1])

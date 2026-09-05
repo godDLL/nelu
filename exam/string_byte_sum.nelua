@@ -1,0 +1,4 @@
+local s = "ABC"
+local n: integer = 0
+for i = 0, 2 do n = n + s.data[i] end
+print(n)

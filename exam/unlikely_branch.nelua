@@ -1,0 +1,2 @@
+local x = 0
+if unlikely(x == 0) then print(0) else print(1) end

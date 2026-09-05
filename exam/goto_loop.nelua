@@ -1,0 +1,8 @@
+local function go(n: usize): usize
+  local x: usize = 0
+  ::done::
+  x = x + 1
+  if x < n then goto done end
+  return x
+end
+print(go(5))

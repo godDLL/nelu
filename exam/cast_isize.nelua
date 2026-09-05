@@ -1,0 +1,5 @@
+local s = "abc"
+local function f(s: string): isize
+  return (@isize)(s.size)
+end
+print(f(s))

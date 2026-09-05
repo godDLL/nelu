@@ -1,0 +1,4 @@
+local N <comptime> = 5
+local s: integer = 0
+for i = 1, N do s = s + i end
+print(s)

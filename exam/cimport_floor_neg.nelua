@@ -1,0 +1,4 @@
+local function floorf(x: cdouble): cdouble <cimport"floor", c>
+  return x
+end
+print(floorf(-3.7))

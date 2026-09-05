@@ -1,0 +1,2 @@
+local x: usize = 10
+print(x)

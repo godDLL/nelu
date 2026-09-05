@@ -1,0 +1,9 @@
+local function f(): integer
+  local x = 1
+  defer print(x) end
+  x = 2
+  defer print(x) end
+  x = 3
+  return x
+end
+print(f())

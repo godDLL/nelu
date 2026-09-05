@@ -1,0 +1,6 @@
+local function step(seed: usize, len: usize): usize
+  seed = seed ~ len
+  seed = (seed << 5) + (seed >> 2) + seed
+  return seed
+end
+print(step(0x9e3779b9, 4))

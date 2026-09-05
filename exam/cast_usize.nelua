@@ -1,0 +1,5 @@
+local x = 5
+local function f(x: integer): usize
+  return (@usize)(x)
+end
+print(f(x))

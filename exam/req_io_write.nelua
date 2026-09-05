@@ -1,0 +1,6 @@
+local io = require("io")
+local function f(x: integer): integer
+  io.write(tostring(x))
+  return x
+end
+print(f(7))

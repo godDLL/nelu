@@ -1,0 +1,5 @@
+local MAX <comptime> = 8
+local function f(): usize
+  return MAX
+end
+print(f())

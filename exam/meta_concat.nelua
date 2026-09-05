@@ -1,0 +1,4 @@
+local function __concat(a: string, b: string): string
+  return a .. b
+end
+print("foo" .. "bar")

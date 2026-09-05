@@ -1,0 +1,7 @@
+local function g(a: integer, b: integer): integer
+  return a + b
+end
+local function f(...: varargs): integer
+  return g(...)
+end
+print(f(3, 4))

@@ -1,0 +1,5 @@
+local x = 42
+local function f(x: integer): usize
+  return (@usize)((@pointer)(x))
+end
+print(f(x))

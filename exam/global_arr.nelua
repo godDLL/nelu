@@ -1,0 +1,5 @@
+global t: array(integer, 3) = { 1, 2, 3 }
+local function get(i: usize): integer
+  return t[i]
+end
+print(get(2))

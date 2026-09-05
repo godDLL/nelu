@@ -1,0 +1,3 @@
+local R: type = @record{ name: cstring }
+local r: R = { name = "nelua" }
+print(r.name)

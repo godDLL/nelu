@@ -1,0 +1,3 @@
+local E: type = @enum{ OFF = 0, ON = 1, MAYBE = 2 }
+local v = E.ON
+print(v)

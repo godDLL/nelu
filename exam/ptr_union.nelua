@@ -1,0 +1,4 @@
+local U: type = @union{ a: integer, b: cdouble }
+local u: U = { a = 7 }
+local p: *U = &u
+print(p.a)

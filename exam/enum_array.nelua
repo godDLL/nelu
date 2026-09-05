@@ -1,0 +1,3 @@
+local E: type = @enum{ A = 0, B = 1, C = 2 }
+local t: array(E, 3) = { E.A, E.B, E.C }
+print(t[2])

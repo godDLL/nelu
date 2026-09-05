@@ -1,0 +1,6 @@
+local function count(n: usize): usize
+  local i: usize = 0
+  while i < n do i = i + 1 end
+  return i
+end
+print(count(5))

@@ -1,0 +1,4 @@
+local function f(a: integer, b: integer): integer
+  return a %%% b
+end
+print(f(-7, 3))

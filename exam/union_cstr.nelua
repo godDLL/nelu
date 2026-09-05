@@ -1,0 +1,3 @@
+local U: type = @union{ name: cstring, data: *[0]byte }
+local u: U = { name = "x" }
+print(u.name)

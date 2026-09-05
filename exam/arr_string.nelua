@@ -1,0 +1,2 @@
+local t: array(string, 3) = { "a", "b", "c" }
+print(t[0] .. t[1] .. t[2])

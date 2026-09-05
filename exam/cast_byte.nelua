@@ -1,0 +1,5 @@
+local x = 65
+local function f(x: integer): byte
+  return (@byte)(x)
+end
+print(f(x))

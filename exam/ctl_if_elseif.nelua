@@ -1,0 +1,8 @@
+local function grade(x: integer): integer
+  if x < 5 then return 1
+  elseif x < 10 then return 2
+  elseif x < 20 then return 3
+  else return 4
+  end
+end
+print(grade(7))

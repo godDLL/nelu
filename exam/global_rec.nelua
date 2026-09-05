@@ -1,0 +1,3 @@
+global R: type = @record{ v: integer }
+local r: R = { v = 9 }
+print(r.v)

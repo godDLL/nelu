@@ -1,0 +1,8 @@
+local E: type = @enum{ A = 0, B = 1, C = 2 }
+local function f(e: E): integer
+  if e == E.A then return 1
+  elseif e == E.B then return 2
+  else return 3
+  end
+end
+print(f(E.C))

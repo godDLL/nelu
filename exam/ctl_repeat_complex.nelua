@@ -1,0 +1,7 @@
+local i = 1
+local s = 0
+repeat
+  s = s + i
+  i = i + 1
+until i > 5
+print(s)

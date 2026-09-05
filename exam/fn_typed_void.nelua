@@ -1,0 +1,4 @@
+local function f(x: integer): void
+  print(x)
+end
+f(7)

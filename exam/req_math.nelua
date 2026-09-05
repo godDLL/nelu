@@ -1,0 +1,5 @@
+local math = require("math")
+local function f(x: number): number
+  return math.floor(x)
+end
+print(f(3.7))
