@@ -1,8 +1,16 @@
 # Task 1 — locals-in-functions bug: characterisation
 
-Status: diagnostic only. No `src/` file edited. Reproduced against our compiler
-(`tmp/nelua`, built `nim c -d:release --path:src -o:tmp/nelua src/main.nim`)
-and against the oracle `/usr/bin/nelua`.
+**Status:** CLOSED -- integrated into live `src/` and verified end-to-end.  The §5 recommended fix is present in `src/cgen.nim` `genVarDecl` (lines 1788-1812): a declaration pass for function-body locals gated on `isGlobal or not alreadyDeclared`, zero-initialised to match the oracle, with no `static` qualifier.  The `global`-in-function top-scope rejection the oracle enforces is also landed (`cgen.nim:1745-1748`).  Moved to `plan/DONE/`.
+
+**Stage 5 verification (live `tmp/nelua`, `nim c -d:release` build of committed `src/`).**  All three probes MATCH the oracle exactly, exit 0:
+
+| Probe | Oracle | Ours | Verdict |
+|---|---|---|---|
+| `tmp/probe1.nelua` (`local x = a + b`) | `5` | `5` | MATCH |
+| `tmp/probe2.nelua` (8 forms: vardecl, no-init+assign, `do`, `for`, `while`, `repeat`, `switch`/`case`, bare local) | `11 12 13 6 6 6 100 200 900 18` | identical | MATCH |
+| `tmp/probe6.nelua` (typed no-init + bare local) | `11 12` | identical | MATCH |
+
+Every scope that funnels through `genScope` (function, `do`, `for`/`while`/`repeat`, `switch`/`case`) is covered by the single insertion at `cgen.nim:1788`, and the top-level path is untouched (`alreadyDeclared=true` avoids the duplicate-declaration regression the ticket warned about).
 
 ---
 

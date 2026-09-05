@@ -1,6 +1,18 @@
 # Analyzer fix: `*Record` resolves to `pointer(any)` instead of `pointer(record)`
 
-**Status:** WIP -- minimal fix prototyped and verified on a throwaway copy (`tmp/srcfix/`, `tmp/nelua_fix5`) but NOT yet applied to live `src/`.  Integrate it.
+**Status:** CLOSED -- integrated into live `src/` and verified end-to-end.  The §4.3 two-line fix was already present in `src/analyzer.nim` (`analyzeFuncDef`, lines 1657 and 1716 use `analyzeTypeExpr(ctx, arg.children[0], false)`); this ticket's job was to confirm and record it.  The §5 record-value-to-pointer consequence also turned out already handled on the live tree.  Moved to `plan/DONE/`.
+
+**Stage 5 verification (live `tmp/nelua`, `nim c -d:release` build of committed `src/`).**  Full tally over `tmp/rpr/run.sh`, 15 probes:
+
+| Verdict | Probes |
+|---|---|
+| MATCH (11) | p01, p02, p03, p03c, p05, p07, p08, p09, rg1, rg2, rg3 |
+| DIFF (2) | p04, p04c -- the pointer-printing cases §1 scoped out (ours prints `nil` where the oracle prints the address; AST types are identical) |
+| FAIL (0) | -- none; no probe where ours fails and the oracle succeeds |
+| ORACLE-ONLY-FAIL (2) | p02c, p04b -- the oracle itself rejects these; not our divergence |
+| BOTH-FAIL (2) | p03b, p06 -- oracle rejects (`*T` generic param; `*T` alias form) |
+
+Against the ticket's own baseline (MATCH 4 / DIFF 4 / FAIL 5), this is MATCH 11 / DIFF 2 / FAIL 0.  p01, p07, p08 all pass a record *value* to a `*Record` parameter and MATCH -- so the §5 address-of chain (`sema.convert` + `cgen.coerce`) is working on the live tree, not just the Type-resolution fix in §4.
 
 Read-only research spec. Oracle is `/usr/bin/nelua` (0.2.0-dev, build 1635); ours is
 `tmp/nelua`. The minimal fix is described in prose only -- it has NOT been applied to

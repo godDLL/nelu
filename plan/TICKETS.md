@@ -75,15 +75,15 @@ to see the whole board.
 | Ticket | Status | Summary |
 |---|---|---|
 | `plan/WIP/stdlib-parity.md` | active | Stdlib / module-system parity push; compiles `lib/*.nelua` through Nelu. Part 1 = plan + phases, Part 2 = coverage survey, Part 3 = inheritance + two language gaps. |
-| `plan/WIP/locals-in-functions-bug.md` | diagnostic | Task 1: locals-in-functions characterisation; reproduced, no fix. |
 | `plan/WIP/any-implementation-design.md` | Phase 1 green | `any` implementation; Phase 1 parity floor done, Phase 2 open. |
-| `plan/WIP/record-pointer-resolution.md` | WIP | `*Record` resolves to `pointer(any)` instead of `pointer(record)`; minimal fix prototyped and verified on a throwaway copy but NOT applied to live `src/`. Integrate it. |
 
 ### DONE (completed)
 
 | Ticket | Status | Summary |
 |---|---|---|
 | `plan/DONE/three-declaration-divergences.md` | CLOSED | Undeclared-symbol diagnostics; all three divergences closed, 0 corpus cost. |
+| `plan/DONE/record-pointer-resolution.md` | CLOSED | `*Record` resolves to `pointer(record)`, not `pointer(any)`; the §4.3 two-line fix was already in `src/analyzer.nim` (`analyzeFuncDef`), the §5 address-of consequence was already handled. Verified: tally went MATCH 4/FAIL 5 -> MATCH 11/FAIL 0 over `tmp/rpr/run.sh`. |
+| `plan/DONE/locals-in-functions-bug.md` | CLOSED | Function-body `local` declarations were dropped by `genVarDecl`'s two-pass split. Fix landed at `cgen.nim:1788-1812` (declaration pass gated on `isGlobal`, zero-initialised, no `static`) plus the oracle's `global`-in-function rejection at `cgen.nim:1745`. Verified: probe1/probe2 (8 scope forms)/probe6 all MATCH the oracle. |
 | `plan/DONE/pattern-matching-implementation-design.md` | DONE | `switch`/`case`/`else` pattern matching implemented. |
 | `plan/DONE/devil-advocate-findings.md` | ALL FIXED | Devil-advocate findings, all four fixed. |
 | `plan/DONE/driver-segv-fixes.md` | DONE | Driver SIGSEGV fix for `(@*[0]byte)(e)`. |
