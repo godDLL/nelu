@@ -963,6 +963,8 @@ changed. Nothing was deleted.
 | -- | (none) | **NEW 3.5 `...: cvarargs` (N8)** | Absent from stage 2. |
 | -- | (none) | **NEW 3.6 dotted `global X.Y` (C4)** | Absent from stage 2. |
 | -- | (none) | **NEW 3.7 `check()` source location (W4)** | Absent from stage 2. |
+| -- | (none) | **NEW 4.1 multi-return destructuring (N1)** | Absent from stage 2 entirely; caught by `plan/harness.py` probe `exam/fn_multi`, NOT by the devil-advocate merge. **Tier A priority** -- it is both a common-idiom wrong-output bug (`local a, b = f()` leaves trailing bindings nil; `print(f())` drops extras) and a stdlib blocker (the oracle's own `lib/*.nelua` destructures multi-return pervasively). Ticket `plan/INBOX/multi-return-destructuring.md`. |
+| -- | (none) | **NEW tickets mined from this doc, stage 5** | Every still-open BUG in §1–§3 (ranks 1–17, minus the three already COMPLETE) is now its own INBOX ticket with grounding, root cause, recommended fix, and verification. The ticket is the worklist; this doc stays the ranked reference. See `plan/TICKETS.md` for the board. |
 
 ---
 

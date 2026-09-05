@@ -50,6 +50,25 @@ to see the whole board.
 | `plan/INBOX/exceptions-implementation.md` | design spec | Exceptions implementation design; not started. Companion `plan/INBOX/exceptions-oracle-behavior.md`. |
 | `plan/INBOX/exceptions-oracle-behavior.md` | reference | Oracle exception behavior reference; companion to `plan/INBOX/exceptions-implementation.md`. |
 | `plan/INBOX/c-pointer-array-lowering.md` | design spec | Pointer / array / record C-lowering spec; the pointer-to-array emission blocker is not fixed in `src/`. |
+| `plan/INBOX/multi-return-destructuring.md` | STILL OPEN | Multi-return destructuring broken: `local a, b = f()` leaves trailing bindings nil, `print(f())` drops extras. Caught by `exam/fn_multi`. |
+| `plan/INBOX/goto-label-statement.md` | STILL OPEN | Rank 1. `goto` + `::label:` cannot be a statement: `parseBlock`/`parseSwitchBlock` `break` on `tkColonColon` (`parser.nim:603,631`). Blocks stringbuilder, string, heap, brainfuck, overview. |
+| `plan/INBOX/byte-literal-suffix.md` | STILL OPEN | Rank 2. Byte literal `'A'_b` suffix not lexed: the `_b` after a char literal is lexed as a separate `tkIdentifier`. Blocks string.nelua, heap.nelua. |
+| `plan/INBOX/self-field-assign-sigsegv.md` | STILL OPEN | Rank 3. `self.x = self.x * s` (binary-op RHS on a self-field lvalue) SIGSEGVs in `analyzeAssign` (`analyzer.nim:1844`). recmethod_mutate.nelua. |
+| `plan/INBOX/preprocessor-driver-wiring.md` | STILL OPEN | Rank 4. `##` Lua statement blocks are not run by the default compile path (`compile.nim:10-16`). Long-bracket parsing DONE (`f75601a`); driver half open. |
+| `plan/INBOX/uint-wrap.md` | STILL OPEN | Rank 5. Small-uint arithmetic does not wrap: `200_u8 + 100_u8` prints `300`, oracle `44`. uint8_wrap.nelua. |
+| `plan/INBOX/emitter-segfaults-common-idioms.md` | STILL OPEN | Rank 6. C emitter SIGSEGVs on anonymous functions, method calls, and if/elseif chains. `needsCompile` workaround persists (`main.nim:82-88`). |
+| `plan/INBOX/float32-print-suffix.md` | STILL OPEN | Rank 7. `float32` print drops the `.0` suffix on integral values (`cgen.nim:180-184`). float32_easing.nelua. |
+| `plan/INBOX/genforin-multi-value.md` | STILL OPEN | Rank 8. `genForIn` supports only a single array iterable; `for k, v in array` unsupported. |
+| `plan/INBOX/undeclared-symbol-diagnostic.md` | STILL OPEN | Rank 9. Unknown identifiers resolve silently to `any`-typed externs with no diagnostic. Global table refactor (§4.1) folded in. |
+| `plan/INBOX/union-field-access.md` | STILL OPEN | Rank 11. `@union` field access resolves to `any`: `analyzeDotIndex` has no `tkUnion` branch (`analyzer.nim` ~717-755). |
+| `plan/INBOX/comptime-string-eval.md` | STILL OPEN | Rank 12. `<comptime>` on a `string` global/local evaluates the string as a number. Blocks builtins.nelua, utf8.nelua, stringbuilder.nelua. |
+| `plan/INBOX/likely-unlikely-lowering.md` | STILL OPEN | Rank 13. `likely()`/`unlikely()` builtins not lowered to C (no `__builtin_expect`). Blocks heap.nelua. |
+| `plan/INBOX/cvarargs-parameter-emission.md` | STILL OPEN | Rank 14. `...: cvarargs` in a cimport function emits a stray `___` token. Blocks stringbuilder.nelua. |
+| `plan/INBOX/dotted-global-c-emission.md` | STILL OPEN | Rank 15. Dotted `global X.Y` emits syntactically invalid C (literal `.` in the codename). Parse half DONE (`f75601a`); C half open. |
+| `plan/INBOX/check-source-location.md` | STILL OPEN | Rank 16. `check(false, msg)` omits the source location from the message (cosmetic). |
+| `plan/INBOX/enum-c-emission.md` | STILL OPEN | Rank 17. No C `enum` emitted for enum types (`cgen_types.cType` returns only `cTag(t)`). Unblocks type-safe `switch`. |
+| `plan/INBOX/splice-env-locals.md` | STILL OPEN | Core `lib/` blocker. `##` splice blocks cannot see nelua-scope locals (`## if v.type.is_cfloat then` fails with `global 'v'`). Natural extension of the `ec60323` scope machinery in `src/preprocessor.nim`. Unblocks hash.nelua. |
+| `plan/INBOX/lib-reachability-per-file.md` | scaffold | Sub-task scaffold: land `splice-env-locals`, re-scan the 21 `lib/*.nelua` files, give each still-failing one its own ticket. Baseline 0/21 compile. |
 
 ### WIP (active)
 
