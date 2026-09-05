@@ -50,8 +50,6 @@ to see the whole board.
 | `plan/INBOX/exceptions-implementation.md` | design spec | Exceptions implementation design; not started. Companion `plan/INBOX/exceptions-oracle-behavior.md`. |
 | `plan/INBOX/exceptions-oracle-behavior.md` | reference | Oracle exception behavior reference; companion to `plan/INBOX/exceptions-implementation.md`. |
 | `plan/INBOX/c-pointer-array-lowering.md` | design spec | Pointer / array / record C-lowering spec; the pointer-to-array emission blocker is not fixed in `src/`. |
-| `plan/INBOX/multi-return-destructuring.md` | STILL OPEN | Multi-return destructuring broken: `local a, b = f()` leaves trailing bindings nil, `print(f())` drops extras. Caught by `exam/fn_multi`. |
-| `plan/INBOX/self-field-assign-sigsegv.md` | STILL OPEN | Rank 3. `self.x = self.x * s` (binary-op RHS on a self-field lvalue) SIGSEGVs in `analyzeAssign` (`analyzer.nim:1844`). recmethod_mutate.nelua. |
 | `plan/INBOX/preprocessor-driver-wiring.md` | STILL OPEN | Rank 4. `##` Lua statement blocks are not run by the default compile path (`compile.nim:10-16`). Long-bracket parsing DONE (`f75601a`); driver half open. |
 | `plan/INBOX/uint-wrap.md` | STILL OPEN | Rank 5. Small-uint arithmetic does not wrap: `200_u8 + 100_u8` prints `300`, oracle `44`. uint8_wrap.nelua. |
 | `plan/INBOX/emitter-segfaults-common-idioms.md` | STILL OPEN | Rank 6. C emitter SIGSEGVs on anonymous functions, method calls, and if/elseif chains. `needsCompile` workaround persists (`main.nim:82-88`). |
@@ -94,6 +92,8 @@ to see the whole board.
 | `plan/DONE/byte-literal-suffix.md` | CLOSED | Rank 2. `'A'_b`/`"x"_u8`/`'A'_i8` lower to the char's ordinal as uint8/int8 (`analyzer.nim` `nkString` case + `cgen.nim` value emission). Verified: `print('A'_b)` -> 65, switch case values MATCH. |
 | `plan/DONE/nasm-opportunities.md` | DONE | NASM opportunities assessment; grounded in the actual source with measurements; concluded. |
 | `plan/DONE/analyzer-split-refactor.md` | CLOSED | Split `src/analyzer.nim` (128K / 3063 lines, the biggest source file) into 3 files for reading context: `analyzer_ctx.nim` (context + accessors), `analyzer_core.nim` (pure helpers), `analyzer.nim` (analysis core + dump + entry, kept whole because it is mutually recursive). Pure refactor, no behavior change. Verified: clean build, harness 0 regressions (219 MATCH). |
+| `plan/DONE/self-field-assign-sigsegv.md` | CLOSED | Rank 3. `self.x = self.x * s` (binary-op RHS on a self-field lvalue) was reported to SIGSEGV `analyzeAssign`; re-verified 2026-09-05 on the live tree and it does NOT reproduce (colon-method form MATCHes oracle, 6/9; 43-file corpus sweep 0 exit-139). No fix applied -- the nil-guards in `analyzeDotIndex`/`cgen` already cover it. |
+| `plan/DONE/multi-return-destructuring.md` | CLOSED | Rank 8. Multi-return destructuring: `local a, b = f()` binds each position, `print(f())` expands open calls, multi-return call in single-value position contributes only its first return. Fix in `analyzer.nim` (`expandedReturnTypes` + open-call return-type deduction) and `cgen.nim` (`genMultiRetFirst`, print-arg expansion). Verified: isolated probe MATCHes oracle; harness 0 regressions (304 baseline), `exam/fn_multi` new MATCH. |
 
 ## Not tickets (reference / design / tooling, live in `plan/` root)
 

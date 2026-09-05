@@ -1029,6 +1029,30 @@ proc collectReturns(node: Node, acc: var seq[Node]) =
   for c in node.children:
     collectReturns(c, acc)
 
+proc expandedReturnTypes(ctx: var AnalyzerContext, ret: Node): seq[Type] =
+  ## The expanded value-type list of a return statement, applying the
+  ## open-call rule: every expression except the last is single-valued (a
+  ## multi-return call there contributes only its first return type); the last
+  ## expression is expanded to all of its return types when it is a multi-
+  ## return call.  A bare `return` (no children) contributes nothing.
+  if ret.children.len == 0: return @[]
+  let n = ret.children.len
+  for i in 0 ..< n - 1:
+    let a = ctx.attrOf.getOrDefault(ret.children[i])
+    if a != nil and a.typ != nil: result.add a.typ
+  let last = ret.children[n - 1]
+  if last.kind == nkCall:
+    # `callRetTypes` is populated for every call by analyzeCall (it is the
+    # same table codegen's multi-return paths read); the attr's `calleeType`
+    # is not always set (an nkId callee only sets `ca.typ`), so read the
+    # callee's returns from the shared table.
+    let cr = ctx.callRetTypes.getOrDefault(last)
+    if cr.len > 1:
+      for r in cr: result.add r
+      return
+  let a = ctx.attrOf.getOrDefault(last)
+  if a != nil and a.typ != nil: result.add a.typ
+
 proc promoteType(a, b: Type): Type =
   ## The oracle's `Type:promote_type`: the resulting type when folding a's type
   ## with b's type over a candidate set (see `unifyReturnTypes`).  Returns nil
@@ -1275,18 +1299,48 @@ proc analyzeFuncDef(ctx: var AnalyzerContext, node: Node, specCodename: string =
   if ftype.returns.len == 0:
     var rets: seq[Node] = @[]
     collectReturns(body, rets)
-    var candidates: seq[Type] = @[]
-    for ret in rets:
-      if ret.children.len > 0:
-        let a = ctx.attrOf.getOrDefault(ret.children[0])
-        if a != nil and a.typ != nil:
-          candidates.add a.typ
-    let unified = unifyReturnTypes(candidates)
-    if unified != nil:
-      ftype.returns.add unified
-    else:
-      ctx.diags.add ctx.path & ": error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type"
+    if rets.len == 0:
+      # No return in the body: the function is `void` (a bare `return`-less
+      # function falls off the end, matching the oracle).
       ftype.returns.add BuiltinTypes["void"]
+    else:
+      # Deduce the return type from the value list of every reachable return,
+      # applying the open-call rule: all but the last expression of a return
+      # are single-valued; the last is expanded when it is a multi-return call.
+      # Every return must contribute the same number of values (the oracle
+      # rejects inconsistent counts as "compiler deduced type 'any'"); each
+      # position is unified across returns.  This is what makes an untyped
+      # `local function two() return 1, 2 end` infer `(int64, int64)` instead
+      # of the single-value `(int64)` the old first-child-only pass produced.
+      var ts: seq[seq[Type]] = @[]
+      for ret in rets:
+        ts.add expandedReturnTypes(ctx, ret)
+      let target = ts[0].len
+      var consistent = true
+      for t in ts:
+        if t.len != target:
+          consistent = false; break
+      if not consistent:
+        ctx.diags.add ctx.path & ": error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type"
+        ftype.returns.add BuiltinTypes["void"]
+      elif target == 0:
+        # All returns are bare `return`: the function is `void`.
+        ftype.returns.add BuiltinTypes["void"]
+      else:
+        var failed = false
+        for pos in 0 ..< target:
+          var candidates: seq[Type] = @[]
+          for t in ts:
+            if pos < t.len and t[pos] != nil:
+              candidates.add t[pos]
+          let unified = unifyReturnTypes(candidates)
+          if unified != nil:
+            ftype.returns.add unified
+          else:
+            ctx.diags.add ctx.path & ": error: compiler deduced type 'any' here, but it's not supported yet, please fix this variable type"
+            ftype.returns.add BuiltinTypes["void"]
+            failed = true; break
+        discard failed
   # D1: an `auto` return is fixed by the first textual return in the body.
   deduceAutoReturns(ctx, node, ftype, specCodename != "")
   var rparts: seq[string] = @[]

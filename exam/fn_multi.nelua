@@ -1,0 +1,21 @@
+-- Multi-return destructuring: a multi-value return / call result must
+-- propagate as a tuple, destructuring assignment binds each position,
+-- extra values are discarded, missing positions are nil.
+local function two()
+  return 1, 2
+end
+
+-- case 1: single-value binding keeps the first return
+local a = two()
+print(a)
+
+-- case 2: destructuring binds each position
+local a2, b2 = two()
+print(a2, b2)
+
+-- case 3: call in an expression keeps all returns
+print(two())
+
+-- case 4: destructured values are usable
+local a3, b3 = two()
+print(a3 + b3)

@@ -1,6 +1,6 @@
 # Multi-return destructuring is broken in Nelu
 
-**Status:** INBOX -- confirmed divergence, no fix.  Caught by `plan/harness.py`
+**Status:** CLOSED -- implemented and verified against the oracle.  Multi-return destructuring fixed: `local a, b = f()` binds each position, `print(f())` expands open calls, a multi-return call in single-value position contributes only its first return. Verified 2026-09-05: isolated probe MATCHes oracle (`1 2` / `10 20 30` / `10` / `foo 42`); harness 0 regressions (304 baseline), `exam/fn_multi` new MATCH.
 probe `exam/fn_multi.nelua` (recorded DIFF in `tmp/harness_baseline.json`).
 
 ## What fails

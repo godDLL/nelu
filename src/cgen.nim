@@ -569,6 +569,7 @@ proc genExpr(s: var Gen, node: Node): string
 proc genBinaryOp(s: var Gen, node: Node): string
 proc genUnaryOp(s: var Gen, node: Node): string
 proc genCall(s: var Gen, node: Node): string
+proc genMultiRetFirst(s: var Gen, node: Node): string
 proc genCallMethod(s: var Gen, node: Node): string
 proc genDotIndex(s: var Gen, node: Node): string
 proc genMetaCall(s: var Gen, recv: Node, methodName: string,
@@ -945,6 +946,13 @@ proc genExpr(s: var Gen, node: Node): string =
   of nkUnaryOp:
     return s.genUnaryOp(node)
   of nkCall:
+    # A multi-return call in single-value expression position contributes only
+    # its first return value: spill the struct and extract `field0`.  Without
+    # this `local a = two()` (where `two` returns a struct) assigned the whole
+    # struct to an int64-typed target, a C constraint violation.
+    let rets = s.ctx.callRetTypes.getOrDefault(node)
+    if rets.len > 1:
+      return s.genMultiRetFirst(node)
     return s.genCall(node)
   of nkCallMethod:
     return s.genCallMethod(node)
@@ -1160,6 +1168,19 @@ proc genSpilledCall(s: var Gen, callee: string,
       names.add tn
   return "({" & decls.join(" ") & " " & callee & "(" & names.join(", ") & "); })"
 
+proc genMultiRetFirst(s: var Gen, node: Node): string =
+  ## A multi-return call used where a single value is needed (the initializer
+  ## of a one-target `local a = f()`, a non-last call argument, an operand, ...)
+  ## contributes only its first return value.  Spill the call result to a temp
+  ## struct and extract `field0` inside a GNU statement-expression, so the
+  ## spill is scoped to this one use (matching the oracle's `a = f().r1`).
+  let rets = s.ctx.callRetTypes.getOrDefault(node)
+  let tag = multiRetTag(rets)
+  inc s.mrCounter
+  let tmp = "__mr" & $s.mrCounter
+  let call = s.genCall(node)
+  return "({" & tag & " " & tmp & " = " & call & "; " & tmp & ".field0; })"
+
 proc genCall(s: var Gen, node: Node): string =
   let caller = node.children[^1]
   # `require 'name'` is a compile-time directive: the analyzer resolves and
@@ -1289,10 +1310,32 @@ proc genCall(s: var Gen, node: Node): string =
       ## Every emitted line carries its own trailing semicolon except the final
       ## `nelua_print_newline()`, which has none: genStmt appends exactly one `;`
       ## to the whole returned string, so the newline helper receives it.
-      var lines: seq[string] = @[]
+      # A multi-return call as the LAST print argument expands to one print
+      # item per return value (the oracle expands open calls in argument
+      # lists); a multi-return call anywhere else contributes only its first
+      # value.  Spill each expanded call to a temp struct so its fields can be
+      # passed to the per-argument typed print helpers.
+      var spills: seq[string] = @[]
+      var items: seq[tuple[aes: string, at: Type, arg: Node]] = @[]
       for i, arg in args:
-        let aes = s.genExpr(arg)
-        let at = s.ctx.attrOf.getOrDefault(arg).typ
+        let isLast = i == args.len - 1
+        if isLast and arg.kind == nkCall:
+          let rets = s.ctx.callRetTypes.getOrDefault(arg)
+          if rets.len > 1:
+            let tag = multiRetTag(rets)
+            inc s.mrCounter
+            let tmp = "__mr" & $s.mrCounter
+            spills.add tag & " " & tmp & " = " & s.genCall(arg) & ";"
+            for j in 0 ..< rets.len:
+              s.collectType(rets[j])
+              items.add (tmp & ".field" & $j, rets[j], nil)
+            continue
+        items.add (s.genExpr(arg), s.ctx.attrOf.getOrDefault(arg).typ, arg)
+      var lines: seq[string] = @[]
+      for i, item in items:
+        let aes = item.aes
+        let at = item.at
+        let arg = item.arg
         var helper = "nelua_print_nil"
         var passArg = false
         var argStr = aes
@@ -1343,14 +1386,20 @@ proc genCall(s: var Gen, node: Node): string =
             # real typed value in the matching tagged-store helper.  A genuine
             # `any` value (already `nlany`) coerces to itself and is unchanged.
             helper = "nelua_print_any"; passArg = true
-            argStr = s.coerce(aes, s.realType(arg), BuiltinTypes["any"])
+            let fromT = if arg != nil: s.realType(arg) else: at
+            argStr = s.coerce(aes, fromT, BuiltinTypes["any"])
           of tkRecord:
             # M2: a record with a `__tostring` metamethod is printed by calling
             # it and printing the resulting string; a record without one falls
             # back to the default `(null)` print, matching the oracle.
             if ht.methods.hasKey("__tostring"):
               helper = "nelua_print_string"; passArg = true
-              argStr = s.genMetaCall(arg, "__tostring", @[])
+              if arg != nil:
+                argStr = s.genMetaCall(arg, "__tostring", @[])
+              # A multi-return call field that is itself a `__tostring`
+              # record has no AST node to drive the meta-call from; that open-
+              # call combination is not exercised by the oracle's corpus, so
+              # fall back to the default print rather than risk a miscompile.
             else:
               helper = "nelua_print_nil"; passArg = false
           else: helper = "nelua_print_nil"; passArg = false
@@ -1366,7 +1415,9 @@ proc genCall(s: var Gen, node: Node): string =
       if lines.len == 0:
         return "nelua_print_newline()"
       lines.add "nelua_print_newline()"
-      return lines.join("\n")
+      # Spills come first so the call results exist before print consumes them.
+      let pre = if spills.len > 0: spills.join(" ") & " " else: ""
+      return pre & lines.join("\n")
     return s.genSpilledCall(cn, spills)
   of nkDotIndex:
     let cexpr = s.genExpr(caller)
@@ -2109,13 +2160,37 @@ proc genReturn(s: var Gen, node: Node) =
       let et = s.realType(c)
       retPrefix = " " & s.coerce(expr, et, rets[0])
     else:
+      # Multi-return: build the struct initializer, applying the open-call
+      # rule.  Every expression except the last is single-valued (a multi-
+      # return call there contributes only `field0` via genExpr); the last
+      # expression is expanded to all of its return types when it is a multi-
+      # return call, spilled to one temp so its fields are shared.  Spills are
+      # emitted here, before the defers run, so defer bodies cannot observe a
+      # half-built return value.
       let tag = multiRetTag(rets)
       var parts: seq[string] = @[]
-      for i, c in node.children:
-        let expr = s.genExpr(c)
-        let et = s.realType(c)
-        let rt = if i < rets.len: rets[i] else: nil
-        parts.add ".field" & $i & " = " & s.coerce(expr, et, rt)
+      var fieldIdx = 0
+      let n = node.children.len
+      for i in 0 ..< n:
+        let c = node.children[i]
+        let isLast = i == n - 1
+        let cRets = s.ctx.callRetTypes.getOrDefault(c)
+        if c.kind == nkCall and isLast and cRets.len > 1:
+          let ctag = multiRetTag(cRets)
+          inc s.mrCounter
+          let tmp = "__mr" & $s.mrCounter
+          s.line ctag & " " & tmp & " = " & s.genCall(c) & ";"
+          for j in 0 ..< cRets.len:
+            let rt = if fieldIdx < rets.len: rets[fieldIdx] else: nil
+            parts.add ".field" & $fieldIdx & " = " &
+              s.coerce(tmp & ".field" & $j, cRets[j], rt)
+            inc fieldIdx
+        else:
+          let expr = s.genExpr(c)
+          let et = s.realType(c)
+          let rt = if fieldIdx < rets.len: rets[fieldIdx] else: nil
+          parts.add ".field" & $fieldIdx & " = " & s.coerce(expr, et, rt)
+          inc fieldIdx
       retPrefix = " (struct " & tag & "){" & parts.join(", ") & "}"
   # Run defers up to and including the nearest function-body scope.
   s.runDefersUpTo(dkFunc)
