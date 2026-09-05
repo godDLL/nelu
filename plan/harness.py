@@ -682,7 +682,7 @@ def rt_probe(kind, prog_name, src):
 # cmp: 40-case token-level AST diff (mirrors plan/cmp.py) -------------------
 
 def cmp_probe(n, src):
-    p = "/tmp/harness_cmp_%s.nelua" % n
+    p = os.path.join(TMP, "harness_cmp_%s.nelua" % n)
     open(p, "w").write(src)
     try:
         our_stdout, our_stderr, _ = run([OUR, "--print-ast", p])
