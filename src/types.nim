@@ -187,6 +187,7 @@ type
     parentType*: Type         ## Pair: enclosing record/union type
     polySpec*: Node           ## Call into a polymorphic func: the specialization node
     unsupported*: bool        ## node involves any/table/dynamic (M4 must error)
+    labelTarget*: Node        ## Goto: resolved target nkLabel node (analysis)
 
 # --- property procs (§3.1 / §5) ----------------------------------------------
 

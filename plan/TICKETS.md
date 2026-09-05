@@ -51,8 +51,6 @@ to see the whole board.
 | `plan/INBOX/exceptions-oracle-behavior.md` | reference | Oracle exception behavior reference; companion to `plan/INBOX/exceptions-implementation.md`. |
 | `plan/INBOX/c-pointer-array-lowering.md` | design spec | Pointer / array / record C-lowering spec; the pointer-to-array emission blocker is not fixed in `src/`. |
 | `plan/INBOX/multi-return-destructuring.md` | STILL OPEN | Multi-return destructuring broken: `local a, b = f()` leaves trailing bindings nil, `print(f())` drops extras. Caught by `exam/fn_multi`. |
-| `plan/INBOX/goto-label-statement.md` | STILL OPEN | Rank 1. `goto` + `::label:` cannot be a statement: `parseBlock`/`parseSwitchBlock` `break` on `tkColonColon` (`parser.nim:603,631`). Blocks stringbuilder, string, heap, brainfuck, overview. |
-| `plan/INBOX/byte-literal-suffix.md` | STILL OPEN | Rank 2. Byte literal `'A'_b` suffix not lexed: the `_b` after a char literal is lexed as a separate `tkIdentifier`. Blocks string.nelua, heap.nelua. |
 | `plan/INBOX/self-field-assign-sigsegv.md` | STILL OPEN | Rank 3. `self.x = self.x * s` (binary-op RHS on a self-field lvalue) SIGSEGVs in `analyzeAssign` (`analyzer.nim:1844`). recmethod_mutate.nelua. |
 | `plan/INBOX/preprocessor-driver-wiring.md` | STILL OPEN | Rank 4. `##` Lua statement blocks are not run by the default compile path (`compile.nim:10-16`). Long-bracket parsing DONE (`f75601a`); driver half open. |
 | `plan/INBOX/uint-wrap.md` | STILL OPEN | Rank 5. Small-uint arithmetic does not wrap: `200_u8 + 100_u8` prints `300`, oracle `44`. uint8_wrap.nelua. |
@@ -92,6 +90,8 @@ to see the whole board.
 | `plan/DONE/pointer-printing-design.md` | DONE | Pointer printing design to match the oracle. |
 | `plan/DONE/missing-cli-flags.md` | STALE | CLI flag gap list; superseded by the NOTE_backlog queue. |
 | `plan/DONE/runtime-per-tu-inlining.md` | DONE | Runtime per-TU inlining + libm elimination; runtime helpers now static per-TU, `src/runtime.c` no longer linked, `-lm` conditional on `<math.h>`. |
+| `plan/DONE/goto-label-statement.md` | CLOSED | Rank 1. `goto` + `::label:` now a statement: block-scoped label scope stack in `analyzer.nim`, `labelTarget` attr + shared C codename in `cgen.nim`. Verified: probe_goto/probe_goto2/pt_dup/pt_edge MATCH; harness `exam/goto_loop` DIFF -> MATCH. |
+| `plan/DONE/byte-literal-suffix.md` | CLOSED | Rank 2. `'A'_b`/`"x"_u8`/`'A'_i8` lower to the char's ordinal as uint8/int8 (`analyzer.nim` `nkString` case + `cgen.nim` value emission). Verified: `print('A'_b)` -> 65, switch case values MATCH. |
 | `plan/DONE/nasm-opportunities.md` | DONE | NASM opportunities assessment; grounded in the actual source with measurements; concluded. |
 
 ## Not tickets (reference / design / tooling, live in `plan/` root)

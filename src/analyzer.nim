@@ -75,6 +75,7 @@ type
     specCounter*: Table[string, int]     ## D1: per-function specialization counter
     specInFlight*: Table[string, bool]   ## D1: re-entrancy guard (recursion)
     funcReturnType*: Type                ## current function's return type (for init-list-in-return)
+    labelScopes*: seq[Table[string, Node]]  ## block-scoped label name -> nkLabel node (goto)
 
   AnalyzerResult* = object
     root*: Node
@@ -106,6 +107,35 @@ proc getUpFunctionScope(scope: Scope): Scope =
   while s != nil:
     if s.isFunction: return s
     s = s.parent
+  return nil
+
+# ---- label scope (goto / ::label::) -----------------------------------------
+#
+# Labels are block-scoped and live on a separate stack from the symbol scopes:
+# pushing a symbol scope for every block would also re-scope `local` declarations,
+# which is a behaviour change unrelated to this feature.  `analyzeBlock` pushes
+# and pops this stack, so every statement block (function body, do, for/while/
+# repeat, switch case, if branch) gets its own label namespace.  A `goto` looks
+# the name up from the top of the stack downward, so it sees labels in its own
+# block and enclosing blocks but not in sibling or inner blocks (matching the
+# oracle's "no visible label" rejection).
+
+proc pushLabelScope(ctx: var AnalyzerContext) =
+  ctx.labelScopes.add initTable[string, Node]()
+
+proc popLabelScope(ctx: var AnalyzerContext) =
+  discard ctx.labelScopes.pop()
+
+proc registerLabel(ctx: var AnalyzerContext, name: string, node: Node) =
+  if ctx.labelScopes[^1].hasKey(name):
+    ctx.diags.add ctx.path & ": error: label '" & name & "' already defined"
+  else:
+    ctx.labelScopes[^1][name] = node
+
+proc lookupLabel(ctx: var AnalyzerContext, name: string): Node =
+  for i in countdown(ctx.labelScopes.len - 1, 0):
+    if ctx.labelScopes[i].hasKey(name):
+      return ctx.labelScopes[i][name]
   return nil
 
 proc register*(ctx: var AnalyzerContext, name: string, kind: SymbolKind,
@@ -1000,8 +1030,30 @@ proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type =
   of nkString:
     var a = ctx.getAttr(node)
     a.comptime = true
-    a.typ = BuiltinTypes["string"]
-    a.value = stripQuotes(node.str)
+    let content = stripQuotes(node.str)
+    case node.litType
+    of "_b", "_u8", "_i8":
+      ## Byte literal: a length-1 string suffixed with `_b`/`_u8`/`_i8` is the
+      ## denoted character's ordinal as the corresponding integer type.  The
+      ## lexer has already decoded escape sequences into `node.str`, so
+      ## `content` is the actual character(s) the literal denotes -- `'\n'_b`
+      ## is one newline byte (ord 10), not the two raw chars `\` and `n`.
+      ##
+      ## `_b` and `_u8` both lower to uint8; `_i8` lowers to int8.  A literal
+      ## that decodes to anything other than one character is rejected, matching
+      ## the oracle's "literal suffix '...' expects a string of length 1".
+      if content.len != 1:
+        ctx.diags.add ctx.path & ": error: literal suffix '" & node.litType &
+          "' expects a string of length 1"
+        a.typ = BuiltinTypes["string"]
+        a.value = content
+      else:
+        let tname = if node.litType == "_i8": "int8" else: "uint8"
+        a.typ = PrimitiveTypes[tname]
+        a.value = $ord(content[0])
+    else:
+      a.typ = BuiltinTypes["string"]
+      a.value = content
     return a.typ
   of nkBoolean:
     var a = ctx.getAttr(node)
@@ -2271,12 +2323,39 @@ proc analyzeStmt(ctx: var AnalyzerContext, node: Node) =
   of nkFallthrough:
     discard
   of nkIn: discard   ## consumed by the preprocessor as a splice-function body
-  of nkLabel, nkGoto: discard
+  of nkLabel:
+    ## Registration (and duplicate detection) happens in analyzeBlock's label
+    ## pre-pass, which runs before this statement.  A `goto` before its label
+    ## (forward goto, which the oracle allows) would otherwise fail to resolve.
+    ##
+    ## Touch the node's Attr so cgen's labelCodename can store the shared
+    ## codename on it: the label site and every goto that jumps to it must
+    ## emit the same C identifier.  Without this the label node has no Attr
+    ## entry (getOrDefault returns nil), so labelCodename assigns a fresh
+    ## codename it cannot persist, and the label and its gotos disagree.
+    discard ctx.getAttr(node)
+  of nkGoto:
+    let target = ctx.lookupLabel(node.str)
+    if target == nil:
+      ctx.diags.add ctx.path & ": error: no visible label '" & node.str &
+        "' found for `goto`"
+    else:
+      ctx.getAttr(node).labelTarget = target
   of nkCall: discard analyzeCall(ctx, node)
   else: discard analyzeExpr(ctx, node)
 
 proc analyzeBlock(ctx: var AnalyzerContext, node: Node) =
   if node == nil: return
+  ctx.pushLabelScope()
+  # Label pre-pass: register every direct-child `::label::` before analyzing any
+  # statement, so a forward `goto` (goto before its label, which the oracle
+  # allows) resolves.  Labels nested in a sub-block belong to that block's own
+  # label scope and are registered when it is analyzed; they are NOT visible to
+  # a `goto` outside the sub-block, matching the oracle's "no visible label"
+  # rejection.  Duplicate labels in the same block are reported here.
+  for c in node.children:
+    if c.kind == nkLabel:
+      ctx.registerLabel(c.str, c)
   for i in 0 ..< node.children.len:
     let c = node.children[i]
     # Stage 4 block-entry pre-pass: evaluate every `#[expr]#` in this
@@ -2288,6 +2367,7 @@ proc analyzeBlock(ctx: var AnalyzerContext, node: Node) =
     let r = replaceSplices(ctx, c, stopAtNestedBlock = true)
     if r != c: node.children[i] = r
     analyzeStmt(ctx, node.children[i])
+  ctx.popLabelScope()
 
 proc replaceSplices(ctx: var AnalyzerContext, node: Node,
                     stopAtNestedBlock: bool): Node =

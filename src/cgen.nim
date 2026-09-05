@@ -88,6 +88,7 @@ type
     inFunc: bool               ## true while emitting a function body (locals)
     currentReturns: seq[Type]  ## return types of the function being emitted
     mrCounter: int             ## unique temp name counter for multi-returns
+    labelCounter: int          ## unique C label counter for ::name:: / goto
     refs: set[RuntimeHelper]   ## runtime helpers this TU actually calls
     unsupported: bool
     unsupportedMsg: string
@@ -893,6 +894,14 @@ proc genExpr(s: var Gen, node: Node): string =
     let t = if a != nil: a.typ else: nil
     return cNumberLit(t, node.str)
   of nkString:
+    let a = s.ctx.attrOf.getOrDefault(node)
+    if node.litType == "_b" or node.litType == "_u8" or node.litType == "_i8":
+      ## Byte literal (`'A'_b`, `"x"_u8`, `'\n'_i8`): the analyzer has already
+      ## resolved it to the denoted character's ordinal as a uint8/int8, so
+      ## emit that integer value directly.  Emitting `nlstr("A")` here would
+      ## put a string aggregate where the type system expects an integer.
+      if a != nil:
+        return a.value
     s.use rhStr
     return "nlstr(" & cStringLit(stripStr(node.str)) & ")"
   of nkBoolean:
@@ -2115,6 +2124,20 @@ proc genReturn(s: var Gen, node: Node) =
   else:
     s.line "return;"
 
+proc labelCodename(s: var Gen, node: Node): string =
+  ## Lazily assign a unique C identifier to a label node (nkLabel or the target
+  ## of an nkGoto) and return it.  Both the label site and any gotos that jump
+  ## to it share the same codename via the node's attr, so a `goto` emitted
+  ## before its label (a forward goto, which C permits) still names the right
+  ## target.  C forbids two labels with the same identifier, hence the counter.
+  let a = s.ctx.attrOf.getOrDefault(node)
+  if a != nil and a.codename != "":
+    return a.codename
+  s.labelCounter += 1
+  let cn = "nlbl_" & $s.labelCounter
+  if a != nil: a.codename = cn
+  return cn
+
 proc genStmt(s: var Gen, node: Node) =
   if node == nil: return
   case node.kind
@@ -2161,6 +2184,16 @@ proc genStmt(s: var Gen, node: Node) =
     s.line "continue;"
   of nkFallthrough:
     s.line "__attribute__((fallthrough));"
+  of nkLabel:
+    s.line labelCodename(s, node) & ":"
+  of nkGoto:
+    let a = s.ctx.attrOf.getOrDefault(node)
+    let target = if a != nil: a.labelTarget else: nil
+    if target != nil:
+      s.line "goto " & labelCodename(s, target) & ";"
+    # an unresolved goto (analysis reported it) emits nothing; genC already
+    # stubbed the whole unit out on ctx.diags, so this path is unreachable for
+    # a program that actually compiles.
   of nkCall:
     let e = s.genCall(node)
     if e.len > 0: s.line e & ";"

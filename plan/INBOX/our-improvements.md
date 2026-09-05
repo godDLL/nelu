@@ -151,9 +151,10 @@ the oracle's standard library."
 
 ### 1.1 BUG -- `goto` + `::label:` cannot appear as a statement (N1)
 
-**Status: STILL OPEN.** Verified: oracle prints `5`, ours errors
-`unexpected token after end of program` on the label. Re-probed against
-`tmp/devil/nelua` (22:57) and against the live source; both fail.
+**Status: CLOSED -- fixed.** `goto` + `::label:` are now statements: block-scoped
+label scope stack in `analyzer.nim`, `labelTarget` attr + shared C codename in
+`cgen.nim`. Verified: probe_goto/probe_goto2/pt_dup/pt_edge MATCH the oracle;
+harness `exam/goto_loop` went DIFF -> MATCH. Ticket: `plan/DONE/goto-label-statement.md`.
 
 **Grounding.** The oracle's AST has `Label` and `Goto` nodes (oracle section
 2.2.2), and its scope manages labels via `find_label`/`add_label` (oracle
@@ -190,8 +191,10 @@ block parser is the only thing standing in the way.
 
 ### 1.2 BUG -- byte literal `'A'_b` suffix is not lexed (N2)
 
-**Status: STILL OPEN.** Verified: oracle prints `65`, ours emits a stray `_b`
-identifier and gcc rejects the C. Re-probed against `tmp/devil/nelua`.
+**Status: CLOSED -- fixed.** `'A'_b`/`"x"_u8`/`'A'_i8` lower to the char's ordinal
+as uint8/int8 via the `nkString` case in `analyzer.nim` and the value emission
+in `cgen.nim` (the parser already folded the suffix). Verified: `print('A'_b)`
+-> 65, switch case values MATCH. Ticket: `plan/DONE/byte-literal-suffix.md`.
 
 **Grounding.** The oracle's `typedefs.string_literals_types` maps suffix strings
 to types including the byte literal (oracle section 3.4). Byte literals are used
