@@ -148,11 +148,22 @@ CMP_CASES = [
 # ---------------------------------------------------------------------------
 
 def build_our():
-    """Rebuild tmp/nelua via `make nelu` (NELU_OUT -> tmp/nelua) if stale."""
+    """Rebuild tmp/nelua via `make nelu` (NELU_OUT -> tmp/nelua) if stale.
+
+    The staleness scan must cover everything the Nelu binary actually pulls
+    in, not just top-level files: the analyzer/cgen are all `src/*.nim`, and
+    `src/luaengine.nim` bakes the embedded Lua C sources into the compiler via
+    `{.compile:}` (src/lua/*, src/lpeglabel/*, src/lfs.c, src/sys.c,
+    src/hasher.c, src/luainit.c).  A top-level-only glob missed
+    `src/tests/harness.nim` and the nested C, so an edit to either left the
+    harness running a stale binary while `make nelu` rebuilt it.  Scan
+    recursively, matching the Makefile's `find src -name '*.nim'` plus the
+    embedded C the Makefile's nelu rule does not list.
+    """
     if os.path.exists(OUR):
         bin_mt = os.path.getmtime(OUR)
-        for f in glob.glob(os.path.join(ROOT, "src", "*.nim")) + \
-                glob.glob(os.path.join(ROOT, "src", "*.c")):
+        for f in glob.glob(os.path.join(ROOT, "src", "**", "*.nim"), recursive=True) + \
+                glob.glob(os.path.join(ROOT, "src", "**", "*.c"), recursive=True):
             if os.path.getmtime(f) > bin_mt:
                 break
         else:
