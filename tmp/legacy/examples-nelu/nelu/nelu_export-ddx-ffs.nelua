@@ -1,6 +1,0 @@
--- Nelu: `<export>` gives a function C-linkage / exported-symbol status.  The
--- oracle rejects the annotation; ours accepts it and runs the body.
-function foo(): integer <export>
-  return 11
-end
-print(foo())

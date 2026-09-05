@@ -1,8 +1,0 @@
--- Fibonacci: tail-recursive with an accumulator pair.
-local function fibonacci(n: integer, a: integer, b: integer): integer
-  if n == 0 then
-    return a
-  end
-  return fibonacci(n - 1, b, a + b)
-end
-print(fibonacci(10, 0, 1))

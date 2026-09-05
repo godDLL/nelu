@@ -1,9 +1,0 @@
-require 'math'
-print(math.ifloor(3.7))
-print(math.iround(2.5))
-print(math.clamp(10, 0, 5))
-print(math.abs(-7))
-print(math.min(3, 9))
-print(math.max(3, 9))
-print(math.sin(0.0))
-print(math.pi)

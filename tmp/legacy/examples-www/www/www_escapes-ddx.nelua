@@ -1,2 +1,0 @@
-local e = 'a\tb\nc'
-print(#e)

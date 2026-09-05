@@ -1,5 +1,0 @@
--- cstring_type.nelua -- extracted from zxplayer nelua/player.nelua
--- (the socat command strings). A `cstring` variable. Isolates: the
--- cstring type alias.
-local name: cstring = 'hello'
-print(#name, name)

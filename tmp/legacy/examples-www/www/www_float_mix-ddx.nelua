@@ -1,4 +1,0 @@
-local a: float32 = 1.5
-local b: number = 2.5
-print(a + b)
-print(a * b)

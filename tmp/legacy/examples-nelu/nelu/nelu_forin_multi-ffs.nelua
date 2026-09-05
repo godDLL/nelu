@@ -1,5 +1,0 @@
--- 2.6 genForIn supports only a single array iterable
-local arr = {10, 20, 30}
-for k, v in arr do
-  print(k, v)
-end

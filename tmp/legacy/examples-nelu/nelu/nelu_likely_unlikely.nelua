@@ -1,5 +1,0 @@
--- 3.4 likely()/unlikely() builtins are not lowered to C
-local x: integer = 5
-if unlikely(x > 3) then
-  print("yes")
-end

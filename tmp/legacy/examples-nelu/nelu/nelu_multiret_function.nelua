@@ -1,5 +1,0 @@
-local function divmod(a: integer, b: integer)
-  return a / b, a % b
-end
-local q, r = divmod(17, 5)
-print(q, r)

@@ -1,7 +1,0 @@
--- Nelu: `<discard>` (nodiscard) marks a function whose return value must
--- not be silently discarded.  The oracle rejects the annotation; ours
--- accepts it and runs the body.
-local function compute(x: integer): integer <discard>
-  return x * 3
-end
-print(compute(4))

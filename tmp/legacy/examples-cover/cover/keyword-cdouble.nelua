@@ -1,2 +1,0 @@
-local cdouble = 42
-print(cdouble)

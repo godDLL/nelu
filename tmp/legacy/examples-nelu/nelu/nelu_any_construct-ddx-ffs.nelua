@@ -1,8 +1,0 @@
--- Nelu: tagged `any` construction and print dispatch.  The oracle 0.2.0-dev
--- rejects every `any` variable (`compiler deduced type 'any' here`); ours
--- lowers it to a tagged union and prints the payload by runtime tag.
-local a: any = 42
-local b: any = true
-local c: any = 3.5
-local d: any = "hello"
-print(a, b, c, d)

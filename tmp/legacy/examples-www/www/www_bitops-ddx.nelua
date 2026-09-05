@@ -1,6 +1,0 @@
-local x: integer = 0xFF
-local y: integer = 0x0F
-print(x & y, x | y, x ~ y, ~x)
-print(x << 4, x >> 4)
-local neg: integer = -1
-print(neg << 2)

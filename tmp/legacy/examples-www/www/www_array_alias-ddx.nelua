@@ -1,3 +1,0 @@
-global Pair = @[2]integer
-local p: Pair = { 7, 9 }
-print(p[0], p[1])

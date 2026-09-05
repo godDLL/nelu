@@ -1,6 +1,0 @@
-local function f()
-  goto done
-  ::done::
-  print('done')
-end
-f()

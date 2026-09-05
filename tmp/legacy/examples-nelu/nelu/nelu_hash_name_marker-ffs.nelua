@@ -1,3 +1,0 @@
--- #|name|# preprocessor replacement marker
-local x = #|foo|#
-print(x)

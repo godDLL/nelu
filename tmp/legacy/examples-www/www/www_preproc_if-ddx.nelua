@@ -1,5 +1,0 @@
-## if ZXPLAY_RELEASE then
-  print('release')
-## else
-  print('dev')
-## end

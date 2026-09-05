@@ -1,2 +1,0 @@
-local varargs = 42
-print(varargs)

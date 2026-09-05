@@ -1,5 +1,0 @@
--- defer stack
-local x: integer = 0
-defer print("deferred", x)
-x = 5
-print("main", x)

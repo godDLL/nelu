@@ -1,4 +1,0 @@
-local name: cstring = 'hello'
-print(name)
-local other: cstring = name
-print(other)

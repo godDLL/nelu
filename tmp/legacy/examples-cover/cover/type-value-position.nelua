@@ -1,3 +1,0 @@
-local T = @integer
-local x: T = 5
-print(x)

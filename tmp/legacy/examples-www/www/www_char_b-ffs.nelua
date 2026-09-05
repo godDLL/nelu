@@ -1,2 +1,0 @@
-local magic = {'S'_b, 'E'_b, 'Q'_b, 'T'_b}
-print(magic[0], magic[1], magic[2], magic[3])

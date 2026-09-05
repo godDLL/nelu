@@ -1,3 +1,0 @@
--- Rotate a 2x2 matrix 90 degrees clockwise.
-local a: [2][2]integer = {{1, 2}, {3, 4}}
-print(a[1][0], a[0][0], a[1][1], a[0][1])

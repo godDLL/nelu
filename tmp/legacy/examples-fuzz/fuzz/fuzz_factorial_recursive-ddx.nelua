@@ -1,8 +1,0 @@
--- Factorial: naive recursion.
-local function factorial(n: integer): integer
-  if n <= 1 then
-    return 1
-  end
-  return n * factorial(n - 1)
-end
-print(factorial(10))

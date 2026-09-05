@@ -1,2 +1,0 @@
--- 3.7 check(false, msg) omits the source location from the message
-check(false, "should fail")

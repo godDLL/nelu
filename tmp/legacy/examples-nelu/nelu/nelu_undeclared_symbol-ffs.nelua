@@ -1,3 +1,0 @@
--- 2.7 unknown identifiers resolve silently to any-typed externs
-local x = undefned_typo + 1
-print(x)

@@ -1,7 +1,0 @@
--- Nelu: `..` is the string-concatenation operator and auto-converts the
--- operands.  The oracle 0.2.0-dev has no `..` operator at all; ours
--- supports string..string, string..number and number..string.
-local a = "foo" .. "bar"
-local b = "n=" .. 42
-local c = 1 .. 2
-print(a, b, c)

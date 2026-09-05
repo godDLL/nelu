@@ -1,3 +1,0 @@
--- 3.1 cstring locals cannot be assigned a string literal
-local s: cstring = "hello"
-print(s)

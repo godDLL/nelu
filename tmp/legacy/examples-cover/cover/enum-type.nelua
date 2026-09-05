@@ -1,3 +1,0 @@
-local E: type = @enum{ A=0, B=1 }
-local v: E = E.A
-print(v)

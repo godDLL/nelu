@@ -1,5 +1,0 @@
--- 2.5 C emitter SIGSEGV on anonymous functions
-local f = function(x: integer): integer
-  return x + 1
-end
-print(f(41))

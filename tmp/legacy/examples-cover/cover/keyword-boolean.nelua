@@ -1,2 +1,0 @@
-local boolean = 42
-print(boolean)

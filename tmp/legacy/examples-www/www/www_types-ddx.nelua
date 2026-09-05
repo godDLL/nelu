@@ -1,7 +1,0 @@
-local a: int8 = -5
-local b: int16 = 1000
-local c: uint16 = 60000
-local d: uint32 = 4000000000
-local e: float64 = 3.14159
-local f: int64 = 9000000000
-print(a, b, c, d, e, f)

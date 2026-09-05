@@ -1,9 +1,0 @@
--- Nelu: `any` as a function parameter and return type, with a second
--- dispatch step at the call site.  The oracle rejects `: any` params and
--- explicit `: any` returns.
-local function id(v: any): any
-  return v
-end
-local r: any = id(99)
-local n: integer = r
-print(n)

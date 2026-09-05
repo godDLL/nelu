@@ -1,3 +1,0 @@
-local a: uint8 = 200
-local b: uint8 = 100
-print(a + b)

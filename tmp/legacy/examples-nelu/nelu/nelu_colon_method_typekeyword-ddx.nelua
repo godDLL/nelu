@@ -1,4 +1,0 @@
--- 1.3 colon method on a type-keyword receiver (DONE in live tree; verify)
--- syntax is string:destroy (colon-method), per lib/string.nelua line 46
-function string.destroy(): void end
-print("ok")

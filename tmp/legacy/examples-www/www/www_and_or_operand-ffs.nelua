@@ -1,9 +1,0 @@
-local x = 5
-local y = (x > 3) and 'big' or 'small'
-print(y)
-local z = (x > 10) and 'big' or 'small'
-print(z)
-local a = nil or 42
-print(a)
-local b = 7 and 8
-print(b)

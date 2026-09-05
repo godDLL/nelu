@@ -1,2 +1,0 @@
-local import = 42
-print(import)

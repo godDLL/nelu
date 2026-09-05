@@ -1,2 +1,0 @@
-local number = 42
-print(number)

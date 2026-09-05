@@ -1,2 +1,0 @@
-local cshort = 42
-print(cshort)

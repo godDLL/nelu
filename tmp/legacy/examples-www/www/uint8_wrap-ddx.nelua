@@ -1,6 +1,0 @@
--- uint8_wrap.nelua -- extracted from zxplayer nelua/queue.nelua
--- (the modulo-wrapped RNG state). `uint8` addition that overflows 255.
--- Isolates: uint8 overflow wrapping semantics.
-local a: uint8 = 200
-local b: uint8 = 100
-print(a + b)

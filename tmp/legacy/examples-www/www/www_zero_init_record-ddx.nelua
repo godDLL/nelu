@@ -1,8 +1,0 @@
-local Game = @record{ score: integer, level: integer }
-function Game:init()
-  self.score = 0
-  self.level = 1
-end
-local game: Game
-game:init()
-print(game.score, game.level)

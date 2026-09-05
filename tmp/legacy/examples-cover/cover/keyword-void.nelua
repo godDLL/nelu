@@ -1,2 +1,0 @@
-local void = 42
-print(void)

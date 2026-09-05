@@ -1,7 +1,0 @@
-global counter: integer = 0
-global Point = @record{ x: integer, y: integer }
-counter = counter + 1
-counter = counter + 1
-print(counter)
-local p = Point{ x = 3, y = 4 }
-print(p.x, p.y)

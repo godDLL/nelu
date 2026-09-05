@@ -1,3 +1,0 @@
-local U: type = @union{ a: integer, b: string }
-local v: U = { a = 1 }
-print(v.a)

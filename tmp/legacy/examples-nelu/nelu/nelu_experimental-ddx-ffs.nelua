@@ -1,6 +1,0 @@
--- Nelu: `<experimental>` marks a function as experimental.  The oracle
--- rejects the annotation; ours accepts it and runs the body.
-local function compute(x: integer): integer <experimental>
-  return x + 3
-end
-print(compute(2))

@@ -1,8 +1,0 @@
-local x: number = 1.5 + 2.5
-local y: number = 10.0 / 4.0
-local z: number = 2.0 ^ 10.0
-local w: number = -3.0
-local u: number = x * y - z
-local q: number = 1.0 / 3.0
-local p: number = 0.1 + 0.2
-print(x, y, z, w, u, q, p)

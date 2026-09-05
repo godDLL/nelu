@@ -1,2 +1,0 @@
-local name: cstring = 'hello'
-print(#name, name)

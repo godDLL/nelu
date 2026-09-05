@@ -1,7 +1,0 @@
-local Board = @record{ cells: [2][2]uint8 }
-function Board:check(piece: *Board)
-  return self.cells[0][0] == piece.cells[0][0]
-end
-local b = Board{ cells = {{1,0},{0,0}} }
-local b2 = Board{ cells = {{1,0},{0,0}} }
-print(b:check(&b2))

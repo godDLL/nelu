@@ -1,7 +1,0 @@
--- Nelu: `<nogc>` disables the garbage collector for a function body.  The
--- oracle has no `<nogc>` and rejects it; ours accepts the annotation and
--- runs the body normally.
-local function compute(x: integer): integer <nogc>
-  return x * 2
-end
-print(compute(3))

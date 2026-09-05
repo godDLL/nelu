@@ -1,6 +1,0 @@
-local R: type = @record{ v: integer }
-function R:__tostring(): string
-  return "R"
-end
-local r: R = { v = 1 }
-print(r)

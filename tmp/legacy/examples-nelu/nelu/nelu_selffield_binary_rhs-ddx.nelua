@@ -1,9 +1,0 @@
--- 2.1 self.x = self.x * s (binary-op RHS on a self-field lvalue) SIGSEGV
-local Point = @record{ x: integer, y: integer }
-function Point:scale(s: integer)
-  self.x = self.x * s
-  self.y = self.y * s
-end
-local p = Point{ x = 3, y = 4 }
-p:scale(2)
-print(p.x, p.y)

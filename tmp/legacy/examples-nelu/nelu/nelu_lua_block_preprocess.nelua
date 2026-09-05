@@ -1,3 +1,0 @@
--- 2.4 ## Lua splice block not run by the compile driver
-## x = 7
-print(#[x]#)

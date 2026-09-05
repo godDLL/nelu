@@ -1,2 +1,0 @@
-local isize = 42
-print(isize)

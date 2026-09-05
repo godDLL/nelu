@@ -1,6 +1,0 @@
-local Piece = @record{ x: integer }
-function Piece.new(x: integer): Piece
-  return Piece{ x = x }
-end
-local p = Piece.new(5)
-print(p.x)

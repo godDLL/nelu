@@ -1,3 +1,0 @@
-local a: isize = -5
-local b: usize = 7
-print(a, b)

@@ -1,7 +1,0 @@
--- Nelu: `<noexcept>` declares a function's exception contract.  The oracle
--- has no such annotation and rejects it; ours accepts it and runs the
--- body.
-local function compute(x: integer): integer <noexcept>
-  return x + 1
-end
-print(compute(5))

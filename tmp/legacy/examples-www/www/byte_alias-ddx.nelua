@@ -1,6 +1,0 @@
--- byte_alias.nelua -- extracted from zxplayer nelua/types.nelua
--- (the Track record shape). A `@byte` type alias used as a variable
--- annotation. Isolates: the `@byte` type alias.
-global Bytes = @byte
-local b: Bytes = 65
-print(b)

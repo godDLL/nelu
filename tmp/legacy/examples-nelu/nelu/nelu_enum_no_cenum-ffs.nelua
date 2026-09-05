@@ -1,4 +1,0 @@
--- 3.8 enum fields are folded to constants but no C enum is emitted
-local Color = @enum{ Red = 0, Green = 1, Blue = 2 }
-local c: Color = Blue
-print(c)

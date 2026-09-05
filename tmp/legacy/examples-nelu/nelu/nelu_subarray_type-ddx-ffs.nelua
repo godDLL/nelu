@@ -1,6 +1,0 @@
--- Nelu: the `subarray(T)` type constructor yields an unbounded array view
--- over element type T.  The oracle has no `subarray` and rejects it; ours
--- lowers it to a pointer+length pair and reports the length with `#`.
-local arr: [4]integer = { 1, 2, 3, 4 }
-local s: subarray(integer) = arr
-print(#s)

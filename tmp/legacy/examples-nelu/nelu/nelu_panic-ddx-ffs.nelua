@@ -1,6 +1,0 @@
--- Nelu: `<panic>` marks a function as a panic point.  The oracle rejects
--- the annotation; ours accepts it and runs the body.
-local function compute(x: integer): integer <panic>
-  return x - 1
-end
-print(compute(9))

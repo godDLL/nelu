@@ -1,5 +1,0 @@
-local Point = @record{ x: integer, y: integer }
-local a = Point{ x = 3, y = 4 }
-local b: Point = a
-b.x = 99
-print(a.x, a.y, b.x, b.y)

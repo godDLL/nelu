@@ -1,3 +1,0 @@
--- 3.6 dotted global X.Y declarations emit syntactically invalid C
-global Rect.field: integer = 5
-print(Rect.field)

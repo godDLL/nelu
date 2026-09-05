@@ -1,6 +1,0 @@
-local R: type = @record{ v: integer }
-function R:__unm(): R
-  return { v = -self.v }
-end
-local a: R = { v = 5 }
-print((-a).v)

@@ -1,3 +1,0 @@
-local R: type = @record{ x: integer, y: string }
-local v: R = { x = 1, y = "a" }
-print(v.x, v.y)

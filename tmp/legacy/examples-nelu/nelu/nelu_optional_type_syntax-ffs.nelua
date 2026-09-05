@@ -1,3 +1,0 @@
--- 3.9 T? optional-type syntax: accepted by us, rejected by the oracle
-local x: integer? = 42
-print(x)

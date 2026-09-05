@@ -1,5 +1,0 @@
--- Nelu: `<uninit>` skips zero-initialization of a local.  The oracle
--- rejects the annotation; ours accepts it and the assignment stands.
-local x: integer <uninit>
-x = 9
-print(x)

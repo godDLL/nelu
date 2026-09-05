@@ -1,3 +1,0 @@
-local a: integer = 16
-local b: integer = 2
-print(a >>> b)

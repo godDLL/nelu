@@ -1,2 +1,0 @@
-local cond = 42
-print(cond)

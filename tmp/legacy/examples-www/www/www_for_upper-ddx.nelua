@@ -1,3 +1,0 @@
-for j = 0, <4 do
-  print('ex', j)
-end

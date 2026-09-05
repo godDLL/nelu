@@ -1,7 +1,0 @@
-local R: type = @record{ v: integer }
-function R:__add(other: R): R
-  return { v = self.v + other.v }
-end
-local a: R = { v = 1 }
-local b: R = { v = 2 }
-print((a + b).v)

@@ -1,6 +1,0 @@
-local R: type = @record{ v: integer }
-function R:__call(a: integer, b: integer): integer
-  return self.v + a + b
-end
-local r: R = { v = 3 }
-print(r(1, 2))

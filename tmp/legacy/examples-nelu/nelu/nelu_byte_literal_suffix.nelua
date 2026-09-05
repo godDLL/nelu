@@ -1,3 +1,0 @@
--- 1.2 byte literal 'A'_b suffix not lexed
-local b: byte = 'A'_b
-print(b)
