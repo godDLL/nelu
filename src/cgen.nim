@@ -1230,6 +1230,29 @@ proc genCall(s: var Gen, node: Node): string =
       let msg = if args.len > 1: s.genExpr(args[1]) else:
         s.use rhStr; "nlstr(\"assertion failed!\")"
       return "nelua_assert_line(" & condStr & ", " & msg & ")"
+    of "likely":
+      if args.len == 0:
+        return "__builtin_expect(false, 1)"
+      let condArg = args[0]
+      let cond = s.genExpr(condArg)
+      let condType = s.ctx.attrOf.getOrDefault(condArg).typ
+      # The oracle only treats the boolean `false` as a failing branch-hint
+      # condition; any other type (integer 0, empty string, ...) is truthy.
+      # Emit a literal `true` for non-bool conditions rather than passing the
+      # value straight into a `bool` C parameter (which fails to compile for
+      # strings and does the wrong thing for integers).
+      let condStr = if condType != nil and condType.kind != tkBoolean:
+        "(" & cond & ", true)" else: cond
+      return "__builtin_expect(" & condStr & ", 1)"
+    of "unlikely":
+      if args.len == 0:
+        return "__builtin_expect(false, 0)"
+      let condArg = args[0]
+      let cond = s.genExpr(condArg)
+      let condType = s.ctx.attrOf.getOrDefault(condArg).typ
+      let condStr = if condType != nil and condType.kind != tkBoolean:
+        "(" & cond & ", true)" else: cond
+      return "__builtin_expect(" & condStr & ", 0)"
   var calleeType: Type = nil
   if ca != nil and ca.typ != nil and ca.typ.kind == tkFunction:
     calleeType = ca.typ

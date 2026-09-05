@@ -58,7 +58,6 @@ to see the whole board.
 | `plan/INBOX/undeclared-symbol-diagnostic.md` | STILL OPEN | Rank 9. Unknown identifiers resolve silently to `any`-typed externs with no diagnostic. Global table refactor (§4.1) folded in. |
 | `plan/INBOX/union-field-access.md` | STILL OPEN | Rank 11. `@union` field access resolves to `any`: `analyzeDotIndex` has no `tkUnion` branch (`analyzer.nim` ~717-755). |
 | `plan/INBOX/comptime-string-eval.md` | STILL OPEN | Rank 12. `<comptime>` on a `string` global/local evaluates the string as a number. Blocks builtins.nelua, utf8.nelua, stringbuilder.nelua. |
-| `plan/INBOX/likely-unlikely-lowering.md` | STILL OPEN | Rank 13. `likely()`/`unlikely()` builtins not lowered to C (no `__builtin_expect`). Blocks heap.nelua. |
 | `plan/INBOX/cvarargs-parameter-emission.md` | STILL OPEN | Rank 14. `...: cvarargs` in a cimport function emits a stray `___` token. Blocks stringbuilder.nelua. |
 | `plan/INBOX/dotted-global-c-emission.md` | STILL OPEN | Rank 15. Dotted `global X.Y` emits syntactically invalid C (literal `.` in the codename). Parse half DONE (`f75601a`); C half open. |
 | `plan/INBOX/check-source-location.md` | STILL OPEN | Rank 16. `check(false, msg)` omits the source location from the message (cosmetic). |
@@ -77,6 +76,7 @@ to see the whole board.
 
 | Ticket | Status | Summary |
 |---|---|---|
+| `plan/DONE/likely-unlikely-lowering.md` | CLOSED | Rank 13. `likely()`/`unlikely()` now lower to `__builtin_expect(cond, 1/0)` in `src/cgen.nim`; the analyzer returns `boolean` for hint calls and non-bool args are coerced to `true` (matching the oracle's `NELUA_LIKELY`/`NELUA_UNLIKELY`). Verified: probe MATCH oracle, harness `likely_branch`/`unlikely_loop` MATCH. heap.nelua's remaining blocker is a separate pre-existing analyzer SIGSEGV. |
 | `plan/DONE/three-declaration-divergences.md` | CLOSED | Undeclared-symbol diagnostics; all three divergences closed, 0 corpus cost. |
 | `plan/DONE/record-pointer-resolution.md` | CLOSED | `*Record` resolves to `pointer(record)`, not `pointer(any)`; the §4.3 two-line fix was already in `src/analyzer.nim` (`analyzeFuncDef`), the §5 address-of consequence was already handled. Verified: tally went MATCH 4/FAIL 5 -> MATCH 11/FAIL 0 over `tmp/rpr/run.sh`. |
 | `plan/DONE/locals-in-functions-bug.md` | CLOSED | Function-body `local` declarations were dropped by `genVarDecl`'s two-pass split. Fix landed at `cgen.nim:1788-1812` (declaration pass gated on `isGlobal`, zero-initialised, no `static`) plus the oracle's `global`-in-function rejection at `cgen.nim:1745`. Verified: probe1/probe2 (8 scope forms)/probe6 all MATCH the oracle. |

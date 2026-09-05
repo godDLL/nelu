@@ -176,7 +176,14 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
       calleeType.name = "function"; calleeType.codename = "function"
       for i, at in argTypes:
         calleeType.args.add if at != nil: at else: BuiltinTypes["any"]
-      calleeType.returns.add BuiltinTypes["void"]
+      # `likely`/`unlikely` are boolean branch hints: the call yields a boolean
+      # (the oracle coerces any non-boolean, non-nil argument to `true`), not
+      # the argument's type and not the generic `void` every other unknown
+      # callee gets.
+      if isHintName(nm):
+        calleeType.returns.add BuiltinTypes["boolean"]
+      else:
+        calleeType.returns.add BuiltinTypes["void"]
   elif caller.kind == nkDotIndex:
     # Static method call `Type.method(args)` (e.g. `Rect.area(r)`) or an
     # indirect call through a function-typed field `obj.field(args)`.  Analyze
