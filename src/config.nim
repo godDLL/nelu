@@ -40,9 +40,13 @@ type
     printAssembly*: bool        ## --print-assembly: emit assembly to stdout
     runner*: string             ## -R/--runner: run <runner> <binary> <runargs>
     runargs*: seq[string]       ## trailing positionals passed to the runner
+    loads*: seq[string]         ## --load mod[:as] preload Lua modules into the
+                                ## embedded engine's global namespace
+                                ## (--script/--lua); `g=mod` binds to global `g`
     eval*: bool                 ## -i/--eval: compile a string instead of a file
     evalCode*: string           ## the -i/--eval code string
     script*: bool               ## --script: run a .lua file instead of compiling
+    luaRepl*: bool              ## --lua: interactive Lua REPL (embedded engine)
     version*: bool              ## --version
     help*: bool                 ## --help
     config*: bool               ## --config

@@ -244,9 +244,11 @@ These come from comparing `lib/` against what a real Nelu program needs.
 
 - **9a. The preprocessor Lua has no documented standard-library surface.** The manual
   says "standard Lua functions like `select`, `string`, `table`, `math`, `io` are
-  available inside `##` blocks" but does not enumerate them, and does not say which are
-  available in the *compiler's* embedded Lua vs. `nelu-lua`. A user writing `##` code
-  guesses. **Small** effort: add a one-paragraph "what the preprocessor Lua sees".
+  available inside `##` blocks" but does not enumerate them.  (The old "vs.
+  `nelua-lua`" distinction is moot: there is one binary, `nelu`, whose embedded
+  engine provides `--script`/`--lua`; the pp Lua and the REPL Lua are the same
+  engine.)  A user writing `##` code guesses. **Small** effort: add a one-paragraph
+  "what the preprocessor Lua sees".
 - **9b. `LUA_PATH` for preprocessor `require` is untested.** The manual asserts
   `require "foo"` from a standalone `.lua` works with `LUA_PATH` set. I did not verify
   this on the current tree (the preprocessor is not reachable because of #2).
@@ -274,10 +276,10 @@ These come from comparing `lib/` against what a real Nelu program needs.
 - **10c. No `-E`/`--preprocess-only` and no `--emit-ast-to-file`.** The `--print-*`
   family prints to stdout; there is no way to dump the preprocessed/AST output to a file
   for incremental tooling. **Small**; pure convenience.
-- **10d. `make test` depends on `nelu-lua` but `make nelu` does not.** A user who builds
-  only the compiler cannot run the spec suite without also building the Lua interpreter.
-  This is by design (the spec suite runs under Lua), but the Makefile should say so in a
-  comment. **Trivial**.
+- **10d. ~~`make test` depends on `nelu-lua` but `make nelu` does not.~~ RESOLVED.**
+  There is no separate `nelua-lua` binary anymore; `make test` runs the spec suite
+  through `tmp/nelua --script spec/init.lua`, so `make nelu` builds everything
+  needed.  (Makefile rewritten 2026-09-06.)
 - **10e. *Speculative*: no `nelu --run` (compile-and-execute in one step).** The
   `-R/--runner` flag executes *compiled output* with a runner, which is close but not
   the same as a one-shot compile+run. Many users would want `nelu --run hello.nelua`.

@@ -2319,7 +2319,7 @@ proc analyzeModule(source: string, path: string, config: Config,
   timing.markFile("parsed", path, timing.nowMs() - parseStart)
   # P3: run the M6 preprocessor over the parse tree (identity on directive-free
   # source) so every pipeline inherits preprocessing with no signature change.
-  var pctx = newPreprocessContext(source, path)
+  var pctx = newPreprocessContext(source, path, config.pragmas)
   var preprocessError = false
   let ppStart = timing.nowMs()
   try:

@@ -16,7 +16,7 @@
 ## reference interpreter does.  `resetLuaState()` at the top of `compile()`
 ## isolates each compilation.
 
-import std/[options, strutils, os, streams]
+import std/[options, strutils, os, streams, posix]
 
 # ---------------------------------------------------------------------------
 # Compile the bundled Lua C sources + the Nelua init layer into this binary.
@@ -120,6 +120,7 @@ proc lua_pcallk*(L: PLuaState, nargs: int, nresults: int, errfunc: int,
 proc lua_getglobal*(L: PLuaState, name: cstring) {.importc: "lua_getglobal".}
 proc lua_setglobal*(L: PLuaState, name: cstring) {.importc: "lua_setglobal".}
 proc lua_pushstring*(L: PLuaState, s: cstring) {.importc: "lua_pushstring".}
+proc lua_pushnil*(L: PLuaState) {.importc: "lua_pushnil".}
 proc lua_pushnumber*(L: PLuaState, n: cdouble) {.importc: "lua_pushnumber".}
 proc lua_createtable*(L: PLuaState, narr: int, nrec: int) {.importc: "lua_createtable".}
 proc lua_setfield*(L: PLuaState, idx: int, name: cstring) {.importc: "lua_setfield".}
@@ -301,7 +302,52 @@ proc getLuaEngine*(inputPath = ""): PLuaState =
     gEngineReady = true
   result = gEngine.state
 
-proc runScript*(path: string): (string, int) =
+## The Lua half of `preloadModules`: replicate nelua-lua's *intended* `-l mod`
+## / `-l g=mod` ("require library 'mod' into global 'mod'"), which the OG's
+## help advertises but its runtime never implemented.  `mod` binds
+## `require "mod"` to global `mod` (dotted names create the intermediate
+## tables, so `nelua.runner` is accessible as nested access); `g=mod` binds it
+## to global `g`.
+const PRELOAD_CHUNK =
+  "local function setglobal(name, value)\n" &
+  "  local parts = {}\n" &
+  "  for part in name:gmatch('[^.]+') do parts[#parts+1] = part end\n" &
+  "  if #parts == 1 then _G[name] = value; return end\n" &
+  "  local t = _G\n" &
+  "  for i = 1, #parts - 1 do\n" &
+  "    local p = parts[i]\n" &
+  "    if t[p] == nil then t[p] = {} end\n" &
+  "    t = t[p]\n" &
+  "  end\n" &
+  "  t[parts[#parts]] = value\n" &
+  "end\n" &
+  "local function preload(spec)\n" &
+  "  local g, mod\n" &
+  "  local eq = spec:find('=', 1, true)\n" &
+  "  if eq then g = spec:sub(1, eq-1); mod = spec:sub(eq+1)\n" &
+  "  else g = spec; mod = spec end\n" &
+  "  local ok, m = pcall(require, mod)\n" &
+  "  if not ok then error('nelua: --load: cannot require [' .. mod .. ']: ' .. tostring(m)) end\n" &
+  "  setglobal(g, m)\n" &
+  "end\n" &
+  "for i = 1, #__nelua_loads do preload(__nelua_loads[i]) end\n"
+
+proc preloadModules*(L: PLuaState, loads: seq[string]): string =
+  ## Preload each `--load mod[:as]` spec into the embedded engine's global
+  ## namespace.  Returns "" on success, an error message on failure (a module
+  ## that cannot be required or a bad name raises, like the reference).
+  if loads.len == 0:
+    return ""
+  L.lua_createtable(0, loads.len)
+  for i, s in loads:
+    L.lua_pushstring(cstring(s))
+    L.lua_rawseti(-2, i + 1)          # Lua tables are 1-indexed
+  L.lua_setglobal("__nelua_loads")
+  let err = runChunk(L, PRELOAD_CHUNK, "nelua:preload")
+  L.lua_pushnil(); L.lua_setglobal("__nelua_loads")
+  return err
+
+proc runScript*(path: string, loads: seq[string] = @[]): (string, int) =
   ## Run a `.lua` file (`-` = stdin) as a plain Lua script for the `--script`
   ## flag -- the pure-Lua path that bypasses the nelua compiler entirely.
   ##
@@ -325,6 +371,13 @@ proc runScript*(path: string): (string, int) =
               getCurrentExceptionMsg(), 1)
 
   let L = getLuaEngine(path)
+
+  # Preload any `--load mod[:as]` specs into the engine's global namespace
+  # before the script runs (and before the os.exit hook, so a failing preload
+  # is reported cleanly rather than through the hook).
+  let preloadErr = preloadModules(L, loads)
+  if preloadErr.len > 0:
+    return ("nelua: --load: " & preloadErr, 1)
 
   # Install the os.exit interceptor.  Must run before the script chunk.
   let hookErr = runChunk(L,
@@ -351,3 +404,103 @@ proc runScript*(path: string): (string, int) =
         discard
     return (err, 1)
   return ("", 0)
+
+proc extractExitCode(err: string): (bool, int) =
+  ## If `err` carries an intercepted `os.exit(N)` marker (rewritten by the
+  ## `os.exit` hook into `error('NELUA_EXIT:' .. tostring(N))`), return
+  ## `(true, N)`.  Otherwise `(false, 0)`.
+  let marker = "NELUA_EXIT:"
+  let pos = err.find(marker)
+  if pos >= 0:
+    let codeStr = err[pos + marker.len ..< err.len]
+    try:
+      return (true, parseInt(codeStr))
+    except ValueError:
+      discard
+  return (false, 0)
+
+proc runRepl*(loads: seq[string] = @[]): (string, int) =
+  ## Interactive Lua REPL for the `--lua` flag -- the second embedded-Lua
+  ## access point after `--script`.  Reads stdin line by line, accumulating
+  ## incomplete chunks and executing complete ones, matching the reference
+  ## `nelua-lua -i` REPL.  Returns (errorMessage, exitCode).
+  ##
+  ## In a tty the standard Lua prompt is printed (`> ` for a fresh chunk,
+  ## `>> ` for a continuation).  Non-tty stdin is consumed as one chunk, so
+  ## `nelu --lua < file.lua` runs the file (like `--script -`).
+  ##
+  ## `os.exit(N)` is intercepted and propagated as exit code N, matching the
+  ## reference.  EOF with an empty buffer exits 0; EOF mid-chunk is reported as
+  ## the trailing syntax error, matching the reference.
+  let L = getLuaEngine()
+
+  # Preload any `--load mod[:as]` specs before the REPL (or stdin chunk) runs.
+  let preloadErr = preloadModules(L, loads)
+  if preloadErr.len > 0:
+    return ("nelua: --load: " & preloadErr, 1)
+
+  # Install the `os.exit` interceptor.  Must run before any user chunk.
+  let hookErr = runChunk(L,
+    "local _nelua_old_exit = os.exit\n" &
+    "os.exit = function(code) error('NELUA_EXIT:' .. tostring(code or 0)) end",
+    "nelua:lua:os.exit")
+  if hookErr.len > 0:
+    return ("nelua: --lua: failed to install os.exit hook: " & hookErr, 1)
+
+  let isTty = isatty(0) != 0
+
+  if not isTty:
+    # Non-tty: consume all of stdin as one chunk (like `--script -`), stop at
+    # the first error, matching the reference interpreter's stdin behaviour.
+    let text = try: readAll(stdin)
+                except OSError, IOError: ""
+    let err = runChunk(L, text, "stdin")
+    if err.len > 0:
+      let (isExit, code) = extractExitCode(err)
+      if isExit:
+        return ("", code)
+      stderr.writeLine("nelua: " & err)
+      return ("", 1)
+    return ("", 0)
+
+  # Tty: interactive REPL.  Re-parse the whole accumulated buffer each line
+  # (each complete chunk is re-evaluated from scratch), matching the reference.
+  # The reference prints a startup banner in interactive mode; do the same.
+  stdout.writeLine("Nelua-in-Nim REPL (embedded Lua)")
+  var buffer = ""
+  var prompt = "> "
+  while true:
+    stdout.write(prompt)
+    stdout.flushFile()
+    var line = ""
+    let ok = readLine(stdin, line)
+    if not ok:
+      # EOF.  An incomplete final chunk is reported, like the reference.
+      if buffer.len > 0:
+        let err = runChunk(L, buffer, "stdin")
+        if err.len > 0:
+          let (isExit, code) = extractExitCode(err)
+          if isExit:
+            return ("", code)
+          stderr.writeLine("nelua: " & err)
+          return ("", 1)
+      return ("", 0)
+    buffer.add(line)
+    buffer.add("\n")
+    let err = runChunk(L, buffer, "stdin")
+    if err.len == 0:
+      # Complete chunk, ran clean.  Reset and continue.
+      buffer = ""
+      prompt = "> "
+    elif err.find("<eof>") >= 0:
+      # Incomplete chunk: keep accumulating.
+      prompt = ">> "
+    else:
+      # Real load or runtime error: report, reset, and keep reading (a REPL
+      # continues after an error, matching the reference).
+      let (isExit, code) = extractExitCode(err)
+      if isExit:
+        return ("", code)
+      stderr.writeLine("nelua: " & err)
+      buffer = ""
+      prompt = "> "

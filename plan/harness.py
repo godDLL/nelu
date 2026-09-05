@@ -2,9 +2,9 @@
 """One harness for all Nelu language-conformance comparison.
 
 What it does, in order:
-  1. rebuild tmp/nelua if stale (make nelu, which honours NELU_OUT -> tmp/nelua)
+  1. rebuild tmp/nelu if stale (make nelu, which honours NELU_OUT -> tmp/nelu)
   2. walk ONE corpus directory (exam/) recursively; nothing enumerated by hand
-  3. run every probe through our compiler (tmp/nelua) and the oracle (/usr/bin/nelua)
+  3. run every probe through our compiler (tmp/nelu) and the oracle (/usr/bin/nelua)
   4. print ONE table with one status vocabulary
   5. exit non-zero only on a REGRESSION (a previously MATCHing probe going
      DIFF/CRASH/REJECT, or a new crash)
@@ -61,7 +61,7 @@ CORPUS = os.path.join(ROOT, "exam")
 # the neg tier), tests/ and examples/ are the upstream nelua trees taken over.
 CORPUS_DIRS = [os.path.join(ROOT, d) for d in ("exam", "tests", "examples")]
 TMP = os.path.join(ROOT, "tmp")
-OUR = os.path.join(TMP, "nelua")
+OUR = os.path.join(TMP, "nelu")
 ORACLE = "/usr/bin/nelua"
 BASELINE = os.path.join(ROOT, "plan", "harness_baseline.json")
 OUTDIR = os.path.join(TMP, "harness_out")
@@ -148,7 +148,7 @@ CMP_CASES = [
 # ---------------------------------------------------------------------------
 
 def build_our():
-    """Rebuild tmp/nelua via `make nelu` (NELU_OUT -> tmp/nelua) if stale.
+    """Rebuild tmp/nelu via `make nelu` (NELU_OUT -> tmp/nelu) if stale.
 
     The staleness scan must cover everything the Nelu binary actually pulls
     in, not just top-level files: the analyzer/cgen are all `src/*.nim`, and
@@ -768,7 +768,7 @@ def main():
             print("BUILD FAILED:\n" + msg)
             return 2
         if msg == "built":
-            print("built tmp/nelua")
+            print("built tmp/nelu")
 
     baseline = {}
     if os.path.exists(BASELINE):
@@ -847,7 +847,7 @@ def main():
     # ---- print the table --------------------------------------------------
     print("Nelu conformance harness")
     print("  corpus: exam/ (walked recursively)  |  "
-          "oracle: /usr/bin/nelua  |  ours: tmp/nelua")
+          "oracle: /usr/bin/nelua  |  ours: tmp/nelu")
     print("-" * 78)
 
     def show_section(title, keys, counts):

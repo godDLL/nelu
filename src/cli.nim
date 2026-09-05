@@ -26,7 +26,7 @@ const LongNoVal: seq[string] = @[
   "release", "binary", "code", "analyze", "lint",
   "strip-bin", "sanitize", "no-cache", "verbose",
   "version", "help", "no-warning", "no-color",
-  "script",
+  "script", "lua",
   "print-ast", "print-analyzed-ast", "print-ppcode", "print-code",
   "print-assembly",
   "object", "assembly", "static-lib", "shared-lib",
@@ -147,6 +147,7 @@ proc parseArgs*(args: seq[string]): (Config, seq[string]) =
       case p.key
       of "release": c.release = true
       of "script": c.script = true
+      of "lua": c.luaRepl = true
       of "binary": c.binary = true; setOutputKind(c, okBinary, "--binary")
       of "code": c.codeOnly = true
       of "analyze": c.analyze = true
@@ -176,6 +177,7 @@ proc parseArgs*(args: seq[string]): (Config, seq[string]) =
       of "ldflags": c.ldflags = p.val
       of "path": c.addPath(p.val)
       of "runner": c.runner = p.val
+      of "load": c.loads.add(p.val)
       of "eval": c.eval = true; c.evalCode = p.val
       of "add-path":
         if not dirExists(p.val):

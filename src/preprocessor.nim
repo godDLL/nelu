@@ -63,6 +63,8 @@ type
                                         ## as one Lua chunk per module
     depth*: int                        ## recursion depth; 1 == the top-level
                                         ## module block
+    pragmas*: seq[string]              ## active `-P` pragmas, exposed to `##`
+                                        ## blocks as the `pragmas` global table
 
 # ---------------------------------------------------------------------------
 # Phase-B preprocessor builtins + the injection machinery.
@@ -177,11 +179,15 @@ proc parseSpliceFuncOpener(text: string): (bool, string, seq[string]) =
         params.add ps
   return (true, name, params)
 
-proc newPreprocessContext*(source = "", path = ""): PreprocessContext =
+proc newPreprocessContext*(source = "", path = "",
+                            pragmas: seq[string] = @[]): PreprocessContext =
   ## Construct a fresh preprocessor context with no defines and an empty
   ## inject buffer (the inject buffer is `ctx.macros`-independent state the
   ## driver splices from; it is intentionally a field so callers can seed it).
-  PreprocessContext(source: source, path: path, luaBuffer: @[], depth: 0)
+  ## `pragmas` is the list of `-P` pragmas from the compiler config, exposed to
+  ## `##` blocks as the `pragmas` global table.
+  PreprocessContext(source: source, path: path, pragmas: pragmas,
+    luaBuffer: @[], depth: 0)
 
 proc newInjectBuffer*(): seq[Node] = @[]
 
@@ -1366,6 +1372,48 @@ proc registerPreprocessorBuiltins*(L: PLuaState) =
     pushTypeWrapper(L, ty)
     L.lua_setglobal(nm)
 
+## The Lua half of `setPragmasGlobal`: replicate configer.lua's
+## `convert_param` -- a bare `name` becomes `name = true`, then every pragma is
+## loaded as a chunk with `pragmas` as its environment, so `name=value`
+## pragmas evaluate the value in that env (e.g. `-P abort=exit` leaves
+## `pragmas.abort` nil because `exit` is not in scope there, exactly as the
+## reference's pp phase does).
+const PRAGMAS_INIT_CHUNK =
+  "pragmas = {}\n" &
+  "local raw = __nelua_raw_pragmas\n" &
+  "for i = 1, #raw do\n" &
+  "  local p = raw[i]\n" &
+  "  local code = p:match('^%a[_%w]*$') and (p .. ' = true') or p\n" &
+  "  local f, err = load(code, '@pragma', 't', pragmas)\n" &
+  "  if not f then error('failed parsing pragma [' .. p .. ']: ' .. tostring(err)) end\n" &
+  "  local ok, err2 = pcall(f)\n" &
+  "  if not ok then error('failed parsing pragma [' .. p .. ']: ' .. tostring(err2)) end\n" &
+  "end\n"
+
+proc setPragmasGlobal*(L: PLuaState, pragmas: seq[string]): string =
+  ## Expose the active `-P` pragmas to `##` blocks as the `pragmas` global
+  ## table, matching the reference's model (configer.lua `convert_param`):
+  ## a bare `name` becomes `pragmas.name = true`; a `name=value` pragma is
+  ## loaded as a Lua chunk with `pragmas` as its environment, so e.g.
+  ## `-P abort=exit` evaluates `exit` in that env (nil) and leaves
+  ## `pragmas.abort` nil -- exactly as the reference's pp phase does.  The
+  ## construction runs in Lua so the environment semantics are identical.
+  ##
+  ## Returns "" on success, an error message on failure (a pragma that does
+  ## not load or run raises, like the reference).
+  if pragmas.len == 0:
+    L.lua_createtable(0, 0)
+    L.lua_setglobal("pragmas")
+    return ""
+  L.lua_createtable(0, pragmas.len)
+  for i, p in pragmas:
+    L.lua_pushstring(cstring(p))
+    L.lua_rawseti(-2, i + 1)          # Lua tables are 1-indexed
+  L.lua_setglobal("__nelua_raw_pragmas")
+  let err = runChunk(L, PRAGMAS_INIT_CHUNK, "nelua:pp:pragmas")
+  L.lua_pushnil(); L.lua_setglobal("__nelua_raw_pragmas")
+  return err
+
 proc luaTableToNode*(L: PLuaState, idx: int): Node   # forward, see below
 
 proc luaRawGetField(L: PLuaState, idx: int, name: string) =
@@ -1831,8 +1879,13 @@ proc runPreprocessChunk(ctx: var PreprocessContext, chunkParts: seq[string],
   let chunkText = chunkParts.join("\n")
   let L = getLuaEngine(ctx.path)
   registerPreprocessorBuiltins(L)
-  gActiveCtx = addr ctx
   let chunkName = "@" & ctx.path & ":ppcode"
+  let pragmaErr = setPragmasGlobal(L, ctx.pragmas)
+  if pragmaErr.len > 0:
+    gInjectStack.setLen(gInjectStack.len - 1)
+    raise PreprocessError(loc: newSourceLoc(ctx.path, ctx.source, 0),
+      msg: "error while setting up pragmas: " & chunkName & ": " & pragmaErr)
+  gActiveCtx = addr ctx
   let (errMsg, nres) = runChunkGetResult(L, chunkText, chunkName)
   gActiveCtx = nil
   if errMsg.len > 0:

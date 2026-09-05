@@ -1,28 +1,26 @@
 # Nelu build (clean-room Nelua-in-Nim).
 #
 # This is *our* Makefile, not the upstream one (preserved as Makefile.N200 for
-# reference).  Two artifacts, two toolchains:
+# reference).  One artifact, one toolchain:
 #
 #   nelu      the Nelu compiler -- Nim -> C -> native.  This is the real
 #            compiler; the upstream `nelua` was a shell wrapper around a Lua
-#            interpreter, which we do not use.
-#   nelu-lua  the bundled Lua 5.4.3 interpreter, built from C exactly as the
-#            upstream `nelua-lua` is (onelua.c + the Nelua init layer + the
-#            lpeglabel module).  Kept as a standalone interpreter for running
-#            Lua scripts and the spec suite.
-#
-# Naming follows the upstream convention (`nelua` / `nelua-lua`) with the Nelu
-# `u` substituted for the second `a`.
+#            interpreter, which we do not use.  Its embedded C Lua 5.4.3
+#            engine (baked in via src/luaengine.nim's `{.compile:}`) provides
+#            the two Lua access points `--script` (run a .lua file) and `--lua`
+#            (interactive REPL), so there is no separate `nelua-lua` binary to
+#            build -- `nelu` does all the things `nelua-lua` used to do.
+#            The build artifact is `tmp/nelu` (renamed from `tmp/nelua` on
+#            2026-09-06; historical docs that still name `tmp/nelua` refer to
+#            the pre-rename binary).
 
 NELU=nelu
-NELUALUA=nelu-lua
 # The compiler artifact the whole toolchain consumes.  Every gate script
 # (plan/cmp.py, plan/regress.py, plan/examples_parity.py, plan/cover_gate.py,
-# plan/cli_conformance.py, plan/wwwcheck.py) runs ROOT/tmp/nelua, so `make nelu`
+# plan/cli_conformance.py, plan/wwwcheck.py) runs ROOT/tmp/nelu, so `make nelu`
 # must build *here*, not at the repo root.  `nelu` is a phony marker over the
-# real file so make skips the 40s Nim compile when tmp/nelua is current.
-NELU_OUT=$(CURDIR)/tmp/nelua
-NELU_RUN=./$(NELU)
+# real file so make skips the 40s Nim compile when tmp/nelu is current.
+NELU_OUT=$(CURDIR)/tmp/nelu
 
 ###############################################################################
 # Platform detection (mirrors Makefile.N200, which is the reference).
@@ -38,21 +36,6 @@ ifeq ($(OS), Windows_NT)
 	endif
 else
 	SYS=$(shell uname -s)
-endif
-
-LUA_CC=gcc
-LUA_CFLAGS=-O2
-LUA_DEFS=-DNDEBUG -DLUA_COMPAT_5_3 -DMAXRECLEVEL=400
-LUA_INCS=-Isrc/lua
-LUA_SRCS=src/lua/onelua.c $(wildcard src/*.c) $(wildcard src/lpeglabel/*.c)
-LUA_LIBS=-lm -ldl
-
-ifeq ($(SYS), Linux)
-	LUA_CFLAGS=-O2 -fno-plt -flto
-	LUA_LDFLAGS+=-Wl,-E
-else ifeq ($(SYS), Darwin)
-	LUA_CC=clang
-	LUA_LDFLAGS+=-rdynamic
 endif
 
 ###############################################################################
@@ -71,30 +54,22 @@ $(NELU_OUT): src/main.nim $(shell find src -name '*.nim' 2>/dev/null)
 	$(NIM) c $(NIMFLAGS) -o:$@ src/main.nim
 
 ###############################################################################
-# The bundled Lua interpreter (C).
-
-$(NELUALUA): $(LUA_SRCS) $(wildcard src/*.h) $(wildcard src/lua/*.h) $(wildcard src/lpeglabel/*.h)
-	$(LUA_CC) $(LUA_DEFS) $(LUA_INCS) $(LUA_CFLAGS) $(LUA_SRCS) \
-		-o $@ $(LUA_LDFLAGS) $(LUA_LIBS)
-
-###############################################################################
 # Default + release.
 
 .PHONY: all release
-all: $(NELU) $(NELUALUA)
-release: $(NELU) $(NELUALUA)
+all: $(NELU)
+release: $(NELU)
 
 ###############################################################################
-# Testing.
-
-LUA=./$(NELUALUA)
+# Testing.  The Lua spec suite (`spec/init.lua`) is pure Lua, so it runs through
+# the embedded engine via `--script` -- no separate interpreter binary needed.
 
 .PHONY: test test-quick
-test: $(NELUALUA)
-	$(LUA) spec/init.lua
+test: $(NELU)
+	$(NELU_OUT) --script spec/init.lua
 
-test-quick: $(NELUALUA)
-	@LESTER_QUIET=true LESTER_STOP_ON_FAIL=true $(LUA) spec/init.lua
+test-quick: $(NELU)
+	@LESTER_QUIET=true LESTER_STOP_ON_FAIL=true $(NELU_OUT) --script spec/init.lua
 
 ###############################################################################
 # Install.
@@ -105,17 +80,16 @@ PREFIX_BIN=$(DPREFIX)/bin
 PREFIX_LIB=$(DPREFIX)/lib/nelua
 
 .PHONY: install install-as-symlink uninstall
-install: $(NELU) $(NELUALUA)
+install: $(NELU)
 	install -d "$(PREFIX_BIN)"
 	install -m755 $(NELU_OUT) "$(PREFIX_BIN)/$(NELU)"
-	install -m755 $(NELUALUA) "$(PREFIX_BIN)/$(NELUALUA)"
 	install -d "$(PREFIX_LIB)"
 	cp -R lualib "$(PREFIX_LIB)/lualib"
 	cp -R lib "$(PREFIX_LIB)/lib"
-	@echo "installed nelu + nelu-lua to $(DPREFIX)"
+	@echo "installed nelu to $(DPREFIX)"
 
 uninstall:
-	rm -f "$(PREFIX_BIN)/$(NELU)" "$(PREFIX_BIN)/$(NELUALUA)"
+	rm -f "$(PREFIX_BIN)/$(NELU)"
 	rm -rf "$(PREFIX_LIB)"
 
 ###############################################################################
@@ -123,11 +97,9 @@ uninstall:
 
 CACHE_DIR=$(CURDIR)/.cache
 
-.PHONY: clean clean-nelu clean-nelu-lua clean-cache
-clean: clean-nelu clean-nelu-lua clean-cache
+.PHONY: clean clean-nelu clean-cache
+clean: clean-nelu clean-cache
 clean-nelu:
 	rm -f $(NELU_OUT) $(NELU)
-clean-nelu-lua:
-	rm -f $(NELUALUA)
 clean-cache:
 	rm -rf $(CACHE_DIR)

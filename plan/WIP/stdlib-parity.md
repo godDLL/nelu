@@ -52,7 +52,7 @@ actively editing them. So phase 1 splits:
 ## Verification
 
 Oracle baseline per module: `/usr/bin/nelua -o /tmp/t_N lib/N.nelua`; record exit
-code + stdout. Ours: `tmp/nelua ...`. Coverage table in `tmp/stdlib_coverage.md`.
+code + stdout. Ours: `tmp/nelu ...`. Coverage table in `tmp/stdlib_coverage.md`.
 ---
 
 # Part 2 -- Stdlib coverage survey
@@ -180,7 +180,7 @@ Options:
   -V                       Verbose: echo generated C and cc command line
   --help                   Show this help and exit.
 
-`tmp/nelua` (built from current `src/`). No source file was edited; scratch probes
+`tmp/nelu` (built from current `src/`). No source file was edited; scratch probes
 went to `tmp/`.
 
 ## 0. Scope correction: where the runtime stdlib actually lives
@@ -455,7 +455,7 @@ variant, `import_cmath_func1_int`.
   I only confirmed it SIGSEGVs; I did not locate the nil-dereference site.
 - **Whether the `require 'string'`/`require 'span'` crashes are pre-existing or a
   recent regression.** They are reproducible now; I did not bisect against an
-  older `tmp/nelua`.
+  older `tmp/nelu`.
 - **The 5 `examples/` DIFFs are fully characterized as parse/compiler gaps by
   `plan/examples-diffs-triage.md`; I did not re-derive them here.** They are not
   stdlib gaps (verified: `fibonacci`/`gameoflife` need only `math.floor`/
@@ -489,7 +489,7 @@ python3 /tmp/extract3.py > /tmp/fn_diff.txt
 python3 /tmp/scan_corpus2.py
 
 # require silently returns nil for missing modules (ours errors, oracle does not)
-tmp/nelua -b -o /tmp/x tmp/req4.nelua      # req4: require 'does.not.exist'
+tmp/nelu -b -o /tmp/x tmp/req4.nelua      # req4: require 'does.not.exist'
 /usr/bin/nelua -b -o /tmp/x tmp/req4.nelua
 
 # math.iround missing in ours, present in oracle
@@ -504,7 +504,7 @@ pattern-matching agent left open: untyped-function return deduction, closure/upv
 scoping). Research only - no `src/` edits, no gate-script edits, no commit.
 
 Tools: oracle `/usr/bin/nelua` (Nelua 0.2.0-dev, build 1635, git a5845056);
-ours `tmp/nelua` (built `nim c -d:release --path:src -o:tmp/nelua src/main.nim`).
+ours `tmp/nelu` (built `nim c -d:release --path:src -o:tmp/nelu src/main.nim`).
 Probe files live in `/tmp/research_probes/` (throwaway, unique filenames because the
 oracle caches `--print-ast` by name). Driver: `/tmp/research_probes/driver.py`,
 survey: `/tmp/research_probes/survey/run.py`.
@@ -746,7 +746,7 @@ $ cat > t.nelua <<'EOF'
 local function f() return 42 end
 print(f())
 EOF
-$ ./tmp/nelua t.nelua
+$ ./tmp/nelu t.nelua
 nil                                  # ours: value dropped, returns nil
 $ /usr/bin/nelua t.nelua
 42                                   # oracle

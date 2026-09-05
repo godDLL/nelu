@@ -40,6 +40,9 @@ proc printHelp() =
   echo "  -a, --analyze            Analyze only, no codegen"
   echo "  --lint                   Check for syntax errors only"
   echo "  --script                 Run a Lua script instead of compiling"
+  echo "  --lua                    Enter the interactive Lua REPL (embedded engine)"
+  echo "  --load <mod[:as]>        Preload a Lua module into the embedded engine"
+  echo "                           (--script/--lua); `g=mod` binds to global `g`"
   echo "  --print-ast              Print the AST"
   echo "  --print-analyzed-ast     Print the analyzed AST"
   echo "  --print-ppcode           Print the preprocessing code"
@@ -186,6 +189,14 @@ proc main(): int =
     echo VersionString
     return 0
 
+  # `--load` preloads a Lua module into the embedded engine's namespace, which
+  # only makes sense for the pure-Lua paths.  Used with the compiler it is a
+  # no-op at best, so report it rather than silently dropping it.
+  if c.loads.len > 0 and not (c.script or c.luaRepl):
+    stderr.writeLine("error: argument '--load' can only be used together with " &
+                     "option '--script' or option '--lua'")
+    return 1
+
   # --script short-circuits the entire nelua pipeline: run a .lua file through
   # the embedded Lua engine instead of compiling nelua.  Pure-Lua path.  Placed
   # after --config (the oracle checks --config first: `--script --config` with
@@ -194,10 +205,21 @@ proc main(): int =
     if positionals.len == 0:
       stderr.writeLine("error: Missing input file name, please pass a source file as an argument.")
       return 1
-    let (scriptErr, scriptExit) = runScript(positionals[0])
+    let (scriptErr, scriptExit) = runScript(positionals[0], c.loads)
     if scriptErr.len > 0:
       stderr.writeLine(scriptErr)
     return scriptExit
+
+  # --lua short-circuits the entire nelua pipeline: drop into the interactive
+  # Lua REPL on the embedded engine.  Pure-Lua path, like --script but reads
+  # stdin rather than a file.  Placed after --config/--script for the same
+  # ordering reason: `--lua --config` dumps config, `--config --lua` errors on
+  # the positional.
+  if c.luaRepl:
+    let (replErr, replExit) = runRepl(c.loads)
+    if replErr.len > 0:
+      stderr.writeLine(replErr)
+    return replExit
 
   # -i/--eval: the code string IS the input.  Use a fixed synthetic path so the
   # generated unitname ("eval") is a valid C identifier (computeUnitname feeds

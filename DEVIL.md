@@ -47,7 +47,7 @@ Spend at least half the time box on step 1 before any step 3.
 - Ours: build ONCE at the start into a STABLE path, `nim c -d:release --path:src
   -o:tmp/devil/nelua src/main.nim`, and use that binary for every test. Rebuild if
   `src/` changes under you.
-- **Do NOT use or rebuild `tmp/nelua`.** Other agents edit `src/` and rebuild it
+- **Do NOT use or rebuild `tmp/nelu`.** Other agents edit `src/` and rebuild it
   concurrently; it is a moving target. Your own binary keeps your findings stable.
 - Compare stdout AND exit code. A divergence is only a finding if you actually ran
   both compilers and observed it.

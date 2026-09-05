@@ -11,7 +11,7 @@ coverage sections of `plan/GATES.md` (all moved to `tmp/legacy/`).
   The harness walks `examples/` recursively; nothing is enumerated by hand.
 - **Oracle** — `/usr/bin/nelua` (upstream 0.2.0-dev).  "Oracle accepts" means
   it compiles and runs the probe with exit 0.
-- **Nelu** — `tmp/nelua` (the clean-room reimplementation, built by `make nelu`).
+- **Nelu** — `tmp/nelu` (the clean-room reimplementation, built by `make nelu`).
 - **Baseline** — `tmp/harness_baseline.json` (gitignored scratch), captured by
   `python3 plan/harness.py --record`.  A probe's verdict here is the recorded
   baseline; the harness exits non-zero only on a *regression* (a previously
@@ -33,8 +33,8 @@ coverage sections of `plan/GATES.md` (all moved to `tmp/legacy/`).
 
 ### The harness
 
-`python3 plan/harness.py` builds `tmp/nelua` once (via `make nelu`, which honours
-`NELU_OUT -> tmp/nelua`), runs every probe, prints one table, and exits 0 on no
+`python3 plan/harness.py` builds `tmp/nelu` once (via `make nelu`, which honours
+`NELU_OUT -> tmp/nelu`), runs every probe, prints one table, and exits 0 on no
 regression.  It subsumes six former gate scripts (all in `tmp/legacy/scripts/`):
 
 | former gate | becomes | mode |

@@ -3,7 +3,7 @@
 **Status:** Phase 1 (parity floor) complete and green. Phase 2 (tagged `any`,
 Nelu/beyond-oracle) is designed but **deferred** -- see §5.
 **Oracle:** `/usr/bin/nelua` (Nelua 0.2.0-dev, build 1635, git a5845056).
-**Our compiler:** `tmp/nelua` (built `nim c -d:release --path:src -o:tmp/nelua src/main.nim`).
+**Our compiler:** `tmp/nelu` (built `nim c -d:release --path:src -o:tmp/nelu src/main.nim`).
 **Sources:** `plan/oracle-any-behavior-design.md` (what the oracle *does*),
 `plan/INBOX/any-intended-design.md` (the intended Nelu result).
 
@@ -261,7 +261,7 @@ per probe, or the oracle returns a stale result.
 
 ```bash
 # build our compiler
-cd /home/user/Code/nelua-lang && nim c -d:release --path:src -o:tmp/nelua src/main.nim
+cd /home/user/Code/nelua-lang && nim c -d:release --path:src -o:tmp/nelu src/main.nim
 
 # SDL examples open a real window unless run headlessly; set the dummy video
 # driver for every subprocess (ours and the oracle) that may touch SDL.
@@ -270,12 +270,12 @@ export SDL_VIDEODRIVER=dummy
 # Phase 1: reject deduced any (oracle vs ours)
 printf 'local x: any = 5\nprint(x)\n' > /tmp/any_reject.nelua
 /usr/bin/nelua /tmp/any_reject.nelua; echo "oracle exit=$?"
-./tmp/nelua /tmp/any_reject.nelua; echo "ours exit=$?"
+./tmp/nelu /tmp/any_reject.nelua; echo "ours exit=$?"
 
 # Phase 1: table-literal initializer
 printf 'local x: any = {}\n' > /tmp/any_init.nelua
 /usr/bin/nelua /tmp/any_init.nelua; echo "oracle exit=$?"
-./tmp/nelua /tmp/any_init.nelua; echo "ours exit=$?"
+./tmp/nelu /tmp/any_init.nelua; echo "ours exit=$?"
 
 # Phase 1: parameter / return annotations
 printf 'local function f(a: any)\n  return a\nend\nprint(f(1))\n' > /tmp/any_param.nelua
