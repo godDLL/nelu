@@ -36,6 +36,24 @@ import re
 import subprocess
 import sys
 
+# The harness spawns a lot of short-lived children in rapid succession (our
+# compiler, the oracle, gcc, and the compiled probe binaries), and the
+# resulting burst of CPU and I/O load hiccups the machine's video.  Run every
+# child at niceness 15 so the harness process itself stays at normal priority
+# while all of its work is deprioritised.  Children inherit, so `make nelu`
+# (which spawns the nim compiler) is covered too -- only the direct children
+# need the wrapper, the whole tree comes along.
+_orig_subprocess_run = subprocess.run
+
+def _nice_subprocess_run(cmd, *args, **kwargs):
+  if isinstance(cmd, (list, tuple)):
+    cmd = ["nice", "-n", "15"] + list(cmd)
+  else:
+    cmd = "nice -n 15 " + cmd
+  return _orig_subprocess_run(cmd, *args, **kwargs)
+
+subprocess.run = _nice_subprocess_run
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(ROOT, "exam")
 # The OG upstream trees live alongside our own corpus; they are conformance

@@ -93,6 +93,7 @@ to see the whole board.
 | `plan/DONE/goto-label-statement.md` | CLOSED | Rank 1. `goto` + `::label:` now a statement: block-scoped label scope stack in `analyzer.nim`, `labelTarget` attr + shared C codename in `cgen.nim`. Verified: probe_goto/probe_goto2/pt_dup/pt_edge MATCH; harness `exam/goto_loop` DIFF -> MATCH. |
 | `plan/DONE/byte-literal-suffix.md` | CLOSED | Rank 2. `'A'_b`/`"x"_u8`/`'A'_i8` lower to the char's ordinal as uint8/int8 (`analyzer.nim` `nkString` case + `cgen.nim` value emission). Verified: `print('A'_b)` -> 65, switch case values MATCH. |
 | `plan/DONE/nasm-opportunities.md` | DONE | NASM opportunities assessment; grounded in the actual source with measurements; concluded. |
+| `plan/DONE/analyzer-split-refactor.md` | CLOSED | Split `src/analyzer.nim` (128K / 3063 lines, the biggest source file) into 3 files for reading context: `analyzer_ctx.nim` (context + accessors), `analyzer_core.nim` (pure helpers), `analyzer.nim` (analysis core + dump + entry, kept whole because it is mutually recursive). Pure refactor, no behavior change. Verified: clean build, harness 0 regressions (219 MATCH). |
 
 ## Not tickets (reference / design / tooling, live in `plan/` root)
 
