@@ -9,6 +9,12 @@ type
     offset*: int       ## byte offset of the span start in the source
     length*: int       ## span length in bytes; 0 if unknown/unbounded
 
+  ParseError* = ref object of ValueError
+    ## Malformed input raised by the lexer and parser.  `parse` catches it,
+    ## echoes a diagnostic, and returns nil so callers can abort cleanly.
+    ## `msg` is inherited from `ValueError`; `loc` is the error span.
+    loc*: SourceLoc
+
 proc newSourceLoc*(path: string, source: string, offset: int, length: int = 0): SourceLoc =
   ## Compute line/col (1-based) by scanning `source` up to `offset`.
   ## `offset` is a byte index; newline bytes reset the line counter.

@@ -136,7 +136,7 @@ proc isLongBracket(s: string, i: int): int =
     return j - i - 1
   return -1
 
-proc lexLongString(s: string, start: int): (string, int) =
+proc lexLongString(s: string, start: int): (string, int, bool) =
   let level = isLongBracket(s, start)
   var j = start + level + 2
   while j < s.len:
@@ -146,11 +146,12 @@ proc lexLongString(s: string, start: int): (string, int) =
       while k < s.len and s[k] == '=':
         inc k; inc m
       if k < s.len and s[k] == ']' and m == level:
-        return (s[start ..< k + 1], k + 1)
+        return (s[start ..< k + 1], k + 1, true)
     inc j
-  return (s[start ..< s.len], s.len)
+  # No matching `]=...]=` before EOF: the long bracket is unterminated.
+  return (s[start ..< s.len], s.len, false)
 
-proc lexString(s: string, start: int, quote: char): (string, int) =
+proc lexString(s: string, start: int, quote: char): (string, int, bool) =
   var i = start + 1
   var buf = newStringOfCap(s.len)
   buf.add quote
@@ -184,16 +185,17 @@ proc lexString(s: string, start: int, quote: char): (string, int) =
         else: buf.add 'x'
       else: buf.add s[i]; inc i     # unknown escape: keep literally (current behavior)
       continue
-    if c == quote: buf.add quote; return (buf, i + 1)
+    if c == quote: buf.add quote; return (buf, i + 1, true)
     if c == '\n': break
     buf.add c; inc i
-  return (buf, s.len)
+  # Reached EOF or a raw newline without the closing quote: unterminated.
+  return (buf, s.len, false)
 
 proc skipComment(s: string, i: int): int =
   if i + 1 >= s.len: return i + 1
   if s[i+1] == '-':
     if i + 2 < s.len and isLongBracket(s, i + 2) >= 0:
-      let (_, e) = lexLongString(s, i + 2)
+      let (_, e, _) = lexLongString(s, i + 2)
       return e
     var j = i + 2
     while j < s.len and s[j] != '\n': inc j
@@ -260,7 +262,9 @@ proc tokenize*(source: string, path: string = ""): seq[Token] =
       continue
 
     if c == '"' or c == '\'':
-      let (text, j) = lexString(source, i, c)
+      let (text, j, ok) = lexString(source, i, c)
+      if not ok:
+        raise ParseError(loc: loc, msg: "unclosed string, did you forget a quote?")
       tokens.add Token(kind: tkString, value: text,
         loc: SourceLoc(path: loc.path, line: line, col: col,
           offset: loc.offset, length: j - i))
@@ -269,7 +273,9 @@ proc tokenize*(source: string, path: string = ""): seq[Token] =
       continue
 
     if c == '[' and isLongBracket(source, i) >= 0:
-      let (text, j) = lexLongString(source, i)
+      let (text, j, ok) = lexLongString(source, i)
+      if not ok:
+        raise ParseError(loc: loc, msg: "unclosed long, did you forget a `]]`?")
       tokens.add Token(kind: tkLString, value: text,
         loc: SourceLoc(path: loc.path, line: line, col: col,
           offset: loc.offset, length: j - i))

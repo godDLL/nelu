@@ -12,9 +12,6 @@ import span
 import strutils
 
 type
-  ParseError* = ref object of ValueError
-    loc*: SourceLoc
-
   Parser* = object
     tokens*: seq[Token]
     pos*: int
@@ -1345,8 +1342,9 @@ proc parseStatement*(p: var Parser): Node =
   return first
 
 proc parse*(source: string, path: string = ""): Node =
-  var p = newParser(source, path)
+  var p: Parser
   try:
+    p = newParser(source, path)
     let body = p.parseBlock()
     discard p.expect(tkEof, "unexpected token after end of program")
     return body
