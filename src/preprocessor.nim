@@ -1616,6 +1616,20 @@ proc evaluateSplice*(scope: Scope, node: Node, path: string,
     lua_settop(L, 0)
     return (newNil(), e.msg)
 
+proc evaluatePreprocessName*(scope: Scope, node: Node, path: string,
+                             source: string): string =
+  ## Resolve a `#|expr|#` splice to its identifier string (Stage 4).  Reuses the
+  ## same hybrid mechanism as `evaluateSplice`: prefers the preprocess-time
+  ## result captured by `collectSpliceParts` (which ran in the frame chunk, so a
+  ## `##`-local such as `name` is visible), and falls back to live-scope
+  ## evaluation.  The captured value is `tostring(expr)`; the fallback wraps the
+  ## expr the same way.  On error returns "" (the caller records a diagnostic).
+  let (r, errMsg) = evaluateSplice(scope, node, path, source)
+  if errMsg.len > 0: return ""
+  if r != nil and r.kind != nkNil:
+    return r.str
+  return ""
+
 proc executeLuaBuffer*(ctx: var PreprocessContext) =
   ## Concatenate every `##` line collected during this pass into one Lua chunk
   ## and run it in the shared embedded Lua state.  The state is module-global,
@@ -1885,23 +1899,27 @@ proc constructFrameChunk(frame: LuaFrame, ctx: var PreprocessContext): string =
 
 proc collectSpliceParts(node: Node, parts: var seq[string], splices: var seq[Node]) =
   ## Walk `node` (recursively, but stopping at nested blocks) appending a
-  ## `__nelua_spliceN = ...` capture line for every `#[expr]#` encountered, in
-  ## source order, and recording the splice nodes in `splices` (parallel).
-  ## Stopping at nested blocks keeps each block's splices in that block's own
-  ## chunk (the `stopAtNestedBlock` boundary).
+  ## `__nelua_spliceN = ...` capture line for every `#[expr]#` *and* every
+  ## `#|expr|#` encountered, in source order, and recording the splice nodes in
+  ## `splices` (parallel).  Stopping at nested blocks keeps each block's splices
+  ## in that block's own chunk (the `stopAtNestedBlock` boundary).
   ##
-  ## The capture is wrapped in `pcall(...)` returning `nil` on error.  This is
-  ## the safety net that lets the same splice be run in the `##` chunk (where a
-  ## nelua-scope symbol such as `x` is an *undefined global*, so `x.name` would
-  ## raise) without aborting the whole block: a capture that raises here simply
-  ## yields `nil`, and `evaluateSplice` falls back to the live-scope evaluation
-  ## at analysis time, which resolves `x` to its Symbol wrapper.
+  ## `#|expr|#` is captured as `tostring(expr)` -- it is a computed *identifier*
+  ## splice, so its value is a string, not an arbitrary value.  The capture is
+  ## wrapped in `pcall(...)` returning `nil` on error, the same safety net that
+  ## lets a `#[expr]#` splice referencing an undefined `##`-local yield `nil`
+  ## and fall back to live-scope evaluation at analysis time.
   if node == nil:
     return
   if node.kind == nkPreprocessExpr:
     let idx = splices.len
     splices.add node
     parts.add "__nelua_splice" & $idx & " = (function() local __ok, __r = pcall(function() return (" & node.str & ") end); if __ok then return __r else return nil end end)()"
+    return
+  if node.kind == nkPreprocessName:
+    let idx = splices.len
+    splices.add node
+    parts.add "__nelua_splice" & $idx & " = (function() local __ok, __r = pcall(function() return tostring(" & node.str & ") end); if __ok then return __r else return nil end end)()"
     return
   if node.kind == nkBlock:
     return
@@ -2097,7 +2115,10 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
           gBlockSplices.add n
           chunkParts.add "__nelua_splice" & $idx & " = (function() local __ok, __r = pcall(function() return (" & n.str & ") end); if __ok then return __r else return nil end end)()"
       elif n.kind == nkPreprocessName:
-        ctx.diags.add "#|name|# preprocessor replacement is unsupported in this build; node consumed"
+        ## A `#|expr|#` standing alone as a block child is rare (the splice is
+        ## normally nested in an IdDecl / DotIndex / function name); leave it in
+        ## the tree so `replaceSplices` resolves it at analysis time.
+        rewritten.add n
       else:
         if frameStack.len > 0:
           frameStack[^1].parts.add LuaFramePart(isBody: true, nodes: @[n])
@@ -2167,8 +2188,12 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
     # enclosing nelua scope, so bare scope symbols resolved to `nil`.
     return root
   of nkPreprocessName:
-    ctx.diags.add "#|name|# preprocessor replacement is unsupported in this build; node consumed"
-    return newNil()
+    ## Leave the node in place.  `collectSpliceParts` (called by the enclosing
+    ## block) already captured it into the block's `##` chunk as
+    ## `tostring(expr)`, storing the result in `gSpliceResults`; `replaceSplices`
+    ## resolves it at analysis time and sets the parent's `.str`.  Consuming it
+    ## here (the old `newNil()`) left the parent holding the raw expr text.
+    return root
   of nkFuncDef:
     ## Push a scope carrying the function's params so `##` blocks in the body
     ## can resolve them (e.g. `## if v.type.is_pointer then` for `v: auto`).

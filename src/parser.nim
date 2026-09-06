@@ -549,8 +549,17 @@ proc parsePostfix*(p: var Parser): Node =
   var base = p.parsePrimary()
   while true:
     if p.match(tkDot):
-      let name = p.advance().value
-      base = newDotIndex(name, base)
+      let ppField = p.parsePreprocessName()
+      if ppField != nil:
+        ## Computed field access `v.#|expr|#`: the field name is not known at
+        ## parse time, so carry the `nkPreprocessName` as `children[1]` (the
+        ## base stays `children[0]`) with an empty `.str`; `replaceSplices`
+        ## resolves the splice and sets `.str` before analysis reads it.
+        base = Node(kind: nkDotIndex, str: "", children: @[base, ppField])
+        base.isIndex = true
+      else:
+        let name = p.advance().value
+        base = newDotIndex(name, base)
     elif p.match(tkColon):
       let name = p.advance().value
       if p.check(tkLParen):

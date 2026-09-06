@@ -1911,19 +1911,48 @@ proc analyzeBlock(ctx: var AnalyzerContext, node: Node) =
 
 proc replaceSplices(ctx: var AnalyzerContext, node: Node,
                     stopAtNestedBlock: bool): Node =
-  ## Walk `node`; evaluate every `nkPreprocessExpr` in its subtree in place,
-  ## returning the (possibly replaced) node.  When `stopAtNestedBlock` is true,
-  ## do NOT descend into a nested `nkBlock` -- it gets its own pre-pass when it
-  ## is analyzed, with the correct scope.  FuncDefs are recursed into (their
-  ## name/args/returns/annotations may carry splices, resolved against the
-  ## enclosing scope) but their body is an nkBlock and so is stopped here too.
+  ## Walk `node`; evaluate every `nkPreprocessExpr` (`#[expr]#`) and every
+  ## `nkPreprocessName` (`#|expr|#`) in its subtree in place, returning the
+  ## (possibly replaced) node.  When `stopAtNestedBlock` is true, do NOT descend
+  ## into a nested `nkBlock` -- it gets its own pre-pass when it is analyzed, with
+  ## the correct scope.  FuncDefs are recursed into (their name/args/returns/
+  ## annotations may carry splices, resolved against the enclosing scope) but
+  ## their body is an nkBlock and so is stopped here too.
   if node == nil: return nil
   if node.kind == nkPreprocessExpr:
     let (r, errMsg) = evaluateSplice(ctx.scope, node, ctx.path, ctx.source)
     if errMsg.len > 0: ctx.diags.add errMsg
     return r
+  if node.kind == nkPreprocessName:
+    let name = evaluatePreprocessName(ctx.scope, node, ctx.path, ctx.source)
+    if name.len == 0:
+      ctx.diags.add ctx.path & ": error: could not resolve #|expr|# splice"
+    return newId(name)
   if stopAtNestedBlock and node.kind == nkBlock:
     return node
+  # Name-carrying parents: a `#|expr|#` splice standing as a name/field must set
+  # this node's `.str` to the resolved string.  The analyzer reads identifiers
+  # from `.str` (analyzeExpr:nkId, analyzeVarDecl, analyzeFuncDef,
+  # analyzeDotIndex), and the raw splice text (e.g. `'v'..k`) is not a valid
+  # identifier -- leaving `.str` as-is would bind the wrong symbol.  These cases
+  # run before the generic recursion so the child is replaced first.
+  if node.children.len > 0 and node.children[0].kind == nkPreprocessName:
+    let name = evaluatePreprocessName(ctx.scope, node.children[0], ctx.path,
+                                      ctx.source)
+    if name.len == 0:
+      ctx.diags.add ctx.path & ": error: could not resolve #|expr|# splice"
+    else:
+      node.str = name
+      node.children[0] = newId(name)
+  elif node.kind == nkDotIndex and node.children.len > 1 and
+        node.children[1].kind == nkPreprocessName:
+    let name = evaluatePreprocessName(ctx.scope, node.children[1], ctx.path,
+                                      ctx.source)
+    if name.len == 0:
+      ctx.diags.add ctx.path & ": error: could not resolve #|expr|# splice"
+    else:
+      node.str = name
+      node.children[1] = newId(name)
   for i in 0 ..< node.children.len:
     let r = replaceSplices(ctx, node.children[i], stopAtNestedBlock = true)
     if r != node.children[i]: node.children[i] = r
