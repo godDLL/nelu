@@ -1,6 +1,7 @@
 # Splice blocks must see nelua-scope locals
 
-**Status:** SCOPE DONE (2026-09-06) -- verification blocked on `#|name|#` (see below).
+**Status:** PARTIAL -- builtin-typed locals work; **user-typed symbols do not**.
+Re-measured 2026-09-06 (see below).  Verification still not met.
 
 ## What was implemented
 
@@ -35,6 +36,50 @@ part now, but dies at the `#|name|#` computed-identifier splice (see
 hash, math, utf8, sequence, coroutine, string (+ strpack has none).  This is a
 separate feature from splice-env-locals; the ticket's *scope* is done, its
 *verification* is not, and is not claimed to be.
+
+## The real blocker (measured 2026-09-06) -- user-typed symbols
+
+The ticket's own example (`v: cdouble`, a **builtin** type) works.  What does not
+is a symbol whose type is a **user** type.  Minimal divergence, both compilers
+run, oracle wins:
+
+```nelua
+local R = @record{ size: integer }
+local function f(a: R)
+## local t = a.type
+return #[t.size]#
+end
+print(f({ size = 7 }))     -- oracle: 8 (exit 0); nelu: "attempt to index a nil value (global 'a')"
+```
+
+Nelu fails at `global 'a'`: the function param `a` is never injected into the
+`##` chunk.  Root cause, precise:
+
+1. `preprocessor.nim:2206-2210` adds the param to `gPreprocessScope.symbols` with
+   `typ: declaredTypeOf(child)`.
+2. `declaredTypeOf` (line 1148) -> `resolveTypeKey` (line 1139) only knows
+   **builtins and primitive types** (`BuiltinTypes`/`PrimitiveTypes`).  A user type
+   such as `R` resolves to `nil`.
+3. `preprocessor.nim:2037-2040` gates the injection on `sym.typ != nil`, so a
+   user-typed param is **skipped entirely** -- not even the symbol wrapper exists.
+4. Even if the guard were removed, `cSymIndex` `of "type"` (line 1205) would return
+   `pushTypeWrapper(nil)`, so `a.type` would still be nil.  The Type object for `R`
+   is created by the **analyzer**, which has not run yet.
+
+**Why it is architectural, not a one-line fix.**  The oracle resolves `##`-block
+identifiers via a **live analyzer scope lookup** -- `ppcontext.lua:48-49`:
+`return context.scope.symbols[key]`, where `context.scope` is the scope at the
+point the `##` block runs, because the oracle's preprocessor runs **interleaved
+with analysis**.  Nelu runs preprocessing **once, before analysis**, so it cannot
+see resolved user types; `gPreprocessScope` is a substitute that only knows
+builtins.  Closing this gap means either (a) interleaving preprocessing with
+analysis like the oracle, or (b) teaching `gPreprocessScope` to track user type
+bindings and their resolved Type objects -- both are substantial.
+
+Also measured: `## local x = a + 1` for `a: integer` fails on **both** compilers
+("attempt to perform arithmetic on a table value (global 'a')") -- a `##` line sees
+a symbol as a *wrapper*, not a value, so arithmetic on it is unsupported in both.
+This is NOT a divergence; do not chase it.
 
 ## What fails
 
