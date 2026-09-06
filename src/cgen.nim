@@ -1880,6 +1880,18 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool,
     for iddecl in iddecls:
       let a = s.ctx.attrOf.getOrDefault(iddecl)
       let vtype = if a != nil: a.typ else: nil
+      # A `global foo` declaration that is followed by a `function foo()`
+      # definition: the function symbol overwrites the var symbol in the
+      # scope (register stores by name), so by codegen time lookup(foo) is
+      # the skFunc symbol carrying the function type.  The var decl's own
+      # attr still holds the default nilptr type, so without this skip the
+      # globals pass emits `static nilptr foo;` AND the function definition
+      # emits `foo()` -- a duplicate-symbol C error that breaks plain
+      # `global` functions (not just auto ones).  Skip the variable here;
+      # the function definition emits the real symbol.
+      let fsym = s.ctx.lookup(iddecl.str)
+      if fsym != nil and fsym.typ != nil and fsym.typ.kind == tkFunction:
+        continue
       if vtype != nil:
         s.collectType(vtype)
       if a != nil and a.isTypeBinding:
