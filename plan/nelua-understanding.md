@@ -783,9 +783,20 @@ FIXED were false alarms or already repaired, and are kept for the record.
   this document describes. Compiles and runs cleanly under the oracle
   `/usr/bin/nelua` (exit 0, 108 lines of output); each section prints a banner
   and its results.  It is the executable companion to this doc: every section
-  here has a corresponding block there.  Under Nelu it currently fails at the
-  `goto`/`::label::` block (see `plan/INBOX/our-improvements.md`), so it is a
-  growing-edge probe, not yet a parity gate.
+  here has a corresponding block there.  Under Nelu it is a growing-edge probe,
+  not yet a parity gate.  **Mining result (2026-09-06):** two independent
+  blockers, both recorded.
+  1. The file's own body hits a `(do ... in expr end)` do-expression at line
+     176; nelu rejects it at parse time ("unexpected keyword 'do'") while the
+     oracle yields the `in` value.  See `plan/INBOX/do-expression.md`.
+  2. The `require` cascade (span/string/math/memory/iterators/allocators.*​/arg)
+     fails because span/string/memory/iterators/arg use `##` preprocessor
+     blocks that reference `concept`, `##`-locals (`k`, `a`), and generic
+     metasymbols (`self`, `T`) nelu's preprocessor cannot see.  `math.nelua`
+     alone compiles.  See `plan/INBOX/preprocess-name-splice.md` and
+     `plan/INBOX/lib-reachability-per-file.md`.  The `goto`/`::label::` block
+     itself is fine (verified in isolation); the old note to that effect was
+     stale.
 - `examples/overview.nelua` -- upstream's canonical "everything" example.
   The single best reference for the language.
 - `examples/record_inheretance.nelua` -- compile-time inheritance via the
