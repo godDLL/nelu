@@ -1,0 +1,474 @@
+--[[
+everything.nelua
+
+A single program exercising as much of the Nelua language as possible.
+Compiled and verified with /usr/bin/nelua (Nelua 0.2.0-dev).
+
+It does not do anything useful on purpose: it is a tour of the language,
+not an application. Each section prints a banner and its results to stdout.
+--]]
+
+require 'span'
+require 'string'
+require 'math'
+require 'memory'
+require 'iterators'
+require 'allocators.default'
+require 'allocators.general'
+require 'arg'
+
+print("=== Nelua everything example ===")
+print("VERSION: " .. _VERSION)
+print("")
+
+-- 1. Comments
+-- line comment
+--[[ block comment ]]
+--[[ nested long comment ]]
+print("1. comments: ok")
+
+-- 2. Literals
+local dec: integer = 42
+local hex: integer = 0xFF
+local bin: integer = 0b1010
+local ch: byte = 'A'_u8
+local sci: number = 1.5e3
+local hf: number = 0x1.8p1
+local u8max: uint8 = 255_u8
+local i64neg: int64 = -123_isize
+print("2. literals: " .. tostring(dec) .. " " .. tostring(hex) .. " " .. tostring(bin) .. " " .. tostring(ch) .. " " .. tostring(sci) .. " " .. tostring(hf) .. " " .. tostring(u8max) .. " " .. tostring(i64neg))
+
+local esc = "tab\there\nnewline\r\n"
+local longstr = [[
+a long string
+with several lines]]
+print("2b. strings: esc=" .. tostring(#esc) .. " long=" .. tostring(#longstr))
+
+print("2c. bool/nil/nilptr: " .. tostring(true) .. " " .. tostring(false) .. " " .. tostring(nil) .. " " .. tostring(nilptr))
+
+-- 3. Types and sizeof
+print("3. sizeof: int=" .. tostring(#integer) .. " num=" .. tostring(#number) .. " str=" .. tostring(#string) .. " bool=" .. tostring(#boolean) .. " i64=" .. tostring(#int64) .. " u8=" .. tostring(#uint8))
+
+-- 4. Type forms
+do print("4. type forms")
+  local Point = @record{ x: number, y: number }
+  local p: Point = { x = 1.0, y = 2.0 }
+  local p2 = (@Point){ 3.0, 4.0 }
+  local p3: Point; p3.x = 5.0; p3.y = 6.0
+  print("  record: " .. tostring(p.x) .. "," .. tostring(p.y) .. " | " .. tostring(p2.x) .. "," .. tostring(p2.y) .. " | " .. tostring(p3.x) .. "," .. tostring(p3.y))
+
+  local Color = @enum{ Red = 0, Green, Blue }
+  print("  enum: " .. tostring(Color.Green) .. " " .. tostring(Color.Blue))
+
+  local IntOrFloat = @union{ i: int64, f: float64 }
+  local u: IntOrFloat; u.f = 3.14
+  print("  union: " .. tostring(u.f))
+
+  local arr: [4]integer = { 1, 2, 3, 4 }
+  print("  array: " .. tostring(arr[0]) .. " " .. tostring(arr[3]) .. " #=" .. tostring(#arr))
+
+  local pi: *integer = &arr[0]
+  print("  ptr: " .. tostring($pi))
+  $pi = 99
+  print("  ptr-write: " .. tostring(arr[0]))
+
+  local sv: span(integer) = &arr
+  print("  span: " .. tostring(#sv) .. " " .. tostring(sv[0]))
+
+  print("  ftype: ok")
+end
+
+-- 5. Variables
+do print("5. variables")
+  local inferred = 10
+  local typed: integer = 20
+  local N <comptime> = 4
+  local arr2: [N]integer = { 1, 2, 3, 4 }
+  local sum <const> = 1 + 2
+  local a, b = 10, 20
+  b, a = a, b
+  print("  auto/comptime/const/swap: " .. tostring(inferred) .. " " .. tostring(typed) .. " " .. tostring(N) .. " " .. tostring(sum) .. " swap=" .. tostring(a) .. "," .. tostring(b))
+
+  local x <noinit> = 5
+  print("  noinit: " .. tostring(x))
+
+  local y <volatile> = 7
+  print("  volatile: " .. tostring(y))
+end
+
+-- 6. Operators
+do print("6. operators")
+  print("  floor: 17//5=" .. tostring(17 // 5) .. " -17//5=" .. tostring(-17 // 5))
+  print("  trunc: 17///5=" .. tostring(17 /// 5) .. " -17///5=" .. tostring(-17 /// 5))
+  print("  mod: 17%5=" .. tostring(17 % 5) .. " -17%5=" .. tostring(-17 % 5))
+  print("  tmod: 17%%%5=" .. tostring(17 %%% 5) .. " -17%%%5=" .. tostring(-17 %%% 5))
+  print("  pow: 2^10=" .. tostring(2 ^ 10) .. " 2.0^3=" .. tostring(2.0 ^ 3))
+  print("  shift: 1<<8=" .. tostring(1 << 8) .. " 256>>4=" .. tostring(256 >> 4) .. " 256>>>4=" .. tostring(256 >>> 4))
+  print("  bit: 0xFF&0x0F=" .. tostring(0xFF & 0x0F) .. " 0xF0|0x0F=" .. tostring(0xF0 | 0x0F) .. " 0xFF~0x0F=" .. tostring(0xFF ~ 0x0F))
+  print("  logic: " .. tostring(5 > 3 and 2 < 4 or false) .. " " .. tostring(not true) .. " " .. tostring(1 == 1))
+  print("  concat: " .. "a" .. "b" .. "c")
+  print("  len: #" .. "hello" .. "=" .. tostring(#"hello"))
+end
+
+-- 7. Control flow
+do print("7. control flow")
+  local total = 0
+  for i = 1, 10 do total = total + i end
+  print("  for-incl: " .. tostring(total))
+
+  total = 0
+  for i = 1, <10 do total = total + i end
+  print("  for-excl: " .. tostring(total))
+
+  total = 0
+  for i = 1, 10, 3 do total = total + i end
+  print("  for-step: " .. tostring(total))
+
+  total = 0
+  local wn = 0
+  while wn < 5 do wn = wn + 1; total = total + wn end
+  print("  while: " .. tostring(total))
+
+  total = 0
+  repeat total = total + wn; wn = wn - 1 until wn == 0
+  print("  repeat: " .. tostring(total))
+
+  local grade = 89
+  local g = "C"
+  switch grade
+    case 90, 100 then g = "A"
+    case 80, 89 then g = "B"
+    else g = "C"
+  end
+  print("  switch: " .. g)
+
+  local items: [4]string = { "a", "b", "c", "d" }
+  for i, v in ipairs(items) do
+    print("  for-in: " .. tostring(i) .. " " .. v)
+  end
+
+  local cnt = 0
+  for i = 1, 10 do
+    if i <= 5 then continue end
+    cnt = cnt + 1
+  end
+  print("  continue: " .. tostring(cnt))
+
+  local found = 0
+  for i = 1, 10 do
+    if i > 5 then break end
+    found = found + i
+  end
+  print("  break: " .. tostring(found))
+
+  local haserr = true
+  if haserr then goto getout end
+  print("  unreachable")
+  ::getout::
+  print("  goto: ok")
+
+  do
+    defer print("  defer: world") end
+    print("  defer: hello")
+  end
+
+  local i = 2
+  local s = (do
+    if i == 1 then
+      in "one"
+    elseif i == 2 then
+      in "two"
+    else
+      in "other"
+    end
+  end)
+  print("  do-expr: " .. s)
+end
+
+-- 8. Functions
+do print("8. functions")
+  local function add(a: integer, b: integer): integer
+    return a + b
+  end
+  print("  def: " .. tostring(add(3, 4)))
+
+  local function fact(n: integer): integer
+    if n <= 1 then return 1 end
+    return n * fact(n - 1)
+  end
+  print("  recursion: " .. tostring(fact(5)))
+
+  local function first(x: integer, y: integer): integer
+    return x
+  end
+  local function pair(): (integer, integer)
+    return 7, 9
+  end
+  print("  multi-return: " .. tostring(first(pair())))
+
+  local function add2(a: integer, b: integer): integer
+    return a + b
+  end
+  local function fwd(...: varargs): integer
+    return add2(...)
+  end
+  print("  varargs: " .. tostring(fwd(3, 4)))
+
+  local function vcount(...: varargs): integer
+    return select('#', ...)
+  end
+  print("  varargs-count: " .. tostring(vcount(1, 2, 3, 4)))
+
+  local function fwd2(a: integer, b: integer): integer
+    return fwd(a, b)
+  end
+  print("  varargs-fwd: " .. tostring(fwd2(10, 20)))
+
+  local function poly(a: auto, b: auto)
+    return a + b
+  end
+  print("  poly-int: " .. tostring(poly(1, 2)))
+  print("  poly-num: " .. tostring(poly(1.5, 2.5)))
+
+  local function make_doubler(): function(integer): integer
+    return function(x: integer): integer
+      return x * 2
+    end
+  end
+  local dbl = make_doubler()
+  print("  nested-fn: " .. tostring(dbl(21)))
+
+  local function twice(f: function(integer): integer, x: integer): integer
+    return f(f(x))
+  end
+  print("  higher-order: " .. tostring(twice(dbl, 1)))
+end
+
+-- 9. Records, methods and metamethods
+do print("9. records / methods / metamethods")
+  local Vec2 = @record{ x: number, y: number }
+
+  function Vec2.__add(a: Vec2, b: Vec2)
+    return (@Vec2){ a.x + b.x, a.y + b.y }
+  end
+
+  function Vec2:__len()
+    return math.sqrt(self.x * self.x + self.y * self.y)
+  end
+
+  function Vec2:__tostring()
+    return "(" .. tostring(self.x) .. ", " .. tostring(self.y) .. ")"
+  end
+
+  function Vec2:__unm()
+    return (@Vec2){ -self.x, -self.y }
+  end
+
+  local a: Vec2 = { 1, 2 }
+  local b: Vec2 = { 3, 4 }
+  local c = a + b
+  print("  __add: " .. tostring(c.x) .. " " .. tostring(c.y))
+  print("  __len: " .. tostring(#c))
+  print("  __tostring: " .. tostring(c))
+  print("  __unm: " .. tostring((-c).x))
+
+  local Counter = @record{ n: integer }
+  function Counter:__call(x: integer): integer
+    self.n = self.n + x
+    return self.n
+  end
+  local ctr: Counter = { n = 0 }
+  print("  __call: " .. tostring(ctr(5)) .. " " .. tostring(ctr(3)))
+
+  local Box = @record{ value: integer }
+  function Box.__add(a: Box, b: Box): Box
+    return (@Box){ a.value + b.value }
+  end
+  local b1: Box = { value = 10 }
+  local b2: Box = { value = 20 }
+  print("  __add-box: " .. tostring((b1 + b2).value))
+
+  local Pair = @record{ a: integer, b: integer }
+  function Pair:__concat(other: Pair)
+    return (@Pair){ self.a + other.a, self.b + other.b }
+  end
+  local p1: Pair = { 1, 2 }
+  local p2: Pair = { 3, 4 }
+  print("  __concat: " .. tostring((p1 .. p2).a))
+
+  local Free = @record{ tag: integer, name: string }
+  function Free:__close()
+    print("  __close: freed tag=" .. tostring(self.tag))
+  end
+  print("  __close: scope-start")
+  do
+    local r: Free <close> = { tag = 2, name = "x" }
+    print("  __close: in-scope tag=" .. tostring(r.tag))
+  end
+  print("  __close: scope-end")
+end
+
+-- 10. Concepts, overload, facultative, generics
+do print("10. concepts / overload / facultative / generics")
+  local scalar_concept = #[concept(function(attr)
+    if attr.type.is_scalar then return integer end
+    return false, "not scalar"
+  end)]#
+
+  local function double(x: scalar_concept): integer
+    return x + x
+  end
+  print("  concept: " .. tostring(double(21)))
+
+  local function maybe(x: overload(integer, string)): integer
+    ## if x.type.is_integral then
+      return x * 2
+    ## else
+      return #(x)
+    ## end
+  end
+  print("  overload-int: " .. tostring(maybe(5)))
+  print("  overload-str: " .. tostring(maybe("hello")))
+
+  local function first_or_nil(x: facultative(integer)): integer
+    ## if x.type.is_niltype then
+      return 0
+    ## else
+      return x
+    ## end
+  end
+  print("  facultative: " .. tostring(first_or_nil(7)))
+
+  local Grid = @sequence(sequence(integer))
+  local grid: Grid = { { 1, 2 }, { 3,4 } }
+  print("  generic-seq: " .. tostring(grid[1][2]) .. " " .. tostring(grid[2][1]))
+end
+
+-- 11. Preprocessor
+do print("11. preprocessor")
+  local x = #[1 + 2]#
+  print("  splice-expr: " .. tostring(x))
+
+  local sl = "len"
+  local ln = #[#"hello"]#
+  print("  splice-len: " .. tostring(ln))
+
+  ## static_assert(2 + 2 == 4, "arithmetic holds")
+  print("  static_assert: ok")
+
+  ## cdefine 'NELEVERYTHING_MAGIC 42'
+  ## cemitdefn 'int neverything_magic(void) { return NELEVERYTHING_MAGIC; }'
+  local function neverything_magic(): cint <cimport"neverything_magic"> end
+  print("  cemit: " .. tostring(neverything_magic()))
+end
+
+-- name injection (#|expr|#) must run in top scope because `global` does.
+## local prefix = "splice"
+global #|prefix .. "_value"|#: integer = 42
+print("11b. splice-name: " .. tostring(splice_value))
+
+-- 12. C interop
+do print("12. C interop")
+  require 'C.stdio'
+  require 'C.stdlib'
+  require 'C.math'
+  require 'C.string'
+
+  C.printf("  C.printf: %d %s\n", 42, "c-interop")
+  C.putchar(0x58)
+  C.putchar(0x61)
+  C.putchar(0x0A)
+
+  local function c_abs(x: cint): cint <cimport"abs", cinclude"<stdlib.h>"> end
+  local function c_sqrt(x: cdouble): cdouble <cimport"sqrt", cinclude"<math.h>"> end
+  local function c_strlen(s: cstring): csize <cimport"strlen", cinclude"<string.h>"> end
+  print("  cimport: abs=" .. tostring(c_abs(-9)) .. " sqrt=" .. tostring(c_sqrt(16.0)) .. " strlen=" .. tostring(c_strlen("hello")))
+end
+
+-- 13. Standard library
+do print("13. standard library")
+  require 'io'
+  require 'os'
+  require 'traits'
+  require 'hash'
+  require 'vector'
+  require 'sequence'
+  require 'list'
+  require 'hashmap'
+  require 'stringbuilder'
+  require 'coroutine'
+  require 'utf8'
+
+  print("  arg: #=" .. tostring(#arg) .. " name=" .. tostring(arg[0]))
+
+  print("  math: pi=" .. tostring(math.pi) .. " sin0=" .. tostring(math.sin(0)) .. " rand=" .. tostring(math.random()))
+  math.randomseed(12345)
+  print("  math: randint=" .. tostring(math.random(1, 100)))
+
+  print("  string: upper=" .. string.upper("abc") .. " fmt=" .. string.format("%d-%s", 1, "x"))
+
+  local fh = io.open("everything_tmp.txt", "w")
+  if fh ~= nilptr then
+    fh:write("hello from Nelua\n")
+    fh:close()
+  end
+  local rh = io.open("everything_tmp.txt", "r")
+  if rh ~= nilptr then
+    local content = rh:read("*a")
+    rh:close()
+    print("  io: " .. content)
+  end
+  os.remove("everything_tmp.txt")
+
+  print("  os: date=" .. os.date("%Y"))
+
+  local data: [5]byte = { 1, 2, 3, 4, 5 }
+  local dest: [5]byte = {}
+  memory.copy(&dest[0], &data[0], 5)
+  print("  memory: " .. tostring(dest[0]) .. " " .. tostring(dest[4]))
+
+  print("  traits: type=" .. tostring(type(42)) .. " id=" .. tostring(traits.typeidof(42)))
+
+  local vec: vector(integer) = { 1, 2, 3 }
+  vec:push(4)
+  print("  vector: #=" .. tostring(#vec) .. " last=" .. tostring(vec[#vec - 1]))
+
+  local seq: sequence(integer) = {}
+  seq:push(10)
+  seq:push(20)
+  print("  sequence: #=" .. tostring(#seq) .. " last=" .. tostring(seq[#seq]))
+
+  local lst: list(integer) = {}
+  lst:pushback(100)
+  print("  list: #=" .. tostring(#lst))
+
+  local map: hashmap(string, integer) = {}
+  map["one"] = 1
+  map["two"] = 2
+  print("  hashmap: one=" .. tostring(map["one"]))
+
+  local sb: stringbuilder
+  sb:write("a")
+  sb:write("b")
+  sb:write("c")
+  print("  stringbuilder: " .. sb:view())
+
+  local co = coroutine.create(function(n: integer)
+    for i = 1, n do coroutine.yield(i) end
+  end)
+  local yields = 0
+  while coroutine.status(co) ~= 'dead' do
+    local ok = coroutine.resume(co, 5)
+    if ok then yields = yields + 1 end
+  end
+  print("  coroutine: " .. tostring(yields) .. " yields")
+
+  print("  utf8: len=" .. tostring(utf8.len("héllo")) .. " cp=" .. tostring(utf8.codepoint("héllo", 2)))
+
+  local dv: span(byte) = &data
+  print("  hash: " .. tostring(hash.short(dv)))
+
+  print("  gc: count=" .. tostring(collectgarbage("count")))
+end
+
+print("=== done ===")

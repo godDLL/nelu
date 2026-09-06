@@ -16,6 +16,12 @@ time: literals, types, variables, expressions, control flow, functions,
 composite types, metamethods, macros/preprocessor, C interop, the standard
 library, then known gaps.
 
+Sections 1-17 are the oracle-side description, verified by running
+`plan/everything.nelua` (now `exam/everything.nelua`) against `/usr/bin/nelua`
+and by spot-checking the oracle's own source in `lualib/nelua/`.  Where an
+earlier draft of this doc was wrong, the correction is marked
+"Correction from this run."
+
 ---
 
 ## 1. What Nelua is
@@ -199,6 +205,9 @@ function. `global function f()` declares a global function. Globals are
 heap-allocated (they survive closures). `global Globals = @record{}` makes a
 namespace record; `global Globals.AppName: string` adds a field to it.
 
+**Correction from this run:** `global` declarations are only valid at the
+true top level -- not inside `do` blocks.
+
 ### 5.4 Scoping
 
 `do ... end` opens a new scope; locals declared inside are invisible
@@ -216,6 +225,11 @@ locals there live on the heap and are captured by closures.
 
 `<noinit>` leaves the variable uninitialized (must assign before use).
 `<volatile>` marks the variable C-volatile.
+
+`<close>` marks a value for automatic `__close` invocation at scope exit.
+A record type with a `__close` metamethod is only called on a variable
+declared with `<close>`; without it, `__close` is not emitted for that
+local (verified).
 
 ---
 
@@ -266,9 +280,12 @@ integer<->pointer, and narrowing are explicit only. An explicit cast is
 `if cond then ... elseif cond then ... else ... end`. Chained comparisons
 are not a single construct; `a < b and b < c` is the idiom.
 
-`switch expr case v1, v2 then ... case v3 then ... else ... end`. Cases
-fall through by default (no break needed). `switch` is the primary
-multi-way dispatch in the oracle.
+`switch expr case v1, v2 then ... case v3 then ... else ... end`. A case's
+value list is a set of *discrete* values (`case 80, 89` matches 80 or 89,
+NOT a range); use repeated values or separate cases for ranges. Cases do not
+fall through to the next case on match (verified: `switch 1 case 1,2 then
+print "one" case 3 then print "three" end` prints only `one`). `switch` is a
+statement, not an expression.
 
 `cond` is a keyword and is parsed but largely unimplemented downstream.
 
@@ -289,7 +306,11 @@ multi-way dispatch in the oracle.
 
 ### 7.3 Other statements
 
-- `do ... end` scope block. A `do` expression is `(do ... return x end)`.
+- `do ... end` scope block. A `do` *expression* is `(do ... in value end)` — it
+  yields a value via an `in` statement, NOT a `return`. `return` inside a
+  do-expression is rejected ("a `in` statement is missing inside do
+  expression block"); the block must syntactically end with an `in`. Verified:
+  `(do if x then in "a" else in "b" end)` works.
 - `goto label` / `::label::` -- arbitrary control flow; labels are
   scope-local.
 - `defer ... end` -- the block runs when the enclosing scope exits, in
@@ -326,8 +347,11 @@ Colon-methods inject an explicit `self: *Record` parameter.
   values used in a single-value position takes the first value.
 - Anonymous functions: `function(x: integer): integer return 2*x end` as an
   expression, passed as an argument.
-- Nested functions close over enclosing locals (closures). Top-scope
-  closures capture heap-allocated top-level locals.
+- Nested functions close over enclosing locals (closures). **Correction from
+  this run:** the oracle's C generator does NOT support closures — accessing
+  an enclosing-scope local from a nested function is the error
+  "attempt to access upvalue '...', but closures are not supported". A nested
+  function may use only its own parameters and globals. Verified.
 - Varargs: `...: varargs` declares a varargs parameter. `select(i, ...)`
   picks the i-th argument (1-indexed); `select('#', ...)` is the count.
   `#[select(i, ...)]#` evaluates a splice at compile time.
@@ -448,16 +472,23 @@ The preprocessor runs at compile time and transforms the AST using Lua.
   resulting value as an AST node at this position. `#[1 + 2]#` injects the
   number 3. `#[aster.Number{1}]#` injects an AST node directly.
 - `#|expr|#` -- evaluate; inject the string result as an identifier name.
-  `#|'my' .. 'var'|#` produces the name `myvar`.
+  Valid where an identifier is syntactically required: `global #|name|#.field`,
+  `goto #|name|#`. **Correction:** `::#|name|#::` labels only work inside
+  preprocessor-emitted text (the parser's `Label` rule is `::` @name `::` and
+  does not accept a splice); a bare `::#|name|#::` in source is a syntax
+  error. A computed name works: `## local p = "x"` then
+  `global #|p .. "_v"|#: integer = 42`.
 - `## code` (short form, to end of line) and `##[[ ... ]]` (long form) --
   emit the content verbatim as Lua code in the generated preprocessor chunk.
 
 ### 12.2 Preprocessor functions and directives
 
 Inside `##` blocks: `static_assert(cond, msg...)`, `static_error(msg...)`,
-`cinclude '<stdio.h>'`, `cemitdecl '...'`, `cemitdef '...'`, `cemit '...'`,
-`cdefine 'NAME'`, `cflags '-O2'`, `ldflags '...'`, `linklib 'm'`,
-`cfile 'foo.c'`, `pragmapush`, `pragmapop`. Also `inject_astnode(node)`,
+`cinclude '<stdio.h>'`, `cemitdecl '...'`, `cemit '...'`, `cemitdefn '...'`
+(NOT `cemitdef`), `cdefine 'NAME VALUE'` (the text *after* `#define`, so
+`cdefine 'NELEVERYTHING_MAGIC 42'` emits `#define NELEVERYTHING_MAGIC 42`),
+`cflags '-O2'`, `ldflags '...'`, `linklib 'm'`, `cfile 'foo.c'`,
+`pragmapush`, `pragmapop`. Also `inject_astnode(node)`,
 `inject_statement(node)`, `hygienize(func)`, `generic(func)`,
 `concept(func)`, `generalize(func)`, `expr_macro(func)`,
 `after_analyze(func)`, `after_inference(func)`, `require 'mod'`.
@@ -503,7 +534,7 @@ Records can be imported too: `local FILE: type <cimport,cinclude'<stdio.h>',forw
 ### 13.2 Emitting C
 
 `## cemitdecl '...'` emits into the declarations section; `## cemit '...'`
-emits inside the current function; `## cemitdef '...'` emits a top-level
+emits inside the current function; `## cemitdefn '...'` emits a top-level
 definition. `## cdefine 'X'` adds a C preprocessor macro. `## cflags '...'`
 and `## ldflags '...'` add compiler/linker flags. `## linklib 'm'` links a
 library. `## cfile 'foo.c'` compiles an extra C file.
@@ -531,6 +562,11 @@ the `C` namespace record.
 `<aligned N>`, `<packed>`, `<noalias>`, `<alias>`, `<noundce>`, `<nomangle>`,
 `<mangle>`, `<noprivate>`, `<private>`, `<nogc>` (pragma).
 
+`<close>` (variable annotation) marks a value for automatic `__close`
+invocation at scope exit. A record type with a `__close` metamethod is only
+called on a variable declared with `<close>`; without it, `__close` is not
+emitted for that local (verified).
+
 `<noreturn>` marks a function that never returns (e.g. `error`, `panic`,
 `os.exit`); the analyzer then does not require a return on the fall-through
 path.
@@ -541,11 +577,17 @@ path.
 
 `print(...)`, `error(msg)`, `panic(msg)`, `assert(cond, msg?)`,
 `check(cond, msg?)`, `warn(...)`, `likely(x)`, `unlikely(x)`, `nilptr`,
-`require(modname)`, `select(i, ...)`, `tostring(v)`, `tonumber(v)`,
+`require(modname)`, `tostring(v)`, `tonumber(v)`,
 `type(v)`, `pcall(f, ...)`, `collectgarbage(arg)`, `next(container, key?)`,
 `pairs(container)`, `ipairs(container)`, `len(v)`, `unpack(v)`,
 `setmetatable(t, mt)`, `getmetatable(v)`, `rawget(t, k)`, `rawset(t, k, v)`,
 `rawlen(v)`, `rawequal(a, b)`, `_VERSION`.
+
+`select` is **not** a builtin; it is provided by `require 'iterators'`
+(`select(index <comptime>, ...: varargs)`). Note `select('#', ...)` (the
+count) works, but `select(i, ...)` value-extraction over *untyped* varargs
+hits a bug in the iterators module ("bad argument #1 to 'abs'") in this
+oracle build, so it is avoided in the example.
 
 `print` converts each argument via `__tostring` and separates with tabs,
 ending with a newline. `assert` returns its first argument or terminates
@@ -584,9 +626,11 @@ Sub-modules use dotted names: `require 'allocators.default'`, `require 'C.stdio'
   `os.timedesc{year,month,day,hour,min,sec,isdst}` is the time spec.
 - **`memory`**: `copy/move/set/zero/compare/equals/scan/find` on raw pointers;
   `spancopy/spanmove/spanset/spanzero/spancompare/spanequals/spanfind` on
-  spans. All take a pointer and a byte count.
-- **`traits`**: `type(v) -> string`, `traits.typeidof(v) -> uint32`,
-  `traits.typeinfoof(v) -> {id,name,nickname,codename}`.
+  spans. `memory.copy(dest, src, n)` takes dest first (counter-intuitive;
+  mirrors C `memcpy`).
+- **`traits`**: `traits.typeidof(v) -> uint32`,
+  `traits.typeinfoof(v) -> {id,name,nickname,codename}`. The type-name query
+  is the *global* `type(v) -> string` (a builtin, not `traits.type`).
 - **`iterators`**: `ipairs/pairs/next` and the modifiable `mpairs/mipairs/mnext`.
 - **`hash`**: `hash.short(data: span(byte))`, `hash.long(...)`,
   `hash.combine(seed, value)`, `hash.hash(v)`.
@@ -630,11 +674,13 @@ shorthands for the default allocator.
 
 ### 16.4 GC
 
-`gc:isrunning()`, `gc:stop()`, `gc:restart()`, `gc:collect()`, `gc:count()`.
-`collectgarbage("isrunning")`, `collectgarbage("stop")`, `collectgarbage("restart")`,
-`collectgarbage()`, `collectgarbage("collect")`, `collectgarbage("count")`.
-A record may define `:__gc()` as a finalizer. The pragma `nogc` disables the
-GC and requires manual `:destroy()`.
+There is **no `gc` module file** in this build (`require 'gc'` fails); GC
+control is via the `collectgarbage(arg)` builtin:
+`collectgarbage("isrunning")`, `collectgarbage("stop")`,
+`collectgarbage("restart")`, `collectgarbage()`,
+`collectgarbage("collect")`, `collectgarbage("count")`. A record may define
+`:__gc()` as a finalizer. The pragma `nogc` disables the GC and requires
+manual `:destroy()`.
 
 ### 16.5 Coroutines
 
@@ -677,7 +723,7 @@ message and exit non-zero.
 
 Recorded here because they affect what a "everything" program can do under
 each compiler.  Re-measured 2026-09-06 against the live tree; items marked
-FIXED were false alarms or already repaired.
+FIXED were false alarms or already repaired, and are kept for the record.
 
 1. ~~The Nelu compile driver does not run the preprocessor...~~ **FIXED.**
    `preprocess` now runs inside `analyze` (`src/analyzer.nim:2465-2477`), so
@@ -691,8 +737,10 @@ FIXED were false alarms or already repaired.
 4. ~~Nelu has no "undeclared symbol" diagnostic...~~ **FIXED.**
    `print(undefned_symbol)` now emits `error: undeclared symbol 'undefned_symbol'`
    MATCH (was silently `any`-typed before).
-5. Nelu's typed-record-literal lowering crashes (`(@T){...}`) -- **UNMEASURED
-   this session**, reported but not re-verified.
+5. Nelu's typed-record-literal lowering is broken for the cast form
+   `(@T){...}` -- see `plan/INBOX/record-enum-design.md`.  (The bare
+   constructor `T{...}` works; the crash was a misreported symptom of the
+   same C-gen bug.)
 6. Nelu's `T?` optional-type syntax is parsed but inert.
 7. Nelu's `cond` keyword is parsed but not implemented.
 8. Nelu's `tkTable`/`tkVariant`/`tkGeneric`/`tkConcept` have spellings but no
@@ -705,11 +753,34 @@ FIXED were false alarms or already repaired.
     the preprocessor gaps above...~~ **PARTIAL.** The driver-wiring gap (#1) is
     closed; the remaining blocker is the `#|name|#` splice (#2). Baseline
     0/21 compile; re-scan after #2 lands.
+11. A do-expression yields via `in expr`, not `return`; `return` inside one
+    is rejected.
+12. Closures (nested functions reading enclosing locals) are not supported in
+    the C generator; only the Lua generator supports them.
+13. `select(i, ...)` value-extraction over untyped varargs crashes the
+    iterators module; `select('#', ...)` count works.
+14. `case v1, v2` in `switch` matches discrete values, not ranges.
+15. `__close` on a record is only emitted for variables declared `<close>`.
+16. `global` declarations are only valid at the true top level (not inside
+    `do` blocks).
+17. `::#|name|#::` labels only work inside preprocessor-emitted text.
+18. `cdefine` takes the text *after* `#define`; the C-emit function is
+    `cemitdefn`, not `cemitdef`.
+19. There is no `gc` module; `traits.type` does not exist (use global
+    `type()`); `select` comes from `require 'iterators'`.
+20. `memory.copy(dest, src, n)` takes dest first (counter-intuitive).
 
 ---
 
 ## 19. Where the corpus lives
 
+- **`exam/everything.nelua`** -- the single all-encompassing example program
+  this document describes. Compiles and runs cleanly under the oracle
+  `/usr/bin/nelua` (exit 0, 108 lines of output); each section prints a banner
+  and its results.  It is the executable companion to this doc: every section
+  here has a corresponding block there.  Under Nelu it currently fails at the
+  `goto`/`::label::` block (see `plan/INBOX/our-improvements.md`), so it is a
+  growing-edge probe, not yet a parity gate.
 - `examples/overview.nelua` -- upstream's canonical "everything" example.
   The single best reference for the language.
 - `examples/record_inheretance.nelua` -- compile-time inheritance via the
