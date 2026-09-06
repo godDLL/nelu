@@ -212,6 +212,14 @@ proc lexAnnotation(s: string, start: int): (string, int) =
       if c == quote: quote = '\0'
       inc i; continue
     if c == '"' or c == '\'': quote = c
+    if c == '[' and isLongBracket(s, i) >= 0:
+      ## A `[[...]]` long bracket inside an annotation (e.g.
+      ## `<cimport,cinclude[[ ... ]]>`) wraps C code that may itself contain
+      ## `>`; skip it whole so we do not stop at the wrong `>` and truncate
+      ## the annotation.  The oracle's lexer does the same.
+      let (_, j, _) = lexLongString(s, i)
+      i = j
+      continue
     if c == '>': return (s[start ..< i + 1], i + 1)
     inc i
   return (s[start ..< s.len], s.len)

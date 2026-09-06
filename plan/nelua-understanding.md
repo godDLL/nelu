@@ -250,6 +250,10 @@ Operators: `or`, `and`, `not`; comparisons `< <= > >= == ~= =`; bitwise
 `#x` is length (array size, string length, record sizeof). `$p` dereferences
 a pointer. `&x` takes the address. `~` is bitwise-not when unary.
 
+**Correction #21:** the `..` concat operator requires `require 'string'` to be
+in scope; without it, concatenating two strings raises
+"invalid operation between types 'string' and 'string'".
+
 ### 6.2 Arithmetic semantics
 
 `//` is floor division (Lua semantics, floors toward negative infinity,
@@ -478,8 +482,15 @@ The preprocessor runs at compile time and transforms the AST using Lua.
   does not accept a splice); a bare `::#|name|#::` in source is a syntax
   error. A computed name works: `## local p = "x"` then
   `global #|p .. "_v"|#: integer = 42`.
-- `## code` (short form, to end of line) and `##[[ ... ]]` (long form) --
-  emit the content verbatim as Lua code in the generated preprocessor chunk.
+- `## code` (short form, single-line only, to end of line) and the multi-line
+  forms `##[[ ... ]]`, `##[=[ ... ]=]`, `##[==[ ... ]]==]` (opener on its own
+  line) -- emit the content verbatim as Lua code in the generated preprocessor
+  chunk.  The short form cannot span lines; for a multi-line block use one of
+  the long-bracket forms, matching the level of the opener (`[[` level 0,
+  `[==[` level 2) with the same bracket depth at the close.  The canonical
+  shape is `##[==[ cemitdefn([[ ... ]]) ]]==]`: a level-2 `##[==[` block whose
+  body is a `cemitdefn` call whose argument is itself a `[[ ... ]]`
+  long-bracket string (a level-0 bracket nested inside the level-2 opener).
 
 ### 12.2 Preprocessor functions and directives
 
@@ -530,6 +541,34 @@ it). `<cinclude '<stdio.h>'>` includes the header. `<cimport>` alone generates
 a Nelua declaration plus an `extern` C definition.
 
 Records can be imported too: `local FILE: type <cimport,cinclude'<stdio.h>',forwarddecl> = @record{}`. Constants: `local EOF: cint <const,cimport,cinclude'<stdio.h>'>`.
+
+**`<cimport>` generates an `extern` C declaration derived from the Nelua
+annotation, and a `cemitdefn` C definition must match it EXACTLY** -- return
+type AND every parameter type -- or gcc reports "conflicting types for
+'foo'". The annotation-to-C mappings observed:
+
+| Nelua type | C type    |
+|------------|-----------|
+| `cstring`  | `char*`   |
+| `pointer`  | `void*`   |
+| `cint`     | `int`     |
+| `clong`    | `long`    |
+| `csize`    | `size_t`  |
+
+Notes that bite: `cstring` maps to **non-const** `char*` (so write `char* s`,
+not `const char* s`); a `[N]cchar` buffer argument is `void*`/`pointer` in the
+declaration (cast internally); and `clong` returns must be declared `long` in
+the C definition, not `int`. The canonical shape is:
+
+```
+##[==[
+cemitdefn([[
+long ttt_send_str(int fd, char* s) { ... }
+]])
+]==]
+local function ttt_send_str(fd: cint, s: cstring): clong
+  <cimport"ttt_send_str"> end
+```
 
 ### 13.2 Emitting C
 
@@ -774,6 +813,13 @@ FIXED were false alarms or already repaired, and are kept for the record.
 19. There is no `gc` module; `traits.type` does not exist (use global
     `type()`); `select` comes from `require 'iterators'`.
 20. `memory.copy(dest, src, n)` takes dest first (counter-intuitive).
+21. `require 'string'` is mandatory for `..` string concatenation; without it
+    the error reads "invalid operation between types 'string' and 'string'"
+    (see the concat note in the operator table).
+22. A `cemitdefn` C definition must match its `cimport`-generated `extern`
+    declaration exactly (return type + every parameter type) or gcc reports
+    "conflicting types"; `cstring` -> `char*` (non-const), `pointer` -> `void*`,
+    `cint` -> `int`, `clong` -> `long`, `csize` -> `size_t` (see §13.1).
 
 ---
 
@@ -797,6 +843,17 @@ FIXED were false alarms or already repaired, and are kept for the record.
      `plan/INBOX/lib-reachability-per-file.md`.  The `goto`/`::label::` block
      itself is fine (verified in isolation); the old note to that effect was
      stale.
+- **`exam/tic-tac-toe.nelua`** -- a two-player tic-tac-toe game server over a
+  Unix domain socket. Compiles cleanly under the oracle
+  (`/usr/bin/nelua -b -o tmp/tic-tac-toe exam/tic-tac-toe.nelua`, exit 0) and
+  plays correctly: draw, X-win, and the INVALID/TAKEN recovery paths all pass
+  against a Python harness (`tmp/test_ttt.py`). It is the working reference for
+  §13.1's cimport/cemitdefn signature-matching rule and for the
+  `##[==[ cemitdefn([[ ... ]]) ]]==]` multi-line C-emit form -- the socket
+  syscalls are thin C wrappers emitted with `cemitdefn` and imported with
+  `<cimport>`, and all game logic is plain Nelua. Run it with
+  `tmp/tic-tac-toe tmp/tic-tac-toe.sock` and connect two players via
+  `nc -U tmp/tic-tac-toe.sock`.
 - `examples/overview.nelua` -- upstream's canonical "everything" example.
   The single best reference for the language.
 - `examples/record_inheretance.nelua` -- compile-time inheritance via the

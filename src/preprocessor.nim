@@ -1442,6 +1442,23 @@ const PRAGMAS_INIT_CHUNK =
   "  if not ok then error('failed parsing pragma [' .. p .. ']: ' .. tostring(err2)) end\n" &
   "end\n"
 
+const PRAGMAS_STACK_CHUNK =
+  # `pragmapush` / `pragmapop` stack, always defined (independent of `-P`).
+  # See `PRAGMAS_INIT_CHUNK` for the fork/pop semantics rationale.
+  "__nelua_pragma_stack = {}\n" &
+  "pragmapush = function(t)\n" &
+  "  local old = pragmas\n" &
+  "  setmetatable(t, {__index = old})\n" &
+  "  pragmas = t\n" &
+  "  __nelua_pragma_stack[#__nelua_pragma_stack + 1] = old\n" &
+  "end\n" &
+  "pragmapop = function()\n" &
+  "  local stack = __nelua_pragma_stack\n" &
+  "  local old = stack[#stack]\n" &
+  "  stack[#stack] = nil\n" &
+  "  pragmas = old\n" &
+  "end\n"
+
 proc setPragmasGlobal*(L: PLuaState, pragmas: seq[string]): string =
   ## Expose the active `-P` pragmas to `##` blocks as the `pragmas` global
   ## table, matching the reference's model (configer.lua `convert_param`):
@@ -1456,15 +1473,22 @@ proc setPragmasGlobal*(L: PLuaState, pragmas: seq[string]): string =
   if pragmas.len == 0:
     L.lua_createtable(0, 0)
     L.lua_setglobal("pragmas")
-    return ""
-  L.lua_createtable(0, pragmas.len)
-  for i, p in pragmas:
-    L.lua_pushstring(cstring(p))
-    L.lua_rawseti(-2, i + 1)          # Lua tables are 1-indexed
-  L.lua_setglobal("__nelua_raw_pragmas")
-  let err = runChunk(L, PRAGMAS_INIT_CHUNK, "nelua:pp:pragmas")
-  L.lua_pushnil(); L.lua_setglobal("__nelua_raw_pragmas")
-  return err
+  else:
+    L.lua_createtable(0, pragmas.len)
+    for i, p in pragmas:
+      L.lua_pushstring(cstring(p))
+      L.lua_rawseti(-2, i + 1)          # Lua tables are 1-indexed
+    L.lua_setglobal("__nelua_raw_pragmas")
+    let err = runChunk(L, PRAGMAS_INIT_CHUNK, "nelua:pp:pragmas")
+    L.lua_pushnil(); L.lua_setglobal("__nelua_raw_pragmas")
+    if err.len > 0:
+      return err
+  ## `pragmapush` / `pragmapop` are defined unconditionally: they are part of
+  ## the `pragmas` API, not of the `-P` input, so a module with no `-P` pragmas
+  ## still needs them (errorhandling.nelua uses them with no -P).
+  let err2 = runChunk(L, PRAGMAS_STACK_CHUNK, "nelua:pp:pragmas-stack")
+  if err2.len > 0: return err2
+  return ""
 
 proc luaTableToNode*(L: PLuaState, idx: int): Node   # forward, see below
 
