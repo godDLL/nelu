@@ -834,7 +834,30 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
         let rets = ctx.callRetTypes.getOrDefault(inits[0])
         if i < rets.len: vtype = rets[i]
       if vtype == nil and i < inits.len:
-        vtype = analyzeExpr(ctx, inits[i])
+        let init = inits[i]
+        if init.kind == nkFunction:
+          # Function literal bound to a local.  The oracle treats the binding
+          # as a function value and calls through it (`local f = function(x:
+          # integer): integer return x + 1 end; print(f(41))` -> `42`).
+          # `analyzeExpr` has no `nkFunction` case (it falls through to
+          # `return nil`), so without this the local falls back to `nil` and
+          # `f(41)` infers `void` -> "in print: cannot handle type void".
+          # Promote the literal to a named funcdef with the binding's name and
+          # codename (the oracle monomorphizes and names the function after its
+          # binding), analyze it, and type the local as its function type.
+          # `nkFunction` and `nkFuncDef` share the same child layout
+          # (args & returns & annotations & body); only `nkFuncDef` carries the
+          # name as `str` + a leading name node, which `analyzeFuncDef`
+          # expects.  Analyzer/cgen reference `nkFuncDef` only, so the kind
+          # change is safe.
+          let fnName = newIdDecl(iddecl.str, nil)
+          init.kind = nkFuncDef
+          init.children = @[fnName] & init.children
+          init.str = iddecl.str
+          analyzeFuncDef(ctx, init, ctx.unitname & "_" & iddecl.str)
+          vtype = ctx.getAttr(init).typ
+        else:
+          vtype = analyzeExpr(ctx, init)
     if vtype == nil: vtype = BuiltinTypes["nil"]
     # A6-naming: nominal @record/@enum types get the C tag <unit>_<binding>
     # (matches the oracle's `typedef ... tmp_unit_Rect;` shape).

@@ -305,5 +305,8 @@
  "tests/vector_test": "NELU_REJECT",
  "exam/uintwrap_promote": "MATCH",
  "exam/neg_uintwrap_range": "MATCH",
- "exam/neg_uintwrap_range2": "MATCH"
+ "exam/neg_uintwrap_range2": "MATCH",
+ "exam/neg_undeclared_symbol": "MATCH",
+ "exam/fn_multi": "MATCH",
+ "exam/fn_value": "MATCH"
 }

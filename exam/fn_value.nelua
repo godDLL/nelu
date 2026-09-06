@@ -1,0 +1,4 @@
+local f = function(x: integer): integer
+  return x + 1
+end
+print(f(41))

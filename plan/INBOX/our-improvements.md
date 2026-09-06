@@ -255,10 +255,11 @@ its declared width; MATCHes the oracle (`10`, exit 0).
 
 ### 2.1 BUG -- `self.x = self.x * s` (binary-op RHS on a self-field lvalue) SIGSEGVs (C1)
 
-**Status: STILL OPEN for the assignment path.** Verified 2026-08-30 against a
-fresh `nim c -d:release` build of the live working tree: ours SIGSEGVs
-(exit 139), oracle prints `6`. Re-probed against `tmp/devil/nelua`; the live
-tree's new nil-guard (see below) does *not* cover this path.
+**Status: ALREADY FIXED -- re-measured 2026-09-06, no code change.** `local R
+= @record{ x: integer }; local r: R = { x = 5 }; r.x = r.x * 2; print(r.x)`
+prints `10` on both compilers (MATCH). The live tree's nil-guards in
+`analyzeDotIndex`/`cgen` already cover this path. Ticket
+`plan/DONE/self-field-assign-sigsegv.md` (CLOSED, recorded as not-reproducing).
 
 **Grounding.** This is the exact pattern in `examples/www/recmethod_mutate.nelua`,
 which also SIGSEGVs. Narrowed: `self.x = -self.x` (unary RHS) matches; only the
@@ -301,9 +302,9 @@ constant to a fixed-width integral type.  Verified: harness 0 regressions
 
 ### 2.3 BUG -- `float32` print drops the `.0` suffix on integral values (W1)
 
-**Status: STILL OPEN.** Verified: `75.0` prints `75` in ours, `75.0` in the
-oracle. Re-probed against `tmp/devil/nelua`. `examples/www/float32_easing.nelua`
-DIFFs (`0/75/100` vs `0.0/75.0/100.0`).
+**Status: ALREADY FIXED -- re-measured 2026-09-06, no code change.** `local x:
+float32 = 75.0; print(x)` prints `75.0` on both compilers (MATCH); `1.5` MATCH.
+Ticket `plan/DONE/float32-print-suffix.md` (CLOSED as already-fixed).
 
 **Root cause (precise).** The inline `nelua_print_float` in `src/cgen.nim:180-184`
 does `snprintf(buf, "%.7g", v)` with no `.0` suffix pass. `nelua_print_double`
@@ -315,9 +316,15 @@ append `.0`, skipping inf/nan) but the float32 helper was written without it.
 
 ### 2.4 COMPLETE / BUG -- `##` Lua statement blocks are not run by the compile driver (W3, N6)
 
-**Status: the driver wiring is STILL OPEN; the long-bracket parsing is DONE,
-committed `f75601a`.** Verified: `## x = 7` + `#[x]#` prints `0` in ours, `7` in the
-oracle. Re-probed against a fresh `nim c -d:release` build of the committed tree.
+**Status: DRIVER WIRING ALREADY FIXED -- re-measured 2026-09-06, no code change.**
+`## x = 7` + `print(#[x]#)` prints `7` on both compilers (MATCH). The seam
+described below landed: `analyze` (`src/analyzer.nim:2465-2477`) now runs
+`preprocess(ast, pctx)` over the parse tree right after `parse`, so every
+pipeline -- including the default `compile` driver -- inherits preprocessing.
+`src/compile.nim:10-16`'s comment still says the opposite and is stale (see
+4.2). The remaining open preprocessor item is the `#|expr|#` *name* splice
+(`plan/INBOX/preprocess-name-splice.md`, STILL OPEN), which is a different node
+(`PreprocessName`) from the `#[expr]#` expression splice that works.
 
 **Grounding.** `compile.nim:10-16` documents backlog item C3: the preprocessor
 is built and tested through `runM6Pipeline` but is **not** run by the default
@@ -347,11 +354,18 @@ the oracle (`ppcontext.lua:48`). Document that gap explicitly.
 
 ### 2.5 BUG -- the C emitter SIGSEGVs on anonymous functions, method calls, and if/elseif chains (old 1.1)
 
-**Status: STILL OPEN.** Verified: `local f = function(x: integer): integer ...
-end; print(f(41))` SIGSEGVs our compiler at codegen. `main.nim:82-88` still
-sets `needsCompile = false` for `--print-ast` / `--print-analyzed-ast` /
-`--analyze` / `--print-ppcode` with the comment "the emitter segfaults on
-valid constructs (method calls, anonymous functions, if/elseif)".
+**Status: FIXED 2026-09-06** (ticket `plan/DONE/function-literal-as-value.md`).
+All three constructs now MATCH the oracle: method calls (`cf:flip()` -> `true`),
+if/elseif chains (`-> 2`), and anonymous functions bound to a local
+(`local f = function(x: integer): integer return x + 1 end; print(f(41))`
+-> `42`).  The named-function statement form (`local function f() ... end`)
+was already MATCH; this ticket adds the value form.
+
+**Known limitation (out of scope):** reassignment of a function literal
+(`f = function() end`) still fails at C gen -- the literal in assignment
+position keeps `nkFunction` kind and `genExpr` returns the `/*?nkFunction*/`
+placeholder.  That is the general function-value/closure feature
+(`plan/INBOX/closures-upvalues.md`), not the bounded case here.
 
 **Grounding.** Method calls and anonymous functions are core to the
 closures/upvalues work already landed in this tree. An emitter that segfaults
@@ -396,7 +410,7 @@ larger feature -- defer those.
 
 ### 2.7 BUG -- unknown identifiers resolve silently to `any`-typed externs with no diagnostic (old 1.3)
 
-**Status: STILL OPEN.** The analyzer has no "undeclared symbol" diagnostic.
+**Status: ALREADY FIXED -- re-measured 2026-09-06, no code change.** `print(undefned_symbol)` now emits `error: undeclared symbol 'undefned_symbol'` on both compilers (MATCH), so the silent-`any`-extern fallthrough is gone. Ticket `plan/DONE/three-declaration-divergences.md` (CLOSED).
 
 **Grounding.** Identifiers not found in scope fall through to a hardcoded
 `builtinNames` list and are treated as `skBuiltin` with codename
@@ -457,8 +471,10 @@ helper. Option (a) is the smaller change and matches the oracle, which treats
 
 ### 3.2 BUG -- `@union` field access and print is broken (C3)
 
-**Status: STILL OPEN.** Verified: ours emits `u.a = nlany_from_int(5)` then
-`nelua_print_any(u.a)`; gcc rejects the assignment and the print dispatch.
+**Status: ALREADY FIXED -- re-measured 2026-09-06, no code change.** `local U =
+@union{ a: float32, i: uint32 }; local u: U; u.a = 1.5; print(u.a)` prints
+`1.5` on both compilers (MATCH). Ticket `plan/DONE/union-field-access.md`
+(CLOSED as already-fixed).
 
 **Grounding.** Unions are a core language feature.
 
@@ -498,8 +514,10 @@ it through `numberTypeAndValue`). Localised to the comptime fold in
 
 ### 3.4 BUG -- `likely()` / `unlikely()` builtins are not lowered to C (N7)
 
-**Status: STILL OPEN.** Verified: ours emits a bare `likely(...)` call and gcc
-reports `implicit declaration of function 'likely'`; oracle prints `yes`.
+**Status: ALREADY FIXED -- re-measured 2026-09-06, no code change.** `if
+likely(true) then x = 1 end; if unlikely(false) then x = 2 end; print(x)`
+prints `1` on both compilers (MATCH); they lower to `__builtin_expect` in
+`src/cgen.nim`. Ticket `plan/DONE/likely-unlikely-lowering.md` (CLOSED).
 
 **Grounding.** Used in `lib/allocators/heap.nelua`
 (`if unlikely(...) then ... return nilptr end`).
@@ -573,8 +591,10 @@ the driver's error path, reusing the existing `render` machinery in
 
 ### 3.8 BUG -- enum fields are folded to constants but no C `enum` is emitted (old 1.4) `[S4-2]`
 
-**Status: STILL OPEN.** `cgen_types.cType` for `tkEnum` returns only `cTag(t)`;
-the typedef carries no enum constants.
+**Status: ALREADY FIXED -- re-measured 2026-09-06, no code change.** `local E:
+type = @enum{ Red = 0, Green = 1, Blue = 2 }; local v: E = E.Green; print(v)`
+prints `1` on both compilers (MATCH); a real C `enum` is now emitted. Ticket
+`plan/DONE/enum-c-emission.md` (CLOSED as already-fixed).
 
 **Oracle cross-read.** The oracle's `EnumType` typevisitor (oracle section 6.1.2)
 emits `typedef enum codename { fields; } codename;` -- a real C enum with its
@@ -872,23 +892,23 @@ notes which findings the concurrent uncommitted edits in `src/` already address.
 
 | Rank | Item | Label | Live-tree state | Effort | Unblocks |
 |------|------|-------|-----------------|--------|----------|
-| 1 | `goto` + `::label:` cannot be a statement (1.1) | BUG | **STILL OPEN** (parseBlock breaks on `tkColonColon`, parser.nim:603,631) | small | stringbuilder, string, heap, brainfuck, overview |
-| 2 | byte literal `'A'_b` not lexed (1.2) | BUG | **STILL OPEN** (lexer has no `_b` suffix) | small | string.nelua, heap.nelua |
-| 3 | `self.x = self.x * s` SIGSEGV (2.1) | BUG | **STILL OPEN** for the assignment path (analyzeAssign, analyzer.nim:1844); the nil-guard landed in analyzeCall is committed (`f75601a`) but does not cover this path | small | recmethod_mutate.nelua, any mutate-a-field-with-computed-value idiom |
-| 4 | `##` Lua blocks not run by the compile driver (2.4) | COMPLETE/BUG | **STILL OPEN** for the driver wiring (compile.nim:10-16); long-bracket parsing DONE, committed `f75601a` | small | splice_embed, brainfuck, sequence.nelua |
-| 5 | small-uint arithmetic does not wrap (2.2) | BUG | **STILL OPEN** | small | uint8_wrap.nelua, RNG, buffer indices |
-| 6 | C emitter SIGSEGVs on anon funcs / method calls / if-elseif (2.5) | BUG | **STILL OPEN** (verified SIGSEGV at codegen; needsCompile workaround persists, main.nim:82-88) | medium | compiling a large fraction of the corpus |
-| 7 | `float32` print drops `.0` (2.3) | BUG | **STILL OPEN** (cgen.nim:180-184) | small | float32_easing.nelua |
+| 1 | `goto` + `::label:` cannot be a statement (1.1) | BUG | **DONE, committed** (`plan/DONE/goto-label-statement.md`) | small | stringbuilder, string, heap, brainfuck, overview |
+| 2 | byte literal `'A'_b` not lexed (1.2) | BUG | **DONE, committed** (`plan/DONE/byte-literal-suffix.md`) | small | string.nelua, heap.nelua |
+| 3 | `self.x = self.x * s` SIGSEGV (2.1) | BUG | **ALREADY FIXED** -- re-measured 2026-09-06, `r.x = r.x * 2` -> `10` MATCH | small | recmethod_mutate.nelua |
+| 4 | `##` Lua blocks not run by the compile driver (2.4) | COMPLETE/BUG | **DRIVER WIRING ALREADY FIXED** -- `analyze` runs `preprocess` (`analyzer.nim:2465`); `## x=7`+`#[x]#` -> `7` MATCH. Remaining open item is the `#|expr|#` name splice | small | splice_embed, brainfuck, sequence.nelua |
+| 5 | small-uint arithmetic does not wrap (2.2) | BUG | **FIXED 2026-09-06** (`plan/DONE/uint-wrap.md`): promote in expression context, reject out-of-range at assignment | small | uint8_wrap.nelua, RNG, buffer indices |
+| 6 | C emitter SIGSEGVs on anon funcs / method calls / if-elseif (2.5) | BUG | **FIXED 2026-09-06** (`plan/DONE/function-literal-as-value.md`) -- method calls, if/elseif, and anonymous functions bound to a local all MATCH | medium | compiling a large fraction of the corpus |
+| 7 | `float32` print drops `.0` (2.3) | BUG | **ALREADY FIXED** -- `75.0`/`1.5` MATCH | small | float32_easing.nelua |
 | 8 | `genForIn` single-array-only (2.6) | BUG | **STILL OPEN** | small | idiomatic array iteration |
-| 9 | unknown identifiers resolve silently to `any` externs (2.7) | BUG | **STILL OPEN** | small-medium | catching typos; maintainable global table |
+| 9 | unknown identifiers resolve silently to `any` externs (2.7) | BUG | **ALREADY FIXED** -- `undefned_symbol` -> `undeclared symbol` MATCH | small-medium | catching typos |
 | 10 | `cstring` literal assignment (3.1) | BUG | **DONE, committed `f75601a`** (`#cstring` wraps in `nlstr(...)`) | small | lib/ cstring usage |
-| 11 | `@union` field access resolves to `any` (3.2) | BUG | **STILL OPEN** (analyzeDotIndex has no tkUnion branch, analyzer.nim ~717-755) | small | unions |
-| 12 | `<comptime>` on a string evaluates to a number (3.3) | BUG | **STILL OPEN** | small | builtins.nelua, utf8.nelua, stringbuilder.nelua |
-| 13 | `likely`/`unlikely` not lowered (3.4) | BUG | **STILL OPEN** | small | heap.nelua |
+| 11 | `@union` field access resolves to `any` (3.2) | BUG | **ALREADY FIXED** -- `u.a = 1.5; print(u.a)` -> `1.5` MATCH | small | unions |
+| 12 | `<comptime>` on a string evaluates to a number (3.3) | BUG | **DONE** (`plan/DONE/comptime-string-eval.md`, already fixed) | small | builtins.nelua, utf8.nelua, stringbuilder.nelua |
+| 13 | `likely`/`unlikely` not lowered (3.4) | BUG | **ALREADY FIXED** -- `__builtin_expect` lowering, `1` MATCH | small | heap.nelua |
 | 14 | `...: cvarargs` C emission (3.5) | BUG | **STILL OPEN** | small | stringbuilder.nelua |
 | 15 | dotted `global X.Y` emits invalid C (3.6) | BUG | parse half DONE, committed `f75601a`; **C-emission half STILL OPEN** | small | dotted global/method names |
-| 16 | `check()` message missing source location (3.7) | BUG | **STILL OPEN** (cosmetic) | small | check_fail.nelua |
-| 17 | no C `enum` emitted for enum types (3.8) `[S4-2]` | BUG | **STILL OPEN** | small | type-safe `switch` |
+| 16 | `check()` message missing source location (3.7) | BUG | **STILL OPEN** (cosmetic) -- oracle prints `path:line:col:`, ours does not | small | check_fail.nelua |
+| 17 | no C `enum` emitted for enum types (3.8) `[S4-2]` | BUG | **ALREADY FIXED** -- `E.Green` -> `1` MATCH, real C enum emitted | small | type-safe `switch` |
 | 18 | `T?` accepted by us, rejected by the oracle (3.9) | DESIGN | **NOT A PARITY TARGET** (oracle never runs it) | small | Nelu choice: implement as live type, or drop |
 | 19 | colon method on type-keyword receiver (1.3) | COMPLETE | **DONE, committed `f75601a`** (isTypeKeyword + parsePrimary); end-to-end still blocked on the `#|argname|#` name-splice gap | n/a | lib/string.nelua |
 | 20 | `facultative(string)` type-function-call (1.4) | COMPLETE | **DONE, committed `f75601a`** (parseType generic instantiation); analyzer resolution still open | n/a | lib/builtins.nelua |

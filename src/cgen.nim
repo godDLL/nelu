@@ -2001,6 +2001,15 @@ proc genVarDecl(s: var Gen, node: Node, emitInits: bool, isGlobal: bool,
       let dest = if vt.kind == tkArray: cn else: "(&" & cn & ")"
       let src = if vt.kind == tkArray: s.genExpr(init) else: "(&" & s.genExpr(init) & ")"
       s.line "memcpy(" & dest & ", " & src & ", sizeof(" & cn & "));"
+    elif vt != nil and vt.kind == tkFunction and init.kind == nkFuncDef:
+      ## A function literal bound to a local (`local f = function(x: integer):
+      ## integer return x + 1 end`).  The function is emitted separately by
+      ## `collectFuncDefs` as a static function whose codename IS the local's
+      ## codename (the analyzer names the literal after its binding), and every
+      ## call through `f` lowers to that codename directly.  There is no
+      ## function-pointer value to assign -- emitting `f = /*?nkFuncDef*/;`
+      ## produces invalid C.  Skip the initializer.
+      discard
     else:
       s.line cn & " = " & s.coerce(s.genExpr(init), it, vt) & ";"
 
