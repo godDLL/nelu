@@ -117,6 +117,14 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
         for at in argTypes:
           if at != nil and at.kind == tkVoid:
             ctx.diags.add ctx.path & ": error: in print: cannot handle type \"void\""
+          elif at != nil and at.kind == tkAuto:
+            # The oracle rejects `print` of an `auto`-typed value (a local
+            # declared `local x: auto` with no initializer) with
+            # "in print: cannot handle type auto".  Without this nelu feeds
+            # the auto type to the C generator, which emits
+            # `static auto tmp_x;` and fails at the C compiler.  Emit the
+            # diagnostic so the build fails cleanly.
+            ctx.diags.add ctx.path & ": error: in print: cannot handle type \"auto\""
       calleeSym = sym
       calleeType = Type(kind: tkFunction, name: "function", codename: "function")
       calleeType.name = "function"; calleeType.codename = "function"
