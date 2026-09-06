@@ -302,5 +302,8 @@
  "tests/threads_test": "NELU_REJECT",
  "tests/traits_test": "NELU_REJECT",
  "tests/utf8_test": "NELU_REJECT",
- "tests/vector_test": "NELU_REJECT"
+ "tests/vector_test": "NELU_REJECT",
+ "exam/uintwrap_promote": "MATCH",
+ "exam/neg_uintwrap_range": "MATCH",
+ "exam/neg_uintwrap_range2": "MATCH"
 }

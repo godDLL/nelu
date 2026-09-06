@@ -281,24 +281,23 @@ the print-AST paths degrade gracefully instead of crashing (see 6.1).
 
 ### 2.2 BUG -- small-uint arithmetic does not wrap (W2)
 
-**Status: STILL OPEN.** Verified: `200 + 100` as `uint8` prints `300` in ours,
-`44` in the oracle. Re-probed against `tmp/devil/nelua`. `examples/www/uint8_wrap.nelua`
-DIFFs the same way.
+**Status: FIXED 2026-09-06** (ticket `plan/DONE/uint-wrap.md`).  The text below
+was the *inverted* understanding and has been corrected there; the recommended
+fix below was the wrong direction.
 
-**Grounding.** Real code (RNG state, buffer indices) depends on wrap-to-width
-semantics for fixed-width unsigned types.
+**Corrected grounding.** The oracle does **not** wrap small-uint arithmetic:
+it promotes in expression context (`print(200_u8 + 100_u8)` -> `300`) and
+rejects an out-of-range comptime constant at assignment time
+(`local b: uint8 = 200 + 100` errors).  Nelu wrapped to the declared width
+(`44 = 300 mod 256`).
 
-**Root cause (precise).** The analyzer widens small-uint operands to `int64` for
-the binary op and the C lowering emits the `int64` result; there is no
-wrap-to-width step for fixed-width unsigned types. The oracle wraps to the
-declared width.
-
-**Recommended fix.** After `inferBinary` produces the result type for a
-fixed-width unsigned operand pair, mask the emitted C expression to the type's
-width (`(uint8_t)(a + b)` is not enough -- the sub-expression must be masked
-before assignment, or the assignment must be a width-truncating cast). Locate
-the wrap point in the arithmetic-lowering proc in `cgen.nim` and add a
-`nlcheck_uint_overflow`-free truncating cast for `tkUint8/16/32/64/128`.
+**Fix that landed.** Remove the wrap-to-width step (the W2 cast in the print
+dispatch in `src/cgen.nim`) so the widened `int64` result is emitted as-is, and
+add `checkIntRange` in `src/analyzer.nim` (called from `analyzeVarDecl`) to
+emit the oracle's out-of-range diagnostic for assignment of a comptime integer
+constant to a fixed-width integral type.  Verified: harness 0 regressions
+(307 baseline), exam probes `uintwrap_promote`/`neg_uintwrap_range`/
+`neg_uintwrap_range2` MATCH.
 
 ### 2.3 BUG -- `float32` print drops the `.0` suffix on integral values (W1)
 

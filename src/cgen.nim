@@ -1409,13 +1409,14 @@ proc genCall(s: var Gen, node: Node): string =
           # prints `MASK.UPPER` -> `2147483648`, not `nil`).
           if ht.kind == tkEnum:
             ht = if ht.subtype != nil: ht.subtype else: BuiltinTypes["integer"]
-          # W2: C promotes integers smaller than `int` inside arithmetic, so
-          # `200u8 + 100u8` computes as the `int` 300 and prints 300.  The
-          # oracle's typed print helper takes the small type and wraps
-          # implicitly (44); cast the argument to its own small type so the
-          # value wraps before it reaches the wide print helper.
-          if ht != nil and ht.isIntegral and size(ht) > 0 and size(ht) < 4:
-            argStr = "(" & cType(ht) & ")(" & argStr & ")"
+          # Small-uint arithmetic does NOT wrap in the oracle: it promotes
+          # (`200_u8 + 100_u8` -> `300`, `255_u8 + 1_u8` -> `256`).  C
+          # promotes integers smaller than `int` inside arithmetic too, so
+          # the widened result reaches the print helper as-is; do not cast
+          # the argument back down to its small type (that cast used to wrap
+          # `300` to `44`).  The out-of-range case is rejected at assignment
+          # time by the analyzer's constant-range check
+          # (`local b: uint8 = 200 + 100` errors), not here.
           case ht.kind
           of tkInteger, tkInt8, tkInt16, tkInt32, tkInt64, tkInt128,
              tkIsize, tkByte, tkCchar, tkCschar, tkCshort, tkCint,

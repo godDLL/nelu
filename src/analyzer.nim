@@ -57,6 +57,7 @@ proc analyzeDotIndex(ctx: var AnalyzerContext, node: Node): Type
 proc foldIntValue(ctx: var AnalyzerContext, node: Node): int
 proc typeValueKey(node: Node, ct: Type): string
 proc resolveTypeValue(ctx: var AnalyzerContext, key: string): Type
+proc checkIntRange*(ctx: var AnalyzerContext, name: string, t: Type, valueStr: string)
 
 proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
   let caller = node.children[^1]
@@ -931,6 +932,15 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
       discard analyzeInitList(ctx, init, pt)
     else:
       discard analyzeExpr(ctx, init)
+      # Small-uint range check.  The oracle does not wrap fixed-width integer
+      # arithmetic: it promotes in expression context and rejects an out-of-range
+      # comptime constant at assignment time ("constant value `300` for type
+      # `uint8` is out of range, ...").  Nelu used to let the C truncating cast
+      # wrap the value silently (`300` -> `44`).  The folded value lives on the
+      # init attr (`ia.value`); check it against the declared type's range here
+      # so the build fails cleanly, matching the oracle.
+      let ia0 = ctx.attrOf.getOrDefault(init)
+      checkIntRange(ctx, iddecls[i].str, pt, if ia0 != nil: ia0.value else: "")
     # Stage 4: propagate the comptime literal value to the Symbol for *every*
     # constant-initialized local (not just `<comptime>`-annotated ones), so a
     # splice like `#[x]#` can read `local x = 5`'s value.  `sym.value` is only
@@ -945,6 +955,51 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
         syms[i].value = ia.value
         if syms[i].comptime:
           ctx.attrOf[iddecls[i]].value = ia.value
+
+proc checkIntRange*(ctx: var AnalyzerContext, name: string, t: Type, valueStr: string) =
+  ## Reject assignment of a compile-time integer constant that does not fit in
+  ## a fixed-width integral type, matching the oracle's
+  ## "constant value `300` for type `uint8` is out of range, the minimum is
+  ## `0` and maximum is `255`" diagnostic.  Nelu otherwise lets the C truncating
+  ## cast wrap the value silently (`300` -> `44`).
+  if t == nil or not t.isIntegral: return
+  let bits = size(t) * 8
+  if bits == 0 or bits > 64: return
+  let signed = t.kind in {tkInteger, tkInt8, tkInt16, tkInt32, tkInt64, tkInt128,
+                           tkIsize}
+  let tname = case t.kind
+    of tkByte: "uint8"
+    of tkInteger: "int64"
+    of tkUinteger: "uint64"
+    of tkIsize: "isize"
+    of tkUsize: "usize"
+    else: t.name
+  var inRange = true
+  var mnStr, mxStr: string
+  if signed:
+    let mn = if bits == 64: low(int64) else: -(1'i64 shl (bits - 1))
+    let mx = if bits == 64: high(int64) else: (1'i64 shl (bits - 1)) - 1
+    mnStr = $mn; mxStr = $mx
+    var iv: int64
+    try: iv = parseInt(valueStr)
+    except ValueError: return
+    except OverflowError: inRange = false
+    if inRange and (iv < mn or iv > mx): inRange = false
+  else:
+    let mx = if bits == 64: high(uint64) else: (1'u64 shl bits) - 1
+    mnStr = "0"; mxStr = $mx
+    if valueStr.len > 0 and valueStr[0] == '-': inRange = false
+    else:
+      var uv: uint64
+      try: uv = parseUint(valueStr)
+      except ValueError: return
+      except OverflowError: inRange = false
+      if inRange and uv > mx: inRange = false
+  if not inRange:
+    ctx.diags.add ctx.path & ": error: in variable '" & name &
+      "' declaration: constant value `" & valueStr & "` for type `" &
+      tname & "` is out of range, the minimum is `" & mnStr &
+      "` and maximum is `" & mxStr & "`"
 
 # ---- D1: polymorphic (`auto`-param) function monomorphization ----------------
 ##
