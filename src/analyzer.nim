@@ -470,6 +470,19 @@ proc analyzeDotIndex(ctx: var AnalyzerContext, node: Node): Type =
           a.comptime = true
           a.value = $ef.value
           break
+  elif bt != nil and bt.kind == tkString:
+    # A string value exposes `.size` (length, usize) and `.data` (the byte
+    # buffer, pointer(array(byte, 0))).  The oracle models them exactly this
+    # way; without this branch both resolve to `any`, which mis-drives the
+    # `any` load path in codegen (`s.size` -> nlany_load_uint(s.size)).
+    case node.str
+    of "size":
+      a.typ = BuiltinTypes["usize"]
+    of "data":
+      a.typ = pointerType(arrayType(BuiltinTypes["byte"], 0))
+    else:
+      a.typ = BuiltinTypes["any"]
+    return a.typ
   if a.typ == nil: a.typ = BuiltinTypes["any"]
   return a.typ
 

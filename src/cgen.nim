@@ -1165,7 +1165,14 @@ proc genUnaryOp(s: var Gen, node: Node): string =
   of "not": return "(!" & rstr & ")"
   of "~": return "(~" & rstr & ")"     ## bnot
   of "deref": return "(*" & rstr & ")"
-  of "&": return "(&" & rstr & ")"     ## ref
+  of "&":
+    # The only valid pointer-to-array type is `*[0]byte` (a byte pointer); the
+    # oracle rejects `*[N]byte` for N>0.  So the address of an array must yield
+    # an element pointer: C's `&arr` is `T(*)[N]`, which does not assign to a
+    # `T*` -- emit `&arr[0]` instead.
+    if rt != nil and rt.kind == tkArray:
+      return "(&" & rstr & "[0])"
+    return "(&" & rstr & ")"     ## ref
   else: return "/*uop " & node.str & "*/"
 
 proc genSpilledCall(s: var Gen, callee: string,
