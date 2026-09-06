@@ -243,7 +243,20 @@ proc inferBinary*(op: string, l, r: Type): (Type, Conversion, Conversion) =
     of "<", ">", "<=", ">=", "==", "~=":
       (BuiltinTypes["boolean"], ident, ident)
     of "and", "or":
-      (BuiltinTypes["boolean"], ident, ident)
+      # The oracle coerces a boolean operand to its numeric value (true->1,
+      # false->0) when paired with a numeric operand, so the result is numeric
+      # rather than boolean.  C's &&/|| already yield 0/1, so only the result
+      # *type* needs to change here -- the emitter then dispatches print to the
+      # integer printer instead of printing "true"/"false".
+      if (l.isBoolean and r.isIntegral) or (l.isIntegral and r.isBoolean):
+        let bt = BuiltinTypes["integer"]
+        let lt2 = if l.isBoolean: bt else: l
+        let rt2 = if r.isBoolean: bt else: r
+        (widerIntegral(lt2, rt2), ident, ident)
+      elif l.isIntegral and r.isIntegral:
+        (widerIntegral(l, r), ident, ident)
+      else:
+        (BuiltinTypes["boolean"], ident, ident)
     of "&", "|", "~", "<<", ">>":
       if l.isIntegral and r.isIntegral:
         let res = widerIntegral(l, r)
