@@ -94,6 +94,12 @@ var gActiveCtx: ptr PreprocessContext = nil
 ## `#[expr]#` evaluation.  `cSpliceEnvIndex` walks it so a bare identifier in a
 ## splice resolves to the enclosing nelua scope's symbols (Stage 4).
 var gActiveScope: Scope = nil
+## The preprocess-time nelua scope, built incrementally as `preprocess` walks
+## the tree.  `##` blocks resolve bare identifiers against it via the
+## `__nelua_scope` builtin (which injects `<name> = __nelua_scope("<name>")`
+## into the chunk at each declaration's textual position), so a `##` line sees
+## only the locals/params declared above it -- matching the oracle.
+var gPreprocessScope: Scope = nil
 var gCapturedBodies: TableRef[string, seq[Node]] = newTable[string, seq[Node]]()
 var gInjectStack: seq[seq[seq[Node]]] = @[]
 var gInjectCurrent = 0
@@ -146,6 +152,8 @@ proc resetPreprocessorState*() =
   gInBlockSpliceDeferral = false
   gSpliceResults.clear()
   gSpliceFuncs.clear()
+  gPreprocessScope = Scope(name: "global", symbols: initTable[string, Symbol](),
+                           parent: nil, isFunction: false)
 
 proc parseSpliceFuncOpener(text: string): (bool, string, seq[string]) =
   ## Parse a `##` line's raw text.  Returns `(true, name, params)` when the
@@ -1029,6 +1037,8 @@ proc cTypeIndex(L: PLuaState): int {.cdecl.} =
   of "is_boolean":     pushBool(L, t.is_boolean)
   of "is_string":      pushBool(L, t.is_string)
   of "is_cstring":     pushBool(L, t.is_cstring)
+  of "is_cfloat":      pushBool(L, t.is_cfloat)
+  of "is_cdouble":     pushBool(L, t.is_cdouble)
   of "is_record":      pushBool(L, t.is_record)
   of "is_union":       pushBool(L, t.is_union)
   of "is_enum":        pushBool(L, t.is_enum)
@@ -1135,6 +1145,33 @@ proc resolveTypeKey(key: string): Type =
   if PrimitiveTypes.hasKey(key): return PrimitiveTypes[key]
   return nil
 
+proc declaredTypeOf(idDecl: Node): Type =
+  ## Resolve an IdDecl's declared type annotation to a Type for the preprocess
+  ## scope.  Builtins/typedefs resolve directly; `auto` maps to its default
+  ## (int64), matching the oracle's preprocess-time behaviour.  Anything the
+  ## analyzer has not bound yet (user records, complex annotations) is nil.
+  if idDecl == nil or idDecl.children.len == 0: return nil
+  let typeNode = idDecl.children[0]
+  if typeNode.kind != nkId: return nil
+  let t = resolveTypeKey(typeNode.str)
+  if t != nil and t.kind == tkAuto:
+    return BuiltinTypes["integer"]
+  return t
+
+proc injectNeluaLocals(decl: Node, chunkParts: var seq[string]) =
+  ## For a `local`/`var` declaration, register each typed local in the
+  ## preprocess scope and inject `<name> = __nelua_scope("<name>")` into the
+  ## block's `##` chunk at this statement's textual position, so a `##` line
+  ## below sees it (and one above does not), matching the oracle.
+  if decl.kind != nkVarDecl: return
+  for child in decl.children:
+    if child.kind != nkIdDecl: continue
+    let t = declaredTypeOf(child)
+    if t == nil: continue
+    let sym = Symbol(name: child.str, kind: skVar, typ: t, scope: gPreprocessScope)
+    gPreprocessScope.symbols[child.str] = sym
+    chunkParts.add child.str & " = __nelua_scope(\"" & child.str & "\")"
+
 proc getWrapperSymbol(L: PLuaState, idx: int): Symbol =
   ## Read the `__nelua_symbol` lightuserdata off a wrapper table at `idx`.
   let base = L.lua_absidx(idx)
@@ -1194,6 +1231,20 @@ proc cSpliceEnvIndex(L: PLuaState): int {.cdecl.} =
     pushSymbolWrapper(L, sym)
   else:
     L.lua_getglobal(cstring(key))
+  return 1
+
+proc cNeluaScope(L: PLuaState): int {.cdecl.} =
+  ## `__nelua_scope(name)` -- resolve a bare identifier to the enclosing nelua
+  ## scope's Symbol at preprocess time, returning a symbol wrapper (or nil).
+  ## `##` blocks call this via the injected `<name> = __nelua_scope("<name>")`
+  ## line, so a `##` line sees only the locals/params declared above it.
+  let namePtr = L.lua_tolstring(1, nil)
+  let name = if namePtr != nil: $namePtr else: ""
+  let sym = lookup(gPreprocessScope, name)
+  if sym != nil:
+    pushSymbolWrapper(L, sym)
+  else:
+    L.lua_pushlightuserdata(nil)
   return 1
 
 proc createSpliceEnv(L: PLuaState, scope: Scope) =
@@ -1322,6 +1373,7 @@ proc registerPreprocessorBuiltins*(L: PLuaState) =
   gBuiltinsRegistered = true
   L.lua_pushcfunction(cMark); L.lua_setglobal("__nelua_mark")
   L.lua_pushcfunction(cInject); L.lua_setglobal("__nelua_inject")
+  L.lua_pushcfunction(cNeluaScope); L.lua_setglobal("__nelua_scope")
   L.lua_pushcfunction(cInjectAstnode); L.lua_setglobal("inject_astnode")
   L.lua_pushcfunction(cInjectAstnode); L.lua_setglobal("inject")
   L.lua_pushcfunction(cHygienize); L.lua_setglobal("hygienize")
@@ -1959,6 +2011,15 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
     var frameStack: seq[LuaFrame] = @[]
     var ppNodes: seq[Node] = @[]
     var chunkParts: seq[string] = @[]
+    # Inject the enclosing function's params at the start of this block's
+    # chunk so `##` lines in the body can resolve them (e.g.
+    # `## if v.type.is_pointer then` for `v: auto`).  Params are declared
+    # before the body, so they are visible from the first `##` line; block
+    # locals are injected positionally below as they are walked.
+    if gPreprocessScope != nil and gPreprocessScope.isFunction:
+      for name, sym in gPreprocessScope.symbols:
+        if sym.typ != nil:
+          chunkParts.add name & " = __nelua_scope(\"" & name & "\")"
     # Pre-pass: register every `## local function f(p) in (body) ## end`
     # splice-function definition and remove its three nodes from the block so
     # they are not fed to the `##` Lua chunk (the opener line is not valid Lua
@@ -2041,6 +2102,8 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
         if frameStack.len > 0:
           frameStack[^1].parts.add LuaFramePart(isBody: true, nodes: @[n])
         else:
+          if n.kind == nkVarDecl:
+            injectNeluaLocals(n, chunkParts)
           if condStack.len == 0 or condStack[^1].active:
             # Extract any `#[expr]#` nested in this statement into the block's
             # `##` chunk (interleaved in source order) so a `##`-local defined
@@ -2106,6 +2169,25 @@ proc preprocess*(root: Node, ctx: var PreprocessContext): Node =
   of nkPreprocessName:
     ctx.diags.add "#|name|# preprocessor replacement is unsupported in this build; node consumed"
     return newNil()
+  of nkFuncDef:
+    ## Push a scope carrying the function's params so `##` blocks in the body
+    ## can resolve them (e.g. `## if v.type.is_pointer then` for `v: auto`).
+    ## The body's own `local` declarations are added to this same scope as the
+    ## block is walked (nelua locals are function-scoped), and the scope is
+    ## restored when the function is left so siblings do not see them.
+    let saved = gPreprocessScope
+    var fscope = Scope(name: root.str, symbols: initTable[string, Symbol](),
+                       parent: saved, isFunction: true)
+    for child in root.children:
+      if child.kind == nkIdDecl:
+        let sym = Symbol(name: child.str, kind: skParam, typ: declaredTypeOf(child),
+                         scope: fscope)
+        fscope.symbols[child.str] = sym
+    gPreprocessScope = fscope
+    for i in 0 ..< root.children.len:
+      root.children[i] = preprocess(root.children[i], ctx)
+    gPreprocessScope = saved
+    return tryExpand(root, ctx)
   of nkCall:
     ## `#[name]#(args)` where `name` is a registered splice function: splice
     ## the arguments into a clone of the stored body and return the resulting

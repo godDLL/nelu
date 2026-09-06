@@ -1,6 +1,40 @@
 # Splice blocks must see nelua-scope locals
 
-**Status:** INBOX -- the core blocker for `lib/` stdlib reachability. Not started.
+**Status:** SCOPE DONE (2026-09-06) -- verification blocked on `#|name|#` (see below).
+
+## What was implemented
+
+The ticket's stated scope is landed in `src/preprocessor.nim` + `src/types.nim`:
+
+- `gPreprocessScope` (module-global `Scope`, reset in `resetPreprocessorState`) is
+  pushed per `nkFuncDef` carrying that function's params (via `declaredTypeOf`),
+  and per-block `local` declarations are added positionally by `injectNeluaLocals`.
+- A `__nelua_scope(name)` Lua builtin (registered on the embedded engine) resolves a
+  nelua local to its typed `Symbol` wrapper, so `##` blocks can read it.  Each nelua
+  declaration injects `<name> = __nelua_scope("<name>")` into the shared `##` chunk
+  at its textual position, giving **positional** visibility (a `##` line sees only
+  locals/params declared above it textually -- matching the oracle, which errors
+  "attempt to index a nil value (global 'X')" for a local declared below).
+- `is_cfloat` / `is_cdouble` / `is_record` added to `Type` and to the `cTypeIndex`
+  builtin so `v.type.is_cfloat` resolves for `v: cdouble` (false) and `v: cfloat` (true).
+
+Verified on both `tmp/nelu` and `/usr/bin/nelua`:
+- `## if v.type.is_cfloat then` for `v: cdouble` -> "not cfloat"; for `v: cfloat` -> "cfloat".
+- Positional visibility: a `##` line referencing a local declared *after* it errors on
+  both compilers with the same "global 'X'" message.
+- Auto-param case `v: auto` resolves to `int64` (default) with correct `is_*` truthiness.
+- Harness: 0 regressions, 223 MATCH, 4 improvements (goto_loop, likely_branch,
+  unlikely_branch, unlikely_loop), 1 new (exam/fn_multi). The earlier `def_c`
+  regression (custom `_ENV` isolating splice globals) was diagnosed and reverted.
+
+## Verification NOT met -- blocked on `#|name|#`
+
+`lib/hash.nelua` still does not compile.  It gets PAST the `## if v.type.is_cfloat`
+part now, but dies at the `#|name|#` computed-identifier splice (see
+`plan/INBOX/preprocess-name-splice.md`).  7 `lib/*.nelua` files use `#|name|#`:
+hash, math, utf8, sequence, coroutine, string (+ strpack has none).  This is a
+separate feature from splice-env-locals; the ticket's *scope* is done, its
+*verification* is not, and is not claimed to be.
 
 ## What fails
 

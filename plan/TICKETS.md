@@ -62,7 +62,8 @@ to see the whole board.
 | `plan/INBOX/dotted-global-c-emission.md` | STILL OPEN | Rank 15. Dotted `global X.Y` emits syntactically invalid C (literal `.` in the codename). Parse half DONE (`f75601a`); C half open. |
 | `plan/INBOX/check-source-location.md` | STILL OPEN | Rank 16. `check(false, msg)` omits the source location from the message (cosmetic). |
 | `plan/INBOX/enum-c-emission.md` | STILL OPEN | Rank 17. No C `enum` emitted for enum types (`cgen_types.cType` returns only `cTag(t)`). Unblocks type-safe `switch`. |
-| `plan/INBOX/splice-env-locals.md` | STILL OPEN | Core `lib/` blocker. `##` splice blocks cannot see nelua-scope locals (`## if v.type.is_cfloat then` fails with `global 'v'`). Natural extension of the `ec60323` scope machinery in `src/preprocessor.nim`. Unblocks hash.nelua. |
+| `plan/INBOX/splice-env-locals.md` | SCOPE DONE (2026-09-06) | `##` splice blocks now see nelua-scope locals via `__nelua_scope` + positional injection. Verified: `## if v.type.is_cfloat then` works on both compilers, positional visibility matches, harness 0 regressions / 223 MATCH. **Verification (hash.nelua compiles) NOT met** -- blocked on `#|name|#`. |
+| `plan/INBOX/preprocess-name-splice.md` | STILL OPEN | `#|expr|#` computed-identifier splice. Blocks hash/math/utf8/sequence/coroutine/string (7 lib files). Parser missing `.#|expr|#`; preprocessor consumes the node instead of evaluating it; analyzer never resolves it. |
 | `plan/INBOX/lib-reachability-per-file.md` | scaffold | Sub-task scaffold: land `splice-env-locals`, re-scan the 21 `lib/*.nelua` files, give each still-failing one its own ticket. Baseline 0/21 compile. |
 
 ### WIP (active)

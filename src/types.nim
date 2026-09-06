@@ -66,6 +66,8 @@ type
     is_boolean*: bool
     is_string*: bool
     is_cstring*: bool
+    is_cfloat*: bool
+    is_cdouble*: bool
     is_record*: bool
     is_union*: bool
     is_enum*: bool
@@ -578,6 +580,8 @@ proc computeShaper*(t: Type) =
   t.is_boolean   = k == tkBoolean
   t.is_string    = k == tkString
   t.is_cstring   = k == tkCstring
+  t.is_cfloat    = k == tkCfloat
+  t.is_cdouble   = k == tkCdouble
   t.is_record    = k == tkRecord
   t.is_union     = k == tkUnion
   t.is_enum      = k == tkEnum
