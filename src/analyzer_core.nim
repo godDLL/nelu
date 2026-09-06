@@ -202,6 +202,16 @@ proc numberTypeAndValue*(text: string): (Type, string, int) =
              else: 0
       iv = iv * 16 + d
     base = 16
+  elif num.len >= 2 and num[0] == '0' and (num[1] == 'b' or num[1] == 'B'):
+    # Binary literal `0b1010`.  The oracle accepts this (Lua 5.4 tonumber);
+    # without this branch it falls through to parseInt, which rejects the `0b`
+    # prefix with "invalid integer".
+    let bin = num[2 ..< num.len]
+    iv = 0
+    for c in bin:
+      let d = if c == '0': 0 elif c == '1': 1 else: 0
+      iv = iv * 2 + d
+    base = 2
   elif num.contains('.') or num.contains('e') or num.contains('E'):
     fv = parseFloat(num)
     isFloat = true
