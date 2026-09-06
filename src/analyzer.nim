@@ -811,6 +811,15 @@ proc analyzeVarDecl(ctx: var AnalyzerContext, node: Node) =
     var vtype: Type
     if iddecl.children.len > 0:
       vtype = analyzeTypeExpr(ctx, iddecl.children[0])
+      # `auto` annotation: infer the type from the initializer, exactly as the
+      # oracle does (`local x: auto = 1` -> int64, `local s: auto = "hi"` ->
+      # string).  analyzeTypeExpr returns the `auto` builtin type (not nil),
+      # so without this the var-decl keeps `auto` and cgen emits the C `auto`
+      # storage-class keyword, which fails to compile.  When there is no
+      # initializer `auto` stays the auto type (print rejects it), matching
+      # the oracle; see the auto-* tickets.
+      if vtype != nil and vtype.kind == tkAuto and i < inits.len:
+        vtype = analyzeExpr(ctx, inits[i])
     if vtype == nil:
       if isMultiRet:
         let rets = ctx.callRetTypes.getOrDefault(inits[0])
