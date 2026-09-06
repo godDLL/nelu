@@ -761,6 +761,12 @@ proc coerce(s: var Gen, expr: string, fromT: Type, toT: Type): string =
   if toT.isCstring and fromT.kind == tkString and
      expr.startsWith("nlstr(") and expr.endsWith(")"):
     return expr["nlstr(".len ..< expr.len - 1]
+  if toT.isCstring and fromT.kind == tkString:
+    # A string value lowers to an `nlstring` struct; the cstring is its `.data`
+    # char* field.  Emit the field access rather than casting the struct to a
+    # char* (C rejects `(char*)(struct)`).  Covers `(@cstring)(s)` on a string
+    # variable, not just `nlstr(...)` literals.
+    return expr & ".data"
   let conv = convert(fromT, toT, false)
   case conv.kind
   of ckIdentity:
@@ -1330,6 +1336,13 @@ proc genCall(s: var Gen, node: Node): string =
     # A type cast has exactly one argument, so left-to-right ordering is
     # trivial; use its (already coerced) spill expression directly.
     let argstr = if args.len > 0: spills[0].expr else: "void"
+    # Casting a string value to cstring: the value is an `nlstring` struct, so
+    # take its `.data` char* field rather than casting the struct to a char*
+    # (C rejects that).  `(@cstring)(s)` -> `(char*)(s.data)`.
+    if ca.calleeType.isCstring and args.len > 0:
+      let at = s.ctx.attrOf.getOrDefault(args[0]).typ
+      if at != nil and at.kind == tkString:
+        return "(" & ct & ")(" & argstr & ".data)"
     return "(" & ct & ")(" & argstr & ")"
   # M3: calling a record value `r(...)` dispatches through its `__call`
   # metamethod instead of emitting `<var>(args)` (which C rejects -- a struct
