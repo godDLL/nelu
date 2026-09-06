@@ -76,7 +76,7 @@ type
     rhAnyFromString, rhAnyFromPtr,
     rhAnyLoadInt, rhAnyLoadUint, rhAnyLoadNum, rhAnyLoadBool, rhAnyLoadString,
     rhAnyLoadPtr, rhAnyEq,
-    rhStr, rhStrConcat, rhStrFree, rhIdiv, rhMod, rhTdiv, rhTmod, rhAsr, rhPow, rhLen, rhClose,
+    rhStr, rhStrConcat, rhStrCmp, rhStrFree, rhIdiv, rhMod, rhTdiv, rhTmod, rhAsr, rhPow, rhLen, rhClose,
     rhNltypeInt, rhNltypeDouble, rhNltypeBool, rhNltypeString,
     rhMath, rhCheckInt, rhCheckUint, rhCheckFloat
   Gen = object
@@ -450,6 +450,18 @@ proc genPreamble(refs: set[RuntimeHelper]): string =
     s.add "    r.size = 0;\n"
     s.add "  }\n"
     s.add "  return r;\n"
+    s.add "}\n"
+    s.add "\n"
+  if rhStrCmp in refs:
+    # String comparison: C has no operator for the `nlstring` struct, so route
+    # `<`/`>`/`<=`/`>=`/`==`/`~=` through this memcmp helper returning -1/0/1,
+    # matching the oracle's lexicographic byte-order comparison.
+    s.add "static int nlstring_cmp(nlstring a, nlstring b) {\n"
+    s.add "  if (a.size < b.size) return -1;\n"
+    s.add "  if (a.size > b.size) return 1;\n"
+    s.add "  if (a.size == 0) return 0;\n"
+    s.add "  int r = memcmp(a.data, b.data, a.size);\n"
+    s.add "  return r < 0 ? -1 : (r > 0 ? 1 : 0);\n"
     s.add "}\n"
     s.add "\n"
   if rhStrFree in refs:
@@ -1007,6 +1019,13 @@ proc genBinaryOp(s: var Gen, node: Node): string =
   let lstr = if arithmetic: s.arithCast(lstr0, lt, rtype) else: lstr0
   let rstr = if arithmetic: s.arithCast(rstr0, rt, rtype) else: rstr0
   let stringy = (lt != nil and lt.isStringy) and (rt != nil and rt.isStringy)
+  # String comparison: C has no operator for the `nlstring` struct, so route
+  # `<`/`>`/`<=`/`>=`/`==`/`~=` through nlstring_cmp (returns -1/0/1) rather
+  # than emitting invalid `nlstring < nlstring` C.  Arrays are not stringy, so
+  # the array `==`/`~=` special-casing below is unaffected.
+  let strCmp = if lt != nil and lt.isStringy and rt != nil and rt.isStringy:
+                 s.use rhStrCmp; "nlstring_cmp(" & lstr & ", " & rstr & ")"
+               else: ""
   # M5: binary-operator metamethod dispatch.  A record that defines `__add`
   # (etc.) routes the operator through that method instead of the default C
   # operator, matching the oracle.  This is the fifth metamethod-dispatch
@@ -1066,14 +1085,15 @@ proc genBinaryOp(s: var Gen, node: Node): string =
   of "&": return "(" & lstr & " & " & rstr & ")"    ## band
   of "|": return "(" & lstr & " | " & rstr & ")"
   of "~": return "(" & lstr & " ^ " & rstr & ")"    ## bxor (C ^ is free: Nelua ^ is power)
-  of "<": return "(" & lstr & " < " & rstr & ")"
-  of ">": return "(" & lstr & " > " & rstr & ")"
-  of "<=": return "(" & lstr & " <= " & rstr & ")"
-  of ">=": return "(" & lstr & " >= " & rstr & ")"
+  of "<": return if strCmp != "": "(" & strCmp & " < 0)" else: "(" & lstr & " < " & rstr & ")"
+  of ">": return if strCmp != "": "(" & strCmp & " > 0)" else: "(" & lstr & " > " & rstr & ")"
+  of "<=": return if strCmp != "": "(" & strCmp & " <= 0)" else: "(" & lstr & " <= " & rstr & ")"
+  of ">=": return if strCmp != "": "(" & strCmp & " >= 0)" else: "(" & lstr & " >= " & rstr & ")"
   of "==":
     ## Array `==` is element-wise (C compares array names as pointers, which
     ## is always false).  For a bounded array emit a short-circuiting chain of
     ## element comparisons; the oracle does the same.
+    if strCmp != "": return "(" & strCmp & " == 0)"
     if lt != nil and lt.kind == tkArray and lt.arraySize > 0 and
        rt != nil and rt.kind == tkArray and rt.arraySize > 0:
       let n = min(lt.arraySize, rt.arraySize)
@@ -1083,6 +1103,7 @@ proc genBinaryOp(s: var Gen, node: Node): string =
       return "(" & els.join(" && ") & ")"
     return "(" & lstr & " == " & rstr & ")"
   of "~=":
+    if strCmp != "": return "(" & strCmp & " != 0)"
     if lt != nil and lt.kind == tkArray and lt.arraySize > 0 and
        rt != nil and rt.kind == tkArray and rt.arraySize > 0:
       let n = min(lt.arraySize, rt.arraySize)
