@@ -38,7 +38,8 @@ export analyzer_core
 # ---- expression analysis ------------------------------------------------------
 
 proc analyzeExpr*(ctx: var AnalyzerContext, node: Node): Type
-proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Type
+proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true,
+                       rejectUnknown = true): Type
 proc analyzeBlock(ctx: var AnalyzerContext, node: Node)
 proc replaceSplices(ctx: var AnalyzerContext, node: Node,
                     stopAtNestedBlock: bool): Node
@@ -108,6 +109,14 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
     let nm = caller.str
     let sym = ctx.lookup(nm)
     if sym != nil and sym.kind == skBuiltin:
+      # The oracle rejects `print` of a `void` argument (a function that
+      # returns nothing) with "in print: cannot handle type void"; without
+      # this nelu silently prints `nil`.  Emit the diagnostic so the build
+      # fails and the negative probe matches.
+      if nm == "print":
+        for at in argTypes:
+          if at != nil and at.kind == tkVoid:
+            ctx.diags.add ctx.path & ": error: in print: cannot handle type \"void\""
       calleeSym = sym
       calleeType = Type(kind: tkFunction, name: "function", codename: "function")
       calleeType.name = "function"; calleeType.codename = "function"
@@ -377,7 +386,7 @@ proc analyzeUnaryOp(ctx: var AnalyzerContext, node: Node): Type =
     # type-typed variable) rather than a value expression.  Resolve it as a
     # type expression first; if that fails (e.g. `#"hi"`, `#arr`) fall back to
     # the ordinary value analysis so string/array *length* still works.
-    rt = analyzeTypeExpr(ctx, rhs)
+    rt = analyzeTypeExpr(ctx, rhs, true, false)
     if rt != nil:
       typeOperand = true
     else:
@@ -1416,7 +1425,8 @@ proc typeValueKey(node: Node, ct: Type): string =
     return n.str
   return cn
 
-proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Type =
+proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true,
+                       rejectUnknown = true): Type =
   if node == nil: return nil
   case node.kind
   of nkParen:
@@ -1479,6 +1489,19 @@ proc analyzeTypeExpr*(ctx: var AnalyzerContext, node: Node, usedType = true): Ty
       if rt != nil:
         return rt
       return nil
+    # The id is not a builtin/primitive type and not a registered type
+    # symbol.  The oracle reports this as "undeclared symbol '...'" in type
+    # position too; without the diagnostic the var-decl silently falls back
+    # to the init expr's type (e.g. `local x: frobnicate = 1` lowers to int64
+    # and compiles, so the negative probe never fails the build).  Emit the
+    # diag so the build fails and the negative probe matches.  Type keywords
+    # (`any`, `integer`, ...) are exempt -- they are all in BuiltinTypes and
+    # resolved above, so this only ever fires for genuinely unknown names.
+    # `rejectUnknown` is false when the caller is probing (the `#` len
+    # operator tries a type operand first and falls back to a value operand),
+    # where a non-type id is expected and must not be rejected.
+    if rejectUnknown and not isTypeKeywordName(node.str):
+      ctx.diags.add ctx.path & ": error: undeclared symbol '" & node.str & "'"
     return nil
   of nkPointerType:
     let sub = if node.children.len > 0: analyzeTypeExpr(ctx, node.children[0], usedType) else: nil
