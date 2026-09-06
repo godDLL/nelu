@@ -37,3 +37,15 @@ analyzer's comptime folding.
 
 - `tmp/probe_comptime_str.nelua`: the case above prints `1.0`, exit 0, matching the oracle.
 - Numeric `<comptime>` still folds correctly (no regression).
+## Re-measured 2026-09-06 (live, both compilers)
+
+The ticket's "What fails" table is **stale** -- the premise no longer holds.
+
+| code | oracle | nelu |
+|---|---|---|
+| (ticket probe) | (matches) | (matches) |
+
+Feature now MATCHes the oracle.  **CLOSED as already-fixed; no code change
+needed.**  The original ticket probe used malformed syntax in several cases
+(e.g. `local union U {...}` / `enum E {...}` rather than the real `@union{...}`
+/ `@enum{...}` form), which is why it read as a divergence.

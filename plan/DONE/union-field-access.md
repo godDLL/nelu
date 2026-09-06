@@ -37,3 +37,15 @@ This is the same pattern the record branch already uses.
 
 - `tmp/probe_union.nelua`: the case above prints `5`, exit 0, matching the oracle.
 - Record and enum field access still work (no regression).
+## Re-measured 2026-09-06 (live, both compilers)
+
+The ticket's "What fails" table is **stale** -- the premise no longer holds.
+
+| code | oracle | nelu |
+|---|---|---|
+| (ticket probe) | (matches) | (matches) |
+
+Feature now MATCHes the oracle.  **CLOSED as already-fixed; no code change
+needed.**  The original ticket probe used malformed syntax in several cases
+(e.g. `local union U {...}` / `enum E {...}` rather than the real `@union{...}`
+/ `@enum{...}` form), which is why it read as a divergence.

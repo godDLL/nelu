@@ -29,3 +29,18 @@ feature -- defer those.
 
 - `tmp/probe_forin.nelua`: `for k, v in {10,20,30} do print(k, v) end` matches the oracle.
 - Single-variable `for v in array` still works (no regression).
+## Re-measured 2026-09-06 (live, both compilers)
+
+The ticket's "What fails" table is **stale** -- the premise no longer holds.
+
+The claimed oracle output `1 10 2 20 3 30` is **not reproducible**: the oracle
+itself crashes on `for k, v in {10, 20, 30} do ... end`:
+
+```
+/usr/bin/nelua-lua: .../analyzer.lua:1227: attempt to call a nil value
+(method 'get_return_type')
+```
+
+So multi-value `for k, v in array` is **unsupported in both compilers**, not a
+nelu-only divergence.  No oracle baseline exists to match against.  Kept as a
+real feature gap but the ticket text is wrong about the oracle side.

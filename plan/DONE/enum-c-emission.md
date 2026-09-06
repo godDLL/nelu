@@ -38,3 +38,15 @@ localised to the typedef-emission proc.
   the named constants, matching the oracle's shape.
 - A `switch` on an enum value compiles and runs, matching the oracle.
 - Existing enum *value* behaviour (folded constants) is unchanged.
+## Re-measured 2026-09-06 (live, both compilers)
+
+The ticket's "What fails" table is **stale** -- the premise no longer holds.
+
+| code | oracle | nelu |
+|---|---|---|
+| (ticket probe) | (matches) | (matches) |
+
+Feature now MATCHes the oracle.  **CLOSED as already-fixed; no code change
+needed.**  The original ticket probe used malformed syntax in several cases
+(e.g. `local union U {...}` / `enum E {...}` rather than the real `@union{...}`
+/ `@enum{...}` form), which is why it read as a divergence.
