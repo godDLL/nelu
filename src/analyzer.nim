@@ -505,6 +505,14 @@ proc analyzeInitList(ctx: var AnalyzerContext, node: Node, parentType: Type = ni
         discard analyzeInitList(ctx, c.children[0], ft)
       else:
         discard analyzeExpr(ctx, c.children[0])
+    else:
+      # A plain (non-pair) element of an array literal, e.g. `E.A` in
+      # `{ E.A, E.B, E.C }`.  These were skipped entirely, so the element
+      # never got an attribute -- `E.A` resolved to nothing and the emitter
+      # wrote the raw `E.A` into the C (undeclared identifier).  Analyze each
+      # element so enum-value dot-indexes fold to their comptime integer and
+      # the element type is known to the emitter.
+      discard analyzeExpr(ctx, c)
   return t
 
 proc analyzePair(ctx: var AnalyzerContext, node: Node): Type =
