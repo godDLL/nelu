@@ -106,6 +106,25 @@ proc analyzeCall(ctx: var AnalyzerContext, node: Node): Type =
     calleeType.returns.add castTarget
     ca.calleeType = castTarget
     a.calleeType = castTarget
+    if castTarget.kind in {tkRecord, tkUnion, tkEnum} and args.len == 1 and
+       args[0].kind == nkInitList:
+      # `(@T){ field = expr, ... }` -- the cast form of the record/union/enum
+      # constructor.  The oracle treats `(@T){...}` and `T{...}` identically,
+      # so route it through the same constructor path: analyze the initlist
+      # against T and flag the call as a constructor so codegen emits a
+      # `((struct <tag>){ ... })` compound literal.
+      #
+      # Without this the initlist was analyzed in the loop above with no
+      # target type and fell back to an anonymous record (`nlrec0`), so codegen
+      # emitted `(struct Point)((struct nlrec0){.x=1,.y=2})` and gcc rejected it
+      # ("'struct nlrec0' has no member named 'x'").  Verified:
+      # `local p = (@Point){ x = 1, y = 2 }; print(p.x, p.y)` -> `1 2`.
+      discard analyzeInitList(ctx, args[0], castTarget)
+      ca.typ = BuiltinTypes["type"]
+      ca.name = "constructor"
+      a.isConstructor = true
+      a.typ = castTarget
+      return castTarget
   if caller.kind == nkId:
     let nm = caller.str
     let sym = ctx.lookup(nm)

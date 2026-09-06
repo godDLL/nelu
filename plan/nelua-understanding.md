@@ -737,10 +737,15 @@ FIXED were false alarms or already repaired, and are kept for the record.
 4. ~~Nelu has no "undeclared symbol" diagnostic...~~ **FIXED.**
    `print(undefned_symbol)` now emits `error: undeclared symbol 'undefned_symbol'`
    MATCH (was silently `any`-typed before).
-5. Nelu's typed-record-literal lowering is broken for the cast form
-   `(@T){...}` -- see `plan/INBOX/record-enum-design.md`.  (The bare
-   constructor `T{...}` works; the crash was a misreported symptom of the
-   same C-gen bug.)
+5. ~~Nelu's typed-record-literal lowering is broken for the cast form
+   `(@T){...}`...~~ **FIXED 2026-09-06.** The cast form now routes through the
+   constructor path: analyzer.nim analyzes the initlist against the cast target
+   and flags the call as a constructor, and cgen.nim emits the `union` keyword
+   for union targets (previously always `struct`, which gcc rejected). Named,
+   mixed-order, union, and bare forms all MATCH the oracle. See
+   `plan/DONE/typed-record-literal-cast.md` and `exam/cast_record.nelua`.
+   (The bare constructor `T{...}` already worked; the crash was a misreported
+   symptom of the same C-gen bug.)
 6. Nelu's `T?` optional-type syntax is parsed but inert.
 7. Nelu's `cond` keyword is parsed but not implemented.
 8. Nelu's `tkTable`/`tkVariant`/`tkGeneric`/`tkConcept` have spellings but no

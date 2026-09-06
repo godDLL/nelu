@@ -1,0 +1,21 @@
+-- Typed record/union constructor casts: `(@T){ field = expr, ... }`.
+-- The cast form of the constructor (`Rect{...}`); the oracle treats them
+-- identically.  Previously the initlist was analyzed with no target type and
+-- fell back to an anonymous record, so codegen emitted
+-- `(struct Point)((struct nlrec0){...})` and gcc rejected it.
+local Point = @record{ x: integer, y: integer }
+local p1 = (@Point){ x = 1, y = 2 }
+local p2 = (@Point){ y = 20, x = 10 }
+print(p1.x, p1.y, p2.x, p2.y)
+
+local Pair = @record{ a: string, b: integer }
+local pp = (@Pair){ a = "hi", b = 7 }
+print(pp.a, pp.b)
+
+local IOrF = @union{ i: integer, n: number }
+local u = (@IOrF){ n = 3.5 }
+print(u.n)
+
+-- bare constructor form still works
+local p3 = Point{ x = 3, y = 4 }
+print(p3.x, p3.y)

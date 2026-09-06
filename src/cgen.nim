@@ -1334,7 +1334,13 @@ proc genCall(s: var Gen, node: Node): string =
             s.genArrayInitFromExpr(s.genExpr(child), ft) & ","
         else:
           parts.add "." & cIdent(pair.str) & " = " & s.genExpr(child) & ","
-    return "((struct " & tag & "){ " & parts.join(" ") & " })"
+    # A constructor's compound-literal keyword follows the composite kind:
+    # `struct` for records, `union` for unions.  Emitting `struct` for a union
+    # produced `((struct nlrec2){...})`, which gcc rejects ("invalid use of
+    # undefined type 'struct nlrec2'") -- the bare union constructor `U{...}`
+    # and the cast form `(@U){...}` both hit it.
+    let kind = if ct.kind == tkUnion: "union" else: "struct"
+    return "((" & kind & " " & tag & "){ " & parts.join(" ") & " })"
   # C1: type cast `(T)(e)` -> `(cType(T))(e)`.  The caller attr carries the
   # target type (bound by the analyzer); there is no callee symbol to call, so
   # emit an explicit C cast of the single argument instead of a call expression.

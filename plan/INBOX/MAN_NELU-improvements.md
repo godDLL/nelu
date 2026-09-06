@@ -17,7 +17,7 @@ the assumption that the compiler is healthy.
 
 ---
 
-## 1. Fix record-literal lowering (cgen) — *Grounded*
+## 1. Fix record-literal lowering (cgen) — *DONE 2026-09-06*
 
 - **What.** Every record-literal form emits C using an empty `struct nlrec0` instead of
   the record's own type tag. `(@Vec2){ x = 3.0, y = 4.0 }` becomes
@@ -35,6 +35,12 @@ the assumption that the compiler is healthy.
   for these), and it is a Nelu *regression*, not a deliberate divergence. The commit that
   claims "record/union/enum types" landed (`cbd542d`) does not actually produce working
   record literals.
+- **Status.** **CLOSED.** The bare constructor form `T{...}` was already routed through
+  the A5 constructor path. The remaining gap was the cast form `(@T){...}`: analyzer.nim
+  now analyzes the initlist against the cast target and flags the call as a constructor
+  (so cgen emits `((struct <tag>){ ... })`), and cgen.nim emits the `union` keyword for
+  union targets instead of always `struct`. Verified: named, mixed-order, union, and bare
+  forms all MATCH the oracle. See `plan/DONE/typed-record-literal-cast.md`.
 - **Suggested shape.** In `src/cgen.nim`, the record-literal emitter must use the same
   type-tag name the record declaration emits (the `typedef struct <name> { ... } <name>;`
   at the top of the generated C), not a fresh `nlrec0`. One probe per literal shape
