@@ -59,6 +59,7 @@ to see the whole board.
 | `plan/INBOX/splice-env-locals.md` | SCOPE DONE (2026-09-06) | `##` splice blocks now see nelua-scope locals via `__nelua_scope` + positional injection. Verified: `## if v.type.is_cfloat then` works on both compilers, positional visibility matches, harness 0 regressions / 223 MATCH. **Verification (hash.nelua compiles) NOT met** -- blocked on `#|name|#`. |
 | `plan/INBOX/preprocess-name-splice.md` | STILL OPEN | `#|expr|#` computed-identifier splice. Blocks hash/math/utf8/sequence/coroutine/string (7 lib files). Parser missing `.#|expr|#`; preprocessor consumes the node instead of evaluating it; analyzer never resolves it. |
 | `plan/INBOX/lib-reachability-per-file.md` | scaffold | Sub-task scaffold: land `splice-env-locals`, re-scan the 21 `lib/*.nelua` files, give each still-failing one its own ticket. Baseline 0/21 compile. |
+| `plan/INBOX/do-expression.md` | STILL OPEN | `(do ... in expr end)` do-expression. The oracle yields the `in` expr (`(do if i==2 then in "two" end)` -> `two`); nelu rejects it at parse time ("unexpected keyword 'do'"). The `nkDoExpr` shape and a cgen stub already exist, but there is no `newDoExpr` constructor, no `parsePrimary` `tkLParen` path, no analyzer case, and cgen emits a `/*do-expr*/` placeholder. Blocks `exam/everything.nelua:176`. Found while mining everything.nelua, 2026-09-06. |
 
 ### WIP (active)
 
